@@ -3,7 +3,7 @@
   "display_name_en": "Askill",
   "description_zh": "自动部署短线王工作台，配置官方 CodeBuddy CLI，完成登录引导、连接验证与启动修复。",
   "description_en": "Deploy Askill, configure the official CodeBuddy CLI, guide account authorization, verify the connection, and repair startup problems.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "Barryyangdong",
   "examples_zh": ["部署附带源码包中的短线王并自动接入 WorkBuddy", "启动短线王，修复 CLI 连接并验证工作台"],
   "examples_en": ["Deploy Askill from the supplied source archive and configure WorkBuddy", "Start Askill and repair its CLI connection"]

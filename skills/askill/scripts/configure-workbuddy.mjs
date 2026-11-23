@@ -23,23 +23,45 @@ export function parseArgs(args) {
   return options;
 }
 
+function failure(stage, status, selected = status) {
+  const result = { ok: false, stage, status: status?.status ?? 'probe_failed',
+    detail: status?.detail ?? '未能检测 WorkBuddy / CodeBuddy CLI', verified: false, browser_saved: false };
+  if (result.status === 'not_authenticated') {
+    const standalone = (status?.cli_kind ?? selected?.cli_kind) === 'standalone';
+    if (standalone) result.cli_path = selected?.cli_path;
+    result.next_action = standalone ? 'login_codebuddy_cli' : 'confirm_workbuddy_login';
+    result.detail = standalone
+      ? '请在当前独立 CodeBuddy CLI 中完成官方登录（login-codebuddy.mjs），然后重新验证。'
+      : '请确认 WorkBuddy 桌面版已登录并可正常对话，然后重新验证。';
+  }
+  return result;
+}
+
+export function requireCompatibleRuntime(runtime) {
+  if (typeof runtime.resolveSavableCodeBuddyLocation !== 'function' || typeof runtime.probeCodeBuddyForSetup !== 'function')
+    throw new Error('当前 Askill 源码缺少新版 Skill 的 CLI 验证与安全保存能力，请先更新配套源码并重启已有服务。');
+}
+
 export async function configure(options, deps) {
   const status = await deps.detect();
-  if (!status?.available) return { ok: false, stage: 'discovery', status: status?.status ?? 'probe_failed', detail: status?.detail ?? '未能检测 WorkBuddy' };
+  if (!status?.available || status.status !== 'ready') return failure('discovery', status);
   if (!options.verify) return { ok: true, stage: 'discovery', status: status.status, version: status.version, verified: false };
   let result;
-  try { result = await deps.verify(); }
+  try { result = await deps.verify(status.cli_path); }
   catch (error) {
     if (error?.code !== 'agent_not_authenticated') throw error;
-    return { ok: false, stage: 'connection', status: 'not_authenticated', verified: false,
-      browser_saved: false, next_action: 'confirm_workbuddy_login',
-      detail: 'CLI 检测到了账号，但真实对话认证失败。确认 WorkBuddy 内可正常对话后重试；不要复制认证文件。' };
+    return failure('connection', { status: 'not_authenticated' }, status);
   }
   if (result?.ok !== true) throw new Error('WorkBuddy connection verification did not succeed');
-  if (options.persistCLI) await deps.persist();
+  if (options.persistCLI) {
+    const saved = await deps.persist();
+    if (!saved?.available || saved.status !== 'ready') return failure('persistence', saved, status);
+    if (!saved.custom_path || !saved.saved_path)
+      return failure('persistence', { status: 'path_not_saved', detail: 'CLI 仍可运行，但指定路径未生效。' });
+  }
   const url = new URL('/settings?setup=workbuddy', options.uiURL);
   return { ok: true, stage: 'connection', verified: true, browser_saved: false,
-    ...(options.persistCLI ? { cli_path_saved: true, restart_existing_service: true } : {}), setup_url: url.href };
+    ...(options.persistCLI ? { cli_path_saved: true, cli_path: options.cliPath, restart_existing_service: true } : {}), setup_url: url.href };
 }
 
 async function main() {
@@ -50,26 +72,31 @@ async function main() {
   await module('finance/register.ts');
   const service = await module('service.ts');
   const runtime = await module('local_agent_runtime.ts');
+  requireCompatibleRuntime(runtime);
   const ctx = service.serviceContext({ repoRoot: repo });
   runtime.loadSavedAgentPaths(ctx.dataRoot);
   const originalBin = process.env.CODEBUDDY_BIN;
   if (options.cliPath) {
     if (originalBin) throw new Error('CODEBUDDY_BIN 已由当前环境指定，不能自动替换');
-    process.env.CODEBUDDY_BIN = runtime.resolveCodeBuddyLocation(options.cliPath, process.env);
+    options.cliPath = runtime.resolveSavableCodeBuddyLocation(ctx.dataRoot, options.cliPath, process.env);
+    process.env.CODEBUDDY_BIN = options.cliPath;
   }
   try {
-  const result = await configure(options, {
-    detect: async () => (await service.localAgents(ctx, process.env, 'cli-codebuddy'))[0],
-    verify: () => service.llmProbe(ctx, { llm: { provider: 'cli-codebuddy' } }),
-    persist: async () => {
-      // The candidate has already passed a real conversation. Do not persist it earlier.
-      const env = { ...process.env };
-      delete env.CODEBUDDY_BIN;
-      await service.setCodeBuddyLocation(ctx, options.cliPath, env);
-    },
-  });
-  console.log(JSON.stringify(result));
-  if (!result.ok) process.exitCode = 2;
+    const result = await configure(options, {
+      detect: () => runtime.probeCodeBuddyForSetup(process.env),
+      verify: cliPath => {
+        process.env.CODEBUDDY_BIN = cliPath;
+        return service.llmProbe(ctx, { llm: { provider: 'cli-codebuddy' } });
+      },
+      persist: async () => {
+        // The candidate has already passed a real conversation. Do not persist it earlier.
+        const env = { ...process.env };
+        delete env.CODEBUDDY_BIN;
+        return service.setCodeBuddyLocation(ctx, options.cliPath, env, true);
+      },
+    });
+    console.log(JSON.stringify(result));
+    if (!result.ok) process.exitCode = 2;
   } finally {
     if (originalBin === undefined) delete process.env.CODEBUDDY_BIN;
     else process.env.CODEBUDDY_BIN = originalBin;

@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { backend, friendlyAgentError } from "@/lib/backend";
-import { loadUserLlm, saveLlm } from "@/lib/llm";
+import { saveLlm } from "@/lib/llm";
 import { LLM_KEY } from "@/lib/llmStore";
-import { subscriptionConfig, testAndSaveAi } from "@/lib/aiConnection";
+import { connectWorkBuddy } from "@/lib/aiConnection";
 
 /** Explicit Skill handoff only: merely opening settings never configures a provider. */
-export function WorkBuddySetup({ onDone }: { onDone: () => void }) {
+export function WorkBuddySetup({ onDone }: { onDone: (message: string) => void }) {
   const [state, setState] = useState("正在自动连接 WorkBuddy…");
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -13,12 +13,12 @@ export function WorkBuddySetup({ onDone }: { onDone: () => void }) {
     // Deferring one tick lets StrictMode cancel its rehearsal before any request.
     const timer = window.setTimeout(() => { void (async () => {
       try {
-        const existing = loadUserLlm();
-        if (existing && existing.provider !== "cli-codebuddy") throw new Error("已有其他 AI 配置，未覆盖。请由 Skill 核对后在下方选择 WorkBuddy 并测试保存。");
-        await testAndSaveAi(subscriptionConfig("cli-codebuddy"), {
+        const result = await connectWorkBuddy({
           read: () => localStorage.getItem(LLM_KEY), probe: backend.llmProbe, save: saveLlm,
         }, ctl.signal);
-        if (!ctl.signal.aborted) { setState("WorkBuddy 已通过真实连接测试并保存，可返回工作台使用。"); onDone(); }
+        if (ctl.signal.aborted) return;
+        if (result.ok) onDone(result.message);
+        else { setFailed(true); setState(result.message); }
       } catch (e) { if (!ctl.signal.aborted) { setFailed(true); setState(friendlyAgentError(e)); } }
     })(); }, 0);
     return () => { window.clearTimeout(timer); ctl.abort(); };

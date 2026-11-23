@@ -10,26 +10,46 @@ export function installedEntry(prefix, platform = process.platform) {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   if (manifest.name !== PACKAGE) throw new Error('Unexpected CLI package');
   const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.codebuddy;
-  if (typeof bin !== 'string') throw new Error('Official package has no codebuddy entry');
+  if (typeof bin !== 'string' || !bin.trim()) {
+    throw Object.assign(new Error('Official package has no codebuddy entry'), { code: 'MISSING_ENTRY' });
+  }
   const entry = path.resolve(root, bin);
+  const declared = path.relative(root, entry);
+  if (!declared || declared === '..' || declared.startsWith(`..${path.sep}`) || path.isAbsolute(declared)) throw new Error('CLI entry must stay inside the package');
   const relative = path.relative(fs.realpathSync(root), fs.realpathSync(entry));
   if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || !fs.statSync(entry).isFile()) throw new Error('CLI entry must stay inside the package');
   // Windows cannot execute a shebang file directly. Use npm's standard PowerShell
   // shim, which the existing adapter validates and resolves without running a shell.
-  const launcher = platform === 'win32' ? path.join(prefix, 'node_modules', '.bin', 'codebuddy.ps1') : entry;
-  if (!fs.existsSync(launcher)) throw new Error('Official CLI launcher is missing; repair this installation');
+  const launcher = path.join(prefix, 'node_modules', '.bin', platform === 'win32' ? 'codebuddy.ps1' : 'codebuddy');
+  if (!fs.statSync(launcher, { throwIfNoEntry: false })?.isFile()) {
+    throw Object.assign(new Error('Official CLI launcher is missing; repair this installation'), { code: 'MISSING_SHIM' });
+  }
+  if (platform !== 'win32' && fs.realpathSync(launcher) !== fs.realpathSync(entry)) {
+    throw new Error('Official CLI launcher must resolve to the package entry');
+  }
   return { cli_path: launcher, version: manifest.version };
 }
 
 export async function installCLI(prefix, npmCLI, run = runNode) {
   if (!path.isAbsolute(prefix) || !path.isAbsolute(npmCLI)) throw new Error('Use absolute --prefix and --npm-cli paths');
   // Idempotent: a previous successful install does not need another download.
-  if (fs.existsSync(path.join(prefix, 'node_modules', '@tencent-ai', 'codebuddy-code', 'package.json'))) {
-    return { ok: true, reused: true, ...installedEntry(prefix), verified: false };
+  const npmOptions = ['--prefix', prefix, '--registry=https://registry.npmjs.org', '--no-audit', '--no-fund'];
+  if (fs.existsSync(path.join(prefix, 'node_modules', '@tencent-ai', 'codebuddy-code'))) {
+    try {
+      return { ok: true, reused: true, ...installedEntry(prefix), verified: false };
+    } catch (error) {
+      if (error.code === 'MISSING_SHIM') {
+        // A satisfied dependency may be skipped by npm install even if .bin was lost.
+        await run(npmCLI, ['rebuild', ...npmOptions, '--bin-links=true', '--ignore-scripts', PACKAGE]);
+        return { ok: true, reused: false, ...installedEntry(prefix), verified: false };
+      }
+      if (!(error instanceof SyntaxError) && !['ENOENT', 'ENOTDIR', 'MISSING_ENTRY'].includes(error.code)) throw error;
+      // Remove the incomplete dependency from npm's installed tree before reinstalling.
+      await run(npmCLI, ['uninstall', ...npmOptions, '--ignore-scripts', '--no-save', PACKAGE]);
+    }
   }
   fs.mkdirSync(prefix, { recursive: true });
-  await run(npmCLI, ['install', '--prefix', prefix, '--registry=https://registry.npmjs.org',
-    '--no-audit', '--no-fund', '--save-exact', PACKAGE]);
+  await run(npmCLI, ['install', ...npmOptions, '--bin-links=true', '--save-exact', PACKAGE]);
   return { ok: true, reused: false, ...installedEntry(prefix), verified: false };
 }
 

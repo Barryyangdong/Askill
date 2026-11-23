@@ -611,6 +611,8 @@ test("HTTP API:token 必需 / 非本机 Origin 403 / 跨站 403 / 非 JSON POST 
     assert.equal((await call("GET", "/local-agents?provider=unknown")).code, 400);
     // #50:设置页手动指定 WorkBuddy 位置 —— 参数不对 / 位置不存在都按原因拒
     for (const [body, error] of [[{}, "bad_agent_path"], [{ path: 42 }, "bad_agent_path"], [{ path: "relative/WorkBuddy" }, "bad_agent_path"],
+      [{ path: null, require_ready: true }, "bad_agent_path"],
+      [{ path: null, require_ready: "true" }, "bad_agent_path"],
       [{ path: [path.join(ctx.dataRoot, "nope")] }, "bad_agent_path"],
       [{ path: path.join(ctx.dataRoot, "nope") }, "agent_path_not_found"]] as const) {
       const r = await call("POST", "/local-agents/codebuddy/path", body);

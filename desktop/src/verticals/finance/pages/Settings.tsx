@@ -1,6 +1,6 @@
 import { Check, Cpu, Database, KeyRound, LoaderCircle, RefreshCw, ShieldCheck, Sparkles, Terminal, Trash2, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { WorkBuddySetup } from "@/components/WorkBuddySetup";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { useAiPage } from "../../../core/ai/pageContext";
@@ -135,6 +135,8 @@ function ActionRow(
 
 export function Settings() {
   const [setupParams] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
   const setupWorkBuddy = setupParams.get("setup") === "workbuddy";
   const runtime = useAiRuntime();
   const [info, setInfo] = useState<ProductInfo | null>(null);
@@ -318,7 +320,13 @@ export function Settings() {
 
   return (
     <div>
-      {setupWorkBuddy && <WorkBuddySetup onDone={() => setConfigured(true)} />}
+      {setupWorkBuddy && <WorkBuddySetup onDone={(message) => {
+        setConfigured(true);
+        say(message);
+        const params = new URLSearchParams(location.search);
+        params.delete("setup");
+        navigate({ pathname: location.pathname, search: params.toString(), hash: location.hash }, { replace: true, state: location.state });
+      }} />}
       <PageHeader
         title="接入 AI"
         subtitle="模型与连接" description="连接订阅或 API 后就能用：AI 会按问题需要联网搜索、取数和计算，也能跑六阶段研究、多空辩论和回测。"

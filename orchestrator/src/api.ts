@@ -250,7 +250,8 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       // 设置页手动指定 WorkBuddy 位置:{"path": "D:\\Program Files\\WorkBuddy"};{"path": null} = 恢复自动检测
       if (req.method === "POST" && url.pathname === "/local-agents/codebuddy/path") {
         const b = await readBody(req);
-        return send(res, 200, await setCodeBuddyLocation(ctx, Object.hasOwn(b, "path") ? b.path : undefined));
+        if (Object.hasOwn(b, "require_ready") && typeof b.require_ready !== "boolean") throw new ServiceError("bad_agent_path", "require_ready 必须是布尔值");
+        return send(res, 200, await setCodeBuddyLocation(ctx, Object.hasOwn(b, "path") ? b.path : undefined, process.env, b.require_ready === true));
       }
       // 设置页的选填凭据(垂类声明,见 Plugin.savedCredentials):GET 只给来源和打码后的样子;POST {<字段>: 值},值为 null = 清除
       if (parts[0] === "settings" && parts.length === 2 && parts[1] && savedCredential(parts[1])) {

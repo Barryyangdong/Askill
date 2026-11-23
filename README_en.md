@@ -6,7 +6,7 @@ Askill is a local research workspace for China's A-share market. Follow an indus
 
 **Player Analysis** compares competition standings and disclosed trades across trading days. **Trader Distillation** lets you study a trader's methods against dated examples and counterexamples. You can connect WorkBuddy, Claude Code, Codex, or a compatible model API for research and interpretation.
 
-[Run from source](#quick-start) · [Screenshots](#screenshots) · [WorkBuddy setup](skills/askill/SKILL.md)
+[Run from source](#quick-start) · [Screenshots](#screenshots) · [Import the WorkBuddy skill](#workbuddy-skill)
 
 The data layer exposes 193 data endpoints.
 
@@ -305,6 +305,22 @@ The proxy checks the browser origin before normalizing it. Remote model endpoint
 See [model access and LAN boundaries](docs/model-access.md#5-自托管模型局域网与远程访问) (Chinese).
 
 </details>
+
+<a id="workbuddy-skill"></a>
+
+## Install Askill with WorkBuddy
+
+1. [Download the Askill skill package](https://raw.githubusercontent.com/Barryyangdong/Askill/main/assets/askill/Askill-WorkBuddy.zip) and keep it zipped. GitHub's **Code → Download ZIP** contains the full project source.
+2. Open **技能 → 添加技能 → 上传技能** in WorkBuddy and select `Askill-WorkBuddy.zip`.
+3. In your workspace, ask: “Use the Askill skill to install and start Askill. Reuse my existing checkout if present, connect WorkBuddy, and verify one reply in the workbench.” Complete any sign-in requested by the selected client.
+
+To import a skill you have edited, rebuild the ZIP from the project root with Python 3.11 or later, then upload it using the same steps.
+
+```bash
+python skills/askill/scripts/package-workbuddy.py --output ../Askill-WorkBuddy.zip
+```
+
+[Skill instructions and deployment guide](skills/askill/SKILL.md)
 
 ## Quick start
 

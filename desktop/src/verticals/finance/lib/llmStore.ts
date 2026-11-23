@@ -84,7 +84,11 @@ export function readAiRuntime(): AiRuntimeRead {
   } catch {
     return { status: "unavailable", config: null };
   }
-  if (!raw) return { status: "none", config: null };
+  return parseAiRuntime(raw);
+}
+
+export function parseAiRuntime(raw: string | null): AiRuntimeRead {
+  if (raw === null) return { status: "none", config: null };
   try {
     const parsed = JSON.parse(raw) as Partial<LlmConfig> & Partial<AiRuntimeConfig>;
     // 旧的平铺配置只在用户下次保存时才写回 v2，避免打开页面就修改密钥存储。

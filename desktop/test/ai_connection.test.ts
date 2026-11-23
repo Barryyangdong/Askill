@@ -4,7 +4,43 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { API_MODELS, PROVIDER_BASE, SUBSCRIPTION_MODELS } from "../src/verticals/finance/lib/ai-models.ts";
-import { aiConnectionLabel, subscriptionConfig, testAndSaveAi } from "../src/verticals/finance/lib/aiConnection.ts";
+import { aiConnectionLabel, connectWorkBuddy, subscriptionConfig, testAndSaveAi } from "../src/verticals/finance/lib/aiConnection.ts";
+
+test("自动接入保留损坏、无法读取和其他来源的浏览器配置", async () => {
+  for (const value of ["", "{", '{"provider":"deepseek","apiKey":"recoverable"}', JSON.stringify(subscriptionConfig("cli-codex"))]) {
+    const result = await connectWorkBuddy({
+      read: () => value,
+      probe: () => assert.fail("must not probe"),
+      save: () => assert.fail("must not overwrite existing storage"),
+    });
+    assert.equal(result.ok, false);
+  }
+  const unreadable = await connectWorkBuddy({
+    read: () => { throw new Error("blocked"); },
+    probe: () => assert.fail("must not probe"),
+    save: () => assert.fail("must not save"),
+  });
+  assert.equal(unreadable.ok, false);
+  assert.match(unreadable.message, /存储权限/);
+});
+
+test("首次 WorkBuddy 自动接入测试并保存，重新访问保留原配置且不再调用模型", async () => {
+  let stored: string | null = null;
+  let probes = 0, saves = 0;
+  const actions = {
+    read: () => stored,
+    probe: async () => { probes++; return { ok: true as const }; },
+    save: (source: ReturnType<typeof subscriptionConfig>) => { saves++; stored = JSON.stringify({ schemaVersion: 2, source }); },
+  };
+  const first = await connectWorkBuddy(actions);
+  assert.equal(first.ok, true);
+  assert.match(first.message, /通过真实连接测试/);
+  const second = await connectWorkBuddy(actions);
+  assert.equal(second.ok, true);
+  assert.match(second.message, /已保存/);
+  assert.equal(probes, 1);
+  assert.equal(saves, 1);
+});
 
 test("接入标签按来源显示，不泄露模型密钥或地址", () => {
   for (const status of ["none", "broken", "unavailable"] as const) assert.equal(aiConnectionLabel({ status, config: null }), "未接入AI，请设置");

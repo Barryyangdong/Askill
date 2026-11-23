@@ -732,6 +732,26 @@ test("手动指定位置:保存后各入口都按它找;清除回到自动检测
   assert.equal(findExecutable("codebuddy", env), bin);
   assert.equal(executableCandidates("codebuddy", env)[0], bin, "保存的位置排在 PATH 与自动检测前面");
 
+  // Automation checks the exact proposed executable before changing either persisted or active selection.
+  const previous = fs.readFileSync(file, "utf8");
+  const unavailable = async (candidateEnv: NodeJS.ProcessEnv) => {
+    assert.equal(candidateEnv.CODEBUDDY_BIN, other.bin);
+    assert.equal(findExecutable("codebuddy", env), bin);
+    return { ...status, status: "not_authenticated" as const, available: false, authenticated: false };
+  };
+  const rejected = await saveCodeBuddyLocation(dataRoot, other.bin, env, unavailable, true);
+  assert.equal(rejected.available, false);
+  assert.equal(fs.readFileSync(file, "utf8"), previous);
+  await assert.rejects(saveCodeBuddyLocation(dataRoot, other.bin, env, async () => { throw new Error("失联"); }, true), /失联/);
+  assert.equal(fs.readFileSync(file, "utf8"), previous);
+  assert.equal(findExecutable("codebuddy", env), bin);
+  const accepted = await saveCodeBuddyLocation(dataRoot, other.bin, env, async candidateEnv => {
+    assert.equal(candidateEnv.CODEBUDDY_BIN, other.bin);
+    return status;
+  }, true);
+  assert.equal(accepted.custom_path, true);
+  assert.equal(findExecutable("codebuddy", env), other.bin);
+  await saveCodeBuddyLocation(dataRoot, bin, env, async () => status, true);
   // 研究子进程 / 体检是另起的进程:启动时从同一个数据根读进来
   loadSavedAgentPaths(path.join(root, "absent"));
   assert.notEqual(findExecutable("codebuddy", env), bin);
@@ -864,6 +884,8 @@ test("#56 自动找到未登录独立版时，卡片与调用都选择已登录�
   assert.deepEqual(f.calls(f.bundled), [...probes, ...probes, "-p"], "实际回答仍由卡片检测的内置版执行");
   assert.equal(fs.existsSync(path.join(f.bundled.dir, "executed")), true);
   assert.equal(fs.existsSync(path.join(f.standalone.dir, "executed")), false);
+  assert.ok(!("cli_path" in status), "HTTP status must omit the local executable path");
+  assert.equal((await localAgentRuntime.probeCodeBuddyForSetup(f.env, f.candidates)).cli_path, f.bundled.bin);
 });
 
 test("#56 Windows 固定候选未登录后才查询系统登记，卡片与调用选择已登录的自定义安装", async (t) => {
@@ -940,6 +962,7 @@ test("#56 CODEBUDDY_BIN 或设置页指定未登录程序时，卡片与调用�
     const env = source === "env" ? { ...f.env, CODEBUDDY_BIN: f.standalone.bin } : f.env;
     const status = await realProbeCodeBuddy(env, candidates);
     assert.equal(status.status, "not_authenticated");
+    assert.equal((await localAgentRuntime.probeCodeBuddyForSetup(env, candidates)).cli_path, f.standalone.bin);
     assert.equal(status.custom_path, source === "saved");
     assert.equal(status.saved_path, source === "saved");
     await assert.rejects(realRunLocalAgent("codebuddy", { systemPrompt: "规则", userPrompt: "hello", env }, candidates),

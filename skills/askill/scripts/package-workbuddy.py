@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from zipfile import ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 
 def build(output: Path) -> dict:
@@ -24,9 +24,13 @@ def build(output: Path) -> dict:
     resources = ["references/deployment.md", "scripts/configure-workbuddy.mjs", "scripts/install-codebuddy.mjs", "scripts/login-codebuddy.mjs", "scripts/verify-source.mjs"]
     output.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(output, "w", ZIP_DEFLATED) as archive:
-        archive.writestr("SKILL.md", packaged.encode("utf-8"))
-        for name in resources:
-            archive.write(root / name, name)
+        # The downloadable package should reproduce across checkout times and platforms.
+        for name in ["SKILL.md", *resources]:
+            content = packaged if name == "SKILL.md" else (root / name).read_text(encoding="utf-8")
+            entry = ZipInfo(name)
+            entry.create_system = 3
+            entry.external_attr = 0o100644 << 16
+            archive.writestr(entry, content.encode("utf-8"), compress_type=ZIP_DEFLATED)
     with ZipFile(output) as archive:
         assert archive.testzip() is None
         assert set(archive.namelist()) == {"SKILL.md", *resources}

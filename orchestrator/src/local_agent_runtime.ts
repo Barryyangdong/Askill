@@ -38,6 +38,7 @@ export interface LocalAgentStatus {
   version: string | null;
   status: "ready" | "not_installed" | "not_authenticated" | "probe_failed";
   detail: string;
+  cli_kind?: "bundled" | "standalone";
   /** 正在用设置页里手动指定的位置(只有 WorkBuddy / CodeBuddy 有这一项) */
   custom_path?: boolean;
   /** 设置页存着一个手动指定的位置 —— 不管现在还找不找得到;页面据此给出「恢复自动检测」(环境变量锁定时为 false) */
@@ -475,26 +476,38 @@ const insideDir = (child: string, parent: string) => {
 };
 const realpathOr = (value: string) => { try { return fs.realpathSync.native(value); } catch { return path.resolve(value); } };
 
+export function resolveSavableCodeBuddyLocation(dataRoot: string, input: string, env: NodeJS.ProcessEnv): string {
+  const bin = resolveCodeBuddyLocation(input, env);
+  // 数据根是页面能往里写文件的地方:指向那里面的程序,等于让页面决定后台运行什么
+  if (insideDir(realpathOr(bin), realpathOr(dataRoot))) {
+    throw new LocalAgentError("bad_agent_path", "不能指定到产品数据目录里的程序");
+  }
+  return bin;
+}
+
 /**
  * 设置页「指定 WorkBuddy 位置」:解析 → 写 <数据根>/local-agents.json → 重新检测并返回状态。
  * input 为 null / 空 = 清除,回到自动检测。检测不通过也照样保存:状态卡会如实显示卡在哪一步。
  * 环境变量 CODEBUDDY_BIN 设了就以它为准,页面不能改。
  */
 export async function saveCodeBuddyLocation(dataRoot: string, input: string | null, env: NodeJS.ProcessEnv = process.env,
-  probe: (env: NodeJS.ProcessEnv) => Promise<LocalAgentStatus> = probeCodeBuddy): Promise<LocalAgentStatus> {
+  probe: (env: NodeJS.ProcessEnv) => Promise<LocalAgentStatus> = probeCodeBuddy, requireReady = false): Promise<LocalAgentStatus> {
   if (String(env.CODEBUDDY_BIN ?? "").trim()) {
     throw new LocalAgentError("agent_path_env_locked", "CodeBuddy 的位置已由环境变量 CODEBUDDY_BIN 指定；要改请改这个变量");
   }
   const file = path.join(dataRoot, AGENT_PATHS_FILE);
   if (input === null || !String(input).trim()) {
+    if (requireReady) throw new LocalAgentError("bad_agent_path", "自动接入必须指定已验证的 CLI 文件");
     fs.rmSync(file, { force: true });
     savedCodeBuddyBin = null;
     return probe(env);
   }
-  const bin = resolveCodeBuddyLocation(input, env);
-  // 数据根是页面能往里写文件的地方:指向那里面的程序,等于让页面决定后台运行什么
-  if (insideDir(realpathOr(bin), realpathOr(dataRoot))) {
-    throw new LocalAgentError("bad_agent_path", "不能指定到产品数据目录里的程序");
+  const bin = resolveSavableCodeBuddyLocation(dataRoot, input, env);
+  let checked: LocalAgentStatus | undefined;
+  if (requireReady) {
+    if (bin !== input) throw new LocalAgentError("bad_agent_path", "自动接入需使用已验证的 CLI 文件路径");
+    checked = await probe({ ...env, CODEBUDDY_BIN: bin });
+    if (!checked.available || checked.status !== "ready") return checked;
   }
   fs.mkdirSync(dataRoot, { recursive: true });
   const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
@@ -502,7 +515,7 @@ export async function saveCodeBuddyLocation(dataRoot: string, input: string | nu
   try { fs.renameSync(tmp, file); }
   catch (error) { fs.rmSync(tmp, { force: true }); throw error; }
   savedCodeBuddyBin = bin;
-  return probe(env);
+  return checked ? { ...checked, ...codeBuddyPathFlags(bin, env) } : probe(env);
 }
 
 /** Mirrors npm read-cmd-shim's $basedir target lookup, restricted to Node shims.
@@ -984,10 +997,17 @@ async function resolveCodeBuddyRuntime(
   return { bin, inspected };
 }
 
-/** 只公开 CodeBuddy 版本与登录布尔；控制响应中的账号和 token 不离开本进程。 */
+/** The API omits machine paths. Local Skill handoffs need the actual selected executable. */
 export async function probeCodeBuddy(
   env: NodeJS.ProcessEnv = process.env, candidates: WorkBuddyCandidateSource = workBuddyFallbackCandidates,
 ): Promise<LocalAgentStatus> {
+  const { cli_path: _localPath, ...status } = await probeCodeBuddyForSetup(env, candidates);
+  return status;
+}
+
+export async function probeCodeBuddyForSetup(
+  env: NodeJS.ProcessEnv = process.env, candidates: WorkBuddyCandidateSource = workBuddyFallbackCandidates,
+): Promise<LocalAgentStatus & { cli_path?: string }> {
   let bin = await locateCodeBuddy(env, process.platform, undefined, { retryMiss: true });
   if (!bin) {
     return {
@@ -1010,6 +1030,7 @@ export async function probeCodeBuddy(
     const authenticated = inspected.runtime.login !== null;
     return {
       provider: "cli-codebuddy", name: "WorkBuddy / CodeBuddy", installed: true, authenticated, custom_path, saved_path,
+      cli_path: bin, cli_kind: isWorkBuddyBundledCli(bin) ? "bundled" : "standalone",
       available: authenticated, version, status: authenticated ? "ready" : "not_authenticated",
       detail: authenticated
         ? "已检测到 CodeBuddy CLI 账号；真实对话测试通过后才完成接入"

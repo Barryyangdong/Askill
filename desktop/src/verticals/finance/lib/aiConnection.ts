@@ -1,5 +1,5 @@
 import { SUBSCRIPTION_MODELS } from "./ai-models.ts";
-import type { AiRuntimeRead, LlmConfig } from "./llmStore.ts";
+import { parseAiRuntime, type AiRuntimeRead, type LlmConfig } from "./llmStore.ts";
 
 const SOURCE_LABELS: Record<string, string> = {
   "cli-codex": "Codex订阅版", "cli-claude": "Claude订阅", "cli-codebuddy": "WorkBuddy CLI",
@@ -34,10 +34,29 @@ interface ConnectionActions {
 /** Settings and home share the same probe-before-save contract. Never overwrite a newer choice. */
 export async function testAndSaveAi(config: LlmConfig, actions: ConnectionActions, signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
-  const previous = actions.read();
+  await probeAndSave(config, actions, actions.read(), signal);
+}
+
+async function probeAndSave(config: LlmConfig, actions: ConnectionActions, previous: string | null, signal?: AbortSignal) {
   const probe = await actions.probe(config, signal);
   signal?.throwIfAborted();
   if (probe.ok !== true) throw new Error("连接测试未成功，请重试");
   if (actions.read() !== previous) throw new Error("AI 接入配置已在其他页面更改，请重新确认当前选择");
   actions.save(config);
+}
+
+/** Automatic setup may initialize empty storage only; a manual choice belongs to the user. */
+export async function connectWorkBuddy(actions: ConnectionActions, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  let previous: string | null;
+  try { previous = actions.read(); }
+  catch { return { ok: false, message: "浏览器无法读取 AI 配置。请检查本地存储权限后重试。" }; }
+  const runtime = parseAiRuntime(previous);
+  if (runtime.status === "broken") return { ok: false, message: "浏览器已有 AI 配置，但无法解析。请先在设置中核对原配置。" };
+  if (runtime.config) {
+    if (runtime.config.source.provider === "cli-codebuddy") return { ok: true, message: "此浏览器已保存 WorkBuddy 接入，可返回工作台使用。" };
+    return { ok: false, message: "此浏览器已配置其他 AI。如需切换，请在下方选择 WorkBuddy 并测试保存。" };
+  }
+  await probeAndSave(subscriptionConfig("cli-codebuddy"), actions, previous, signal);
+  return { ok: true, message: "WorkBuddy 已通过真实连接测试并保存，可返回工作台使用。" };
 }

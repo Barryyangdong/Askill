@@ -6,7 +6,7 @@
 
 **选手分析**可以按交易日对照比赛榜单和公开披露的交易。**游资蒸馏**把交易方法放回当时的市场环境，用历史案例和反例检验适用条件。个股研究、多空观点与历史验证支持接入 WorkBuddy、Claude Code、Codex 或兼容的模型 API。
 
-[从源码启动](#快速开始) · [查看实际界面](#界面预览) · [WorkBuddy 部署](skills/askill/SKILL.md)
+[从源码启动](#快速开始) · [查看实际界面](#界面预览) · [导入 WorkBuddy 技能](#workbuddy-skill)
 
 行情与研究取数覆盖 193 个数据端点。
 
@@ -304,6 +304,22 @@ HTTP 不加密，API key、研究资料和交易记录可能明文传输；不�
 详见[模型接入与局域网边界](docs/model-access.md#5-自托管模型局域网与远程访问)。
 
 </details>
+
+<a id="workbuddy-skill"></a>
+
+## 用 WorkBuddy 安装短线王
+
+1. [下载短线王技能包 Askill-WorkBuddy.zip](https://raw.githubusercontent.com/Barryyangdong/Askill/main/assets/askill/Askill-WorkBuddy.zip)，保留 ZIP 格式。GitHub「Code → Download ZIP」提供的是整个项目的源码。
+2. 打开 WorkBuddy，选择「技能 → 添加技能 → 上传技能」，选中刚下载的 `Askill-WorkBuddy.zip`。
+3. 在要使用的工作空间发送「用短线王技能安装并启动 Askill。已有项目就复用，接入 WorkBuddy 后，在工作台验证一次对话。」如需登录，按当前客户端的提示完成本人授权。
+
+自己修改过技能时，可以在项目根目录用 Python 3.11 或更高版本重新打包，再按上面的步骤导入。
+
+```bash
+python skills/askill/scripts/package-workbuddy.py --output ../Askill-WorkBuddy.zip
+```
+
+[查看技能说明和部署流程](skills/askill/SKILL.md)
 
 ## 快速开始
 

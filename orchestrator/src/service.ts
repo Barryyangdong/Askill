@@ -1268,14 +1268,14 @@ export async function localAgents(ctx: ServiceContext, env: NodeJS.ProcessEnv = 
 
 /** 设置页手动指定 / 清除 WorkBuddy 的位置(#50:装在自动检测找不到的盘或文件夹)。返回重新检测后的状态。 */
 export async function setCodeBuddyLocation(ctx: Pick<ServiceContext, "dataRoot">, input: unknown,
-  env: NodeJS.ProcessEnv = process.env): Promise<LocalAgentStatus> {
+  env: NodeJS.ProcessEnv = process.env, requireReady = false): Promise<LocalAgentStatus> {
   // 远程访问模式:保存位置会立刻在这台机器上运行那个程序(查版本与能力),不能交给拿到分享链接的人决定
   if (env.VRA_REMOTE === "1") {
     throw new ServiceError("remote_forbidden", "远程访问模式下不能在页面里修改 WorkBuddy 的位置：请部署者用环境变量 CODEBUDDY_BIN 指定后重启");
   }
   if (input !== null && typeof input !== "string") throw new ServiceError("bad_agent_path", "位置必须是文字路径");
   try {
-    return await saveCodeBuddyLocation(ctx.dataRoot, input, env);
+    return await saveCodeBuddyLocation(ctx.dataRoot, input, env, undefined, requireReady);
   } catch (error) {
     if (error instanceof LocalAgentError) throw new ServiceError(error.code, error.message);
     throw error;
