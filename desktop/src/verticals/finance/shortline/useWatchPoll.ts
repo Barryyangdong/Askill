@@ -1,6 +1,6 @@
 /**
  * 盯盘 · 实时动态的轮询。做法照 hooks/useLiveQuotes.ts:
- * - 递归 setTimeout:上一次回来再等,请求永不叠加;等多久听后端回的 `poll_ms`(连续竞价 3 秒,竞价 / 午休 15 秒,其余 60 秒);
+ * - 递归 setTimeout:请求永不叠加，成功后从目标间隔扣除请求耗时，至少等待 500ms；目标听后端 `poll_ms`;
  * - 页面切走时停(后台不再取行情,异动也就不判断),切回来立刻问一次;
  * - 失败退避:连续失败间隔翻倍,上限 30 秒;成功复位。上一次的内容留着,但标出「这次没取到」。
  */
@@ -45,6 +45,7 @@ export function useWatchPoll(): WatchPoll {
     let failures = 0;
     let lastMs: number | null = null;
     let inFlight = false;
+    let first = true;
     const clear = () => { if (timer !== null) { window.clearTimeout(timer); timer = null; } };
 
     const loop = async () => {
@@ -57,9 +58,13 @@ export function useWatchPoll(): WatchPoll {
       }
       setLive(true);
       inFlight = true;
+      const started=Date.now();
+      let dataUpdating = false;
       ctl = new AbortController();
       try {
-        const v = await backend.shortlineWatchPoll<WatchView>(ctl.signal);
+        const v = await backend.shortlineWatchPoll<WatchView>(ctl.signal, first);
+        first = false;
+        dataUpdating = v.updating === true;
         if (cancelled) return;
         setData(v);
         setError(null);
@@ -74,7 +79,7 @@ export function useWatchPoll(): WatchPoll {
         inFlight = false;
       }
       if (cancelled) return;
-      timer = window.setTimeout(loop, nextDelay(lastMs, failures));
+      timer = window.setTimeout(loop, failures ? nextDelay(lastMs, failures) : dataUpdating ? 500 : Math.max(500,nextDelay(lastMs, failures)-(Date.now()-started)));
     };
     kick.current = () => { void loop(); };
     void loop();

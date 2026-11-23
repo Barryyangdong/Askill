@@ -46,6 +46,8 @@ interface ModelTurn {
 export interface GuidedToolDeps {
   chat: typeof chatSend;
   runTool: (name: string, body: unknown) => Promise<unknown>;
+  onPhase?: (phase:'catalog'|'plan'|'execute'|'compose')=>void;
+  onOutput?: (value:unknown)=>void;
 }
 
 const SESSION_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
@@ -59,7 +61,7 @@ const OUTPUT_SCHEMA = {
   required: ["status", "message", "title", "question", "hypothesis", "logic", "tool_args_json", "document"],
   properties: {
     status: { type: "string", enum: ["needs_input", "ready", "complete"] },
-    message: { type: "string", maxLength: 1200 },
+    message: { type: "string", minLength: 1, maxLength: 1200, pattern: "\\S" },
     title: { type: "string", maxLength: 160 },
     question: { type: "string", maxLength: 2000 },
     hypothesis: { type: "string", maxLength: 3000 },
@@ -82,6 +84,7 @@ const INSTRUCTIONS = [
   "信息齐全时：status=ready；title/question/hypothesis/logic 填完整；tool_args_json 必须是可解析的 JSON 对象字符串，只放工具需要的参数；document 留空。",
   "服务端随后会把工具的真实返回再发给你。收到成功结果后：status=complete，基于真实返回写完整 Markdown 报告；不得补造返回中没有的数字。",
   "报告必须覆盖：问题、假设、执行逻辑、数据与口径、核心结果、限制与可验证结论。只报告验证结果，不给动作建议。",
+  "报告正文以 600–1000 字为目标，六个部分各用短段落或要点，只摘取少量关键结果，不重复抄录整张工具明细表；保留必要的口径、缺口与限制。message 用一句话提示当前结果，不得留空。",
   "工具拒绝执行或返回错误时：status=needs_input，解释原因并只追问修正所需的信息，不得写成已完成。",
   "运行错误不等于用户参数有错；没有确定依据时，不要猜测用户需要改变什么。应说明本次失败、尚不能给出结果。",
   "只输出符合 schema 的 JSON。",
@@ -173,7 +176,16 @@ async function ask(
   context: string,
   llm: LlmOverride | undefined,
   deps: GuidedToolDeps,
+  phase: "plan" | "report",
 ): Promise<ModelTurn> {
+  // Narrow the same output contract to the current phase. Planning must not
+  // generate a long report before the tool has actually executed.
+  const schema = { ...OUTPUT_SCHEMA, properties: { ...OUTPUT_SCHEMA.properties,
+    status: { type: "string", enum: phase === "plan" ? ["needs_input", "ready"] : ["needs_input", "complete"] },
+    ...(phase === "plan" ? { document: { type: "string", const: "" } } : { tool_args_json: { type: "string", const: "" } }),
+  } };
+  const validPhase = new AjvCtor({ strict: false }).compile(schema);
+  const deadline=Date.now()+180_000;
   let correction = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     opts.signal?.throwIfAborted();
@@ -182,8 +194,12 @@ async function ask(
       turn = await deps.chat({
         ...opts,
         maxMessage: 32_000,
-        developerInstructions: `${INSTRUCTIONS}\n产品内部禁用表达（所有文本字段都不得复述，改用中性的历史事实或参数描述）：${JSON.stringify(gatePatterns())}${correction}`,
-        outputSchema: OUTPUT_SCHEMA,
+        // A correction shares this phase's budget rather than starting another long wait.
+        timeoutMs: Math.max(1,deadline-Date.now()),
+        reasoningEffort: phase === "plan" ? "medium" : "low",
+        ...(phase === "report" ? {thinkingEnabled:false} : {}),
+        developerInstructions: `${INSTRUCTIONS}\n本轮为${phase === "plan" ? "执行前规划，document 必须为空；不要预写结果或报告" : "工具返回后的报告阶段，tool_args_json 必须为空；不要重新设计参数或重跑工具"}。\n产品内部禁用表达（所有文本字段都不得复述，改用中性的历史事实或参数描述）：${JSON.stringify(gatePatterns())}${correction}`,
+        outputSchema: schema,
         preambleText: "",
         skipGate: true,
         contextText: context,
@@ -195,11 +211,15 @@ async function ask(
     opts.signal?.throwIfAborted();
     try {
       const parsed = parseModel(turn.reply);
+      if ((phase === "plan" && parsed.status === "complete") || (phase === "report" && parsed.status === "ready")) {
+        throw new GuidedToolError("bad_agent_state", "Agent 返回了与工具执行阶段冲突的状态");
+      }
+      if (!validPhase(parsed)) throw new GuidedToolError("bad_agent_output", "Agent 输出不符合当前执行阶段");
       // Gate every user-visible field before execution/return, not just message.
       for (const text of [parsed.message, parsed.title, parsed.question, parsed.hypothesis, ...parsed.logic, parsed.document]) assertVisible(text);
       return parsed;
     } catch (e) {
-      if (!(e instanceof GuidedToolError) || attempt === 1) throw e;
+      if (!(e instanceof GuidedToolError) || attempt === 1 || e.code === "bad_agent_state") throw e;
       // Retry only this model response, never the real tool. No field filling,
       // JSON repair, gate weakening, or switch to another model source.
       correction = `\n【唯一一次格式修正】上一条输出未通过 ${e.code}。重新回答本轮问题，必须符合全部 schema 与产品边界；不改变已执行的工具结果，不编造字段或数字。`;
@@ -219,11 +239,13 @@ export async function guidedToolTurn(
   if (!message || message.length > 4_000) throw new GuidedToolError("bad_message", "消息必须为 1–4000 个字符");
 
   opts.signal?.throwIfAborted();
+  deps.onPhase?.('catalog');
   const catalog = await deps.runTool(req.name, { action: "catalog" });
   opts.signal?.throwIfAborted();
   const context = `【工具】${req.label}\n【真实能力说明】\n${safeJson(catalog, "工具能力说明")}`;
   const threadSession = `guided-${crypto.createHash("sha256").update(`${req.name}\0${req.session}`).digest("hex").slice(0, 20)}`;
-  const first = await ask(opts, threadSession, message, context, req.llm, deps);
+  deps.onPhase?.('plan');
+  const first = await ask(opts, threadSession, message, context, req.llm, deps, "plan");
   opts.signal?.throwIfAborted();
   assertVisible(first.message);
   if (first.status === "needs_input") return { status: "needs_input", message: first.message };
@@ -234,7 +256,9 @@ export async function guidedToolTurn(
 
   const args = parseArgs(first.tool_args_json);
   // 垂类声明的界面参数由服务端合并、覆盖模型给的同名字段：要不要画图数据不由模型决定
+  deps.onPhase?.('execute');
   const toolResult = await deps.runTool(req.name, { ...args, ...(req.uiArgs ?? {}) });
+  deps.onOutput?.(toolResult);
   opts.signal?.throwIfAborted();
   const explicitFailure = object(toolResult) && toolResult.ok === false;
   const disclosures = explicitFailure ? [] : requiredDisclosures(toolResult);
@@ -244,7 +268,12 @@ export async function guidedToolTurn(
   const follow = explicitFailure
     ? `【工具没有完成任务】\n${safeJson(forAgent(toolResult), "工具返回")}\n请解释原因并追问修正所需的信息，status 必须是 needs_input。`
     : `【工具已执行，以下是唯一可用的真实结果】\n${safeJson(forAgent(toolResult), "工具返回")}${disclosureInstruction}\n请据此完成报告，status 必须是 complete。`;
-  const second = await ask(opts, threadSession, follow, context, req.llm, deps);
+  // Reporting uses only the confirmed plan and actual result. Replaying the
+  // capability catalog/history here adds hypothetical examples and asks the
+  // model to reconsider choices that the tool has already executed.
+  const reportContext = `【已确认的任务】\n${safeJson({title: first.title, question: first.question, hypothesis: first.hypothesis, logic: first.logic}, "任务说明")}`;
+  deps.onPhase?.('compose');
+  const second = await ask(opts, `${threadSession}-report`, follow, reportContext, req.llm, deps, "report");
   opts.signal?.throwIfAborted();
   assertVisible(second.message);
   if (explicitFailure) {

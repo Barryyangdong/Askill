@@ -32,8 +32,9 @@ def test_catalog_names_actual_request_fields():
     assert schema["required"] == ["codes", "start", "end"]
     assert schema["properties"]["codes"]["type"] == "array"
     assert set(schema["properties"]) == {
-        "codes", "start", "end", "style", "strategy", "params", "initial_cash", "allow_short",
+        "codes", "start", "end", "style", "strategy", "params", "initial_cash", "allow_short", "holdout_start",
     }
+    assert schema["properties"]["holdout_start"]["format"] == "date"
     # 基准和图表不是参数，但必须写进能力说明，否则 Agent 会告诉用户「做不了」
     from backtest.loader import INDEX_BENCHMARKS
     outputs = catalog["outputs"]

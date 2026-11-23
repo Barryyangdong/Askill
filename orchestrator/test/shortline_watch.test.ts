@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import "../src/finance/register.ts";
 import "../src/finance/register_tasks.ts";
-import { ServiceError, ledgerSnapshot, ledgerUpsert, type ServiceContext } from "../src/service.ts";
+import { ServiceError, ledgerSnapshot, ledgerUpsert, ledgerRemove, type ServiceContext } from "../src/service.ts";
 import {
   COOLDOWN_MS, alertsFile, detect, pnlPct, inSessionQuote, loadAlerts, myStocks, newDetectState, phaseOf, pollMsOf, resetWatchState,
   shortlineWatchAct, shortlineWatchAlerts, sourcesOf, wquotesOf, type WQuote,
@@ -318,5 +318,163 @@ test("异动回看:坏行跳过;日期要合法、不能是以后;写动作只�
     await assert.rejects(shortlineWatchAlerts(ctx, { date: "2026-10-13" }, signal, sh("10:00")), /还没到/);
     await assert.rejects(shortlineWatchAct(ctx, { action: "capture" }, signal), /只能是 poll/);
     assert.ok(listViews().some((v) => v.id === "shortline_watch"));
+  } finally { clean(ctx); }
+});
+
+test("成交额名单不等大票名单，但仍使用梯队样本日", async () => {
+  const ctx = tmpCtx();
+  const w = world();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let turnoverStarted!: () => void;
+  const started = new Promise<void>((resolve) => { turnoverStarted = resolve; });
+  const fetch: typeof w.fetch = async (c, req) => {
+    if (req.endpoint === "cn_shortline_bigcaps") await gate;
+    if (req.endpoint === "cn_shortline_turnover_top") turnoverStarted();
+    return w.fetch(c, req);
+  };
+  try {
+    const pending = shortlineWatchAct(ctx, { action: "poll" }, signal, { fetch, clock: dial("10:00").clock });
+    await Promise.race([started, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("成交额请求被大票阻塞")), 1000))]);
+    assert.equal(w.calls.find((c) => c.endpoint === "cn_shortline_turnover_top")?.args?.date, PREV);
+    release();
+    await pending;
+    assert.equal(w.calls.filter((c) => c.endpoint === "cn_shortline_bigcaps").length, 1);
+    assert.equal(w.calls.filter((c) => c.endpoint === "cn_shortline_turnover_top").length, 1);
+  } finally { release(); clean(ctx); }
+});
+
+test("重挂载近期快照立即返回并更新，同目录同日隔离", async () => {
+  const ctx = tmpCtx(), other = tmpCtx();
+  const w = world(), c = dial("10:00");
+  try {
+    const initial = await poll(ctx, w, c);
+    c.set("10:00:04");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const fetch: typeof w.fetch = async (x, req) => {
+      if (req.endpoint === "tx_quotes_batch") { entered(); await gate; }
+      return w.fetch(x, req);
+    };
+    const stale = await shortlineWatchAct(ctx, { action: "poll", snapshot: true }, signal, { fetch, clock: c.clock });
+    assert.equal(stale.updating, true);
+    assert.equal(stale.snapshot_at, sh("10:00").toISOString());
+    assert.equal(stale.clock, initial.clock);
+    await started;
+    const pending = shortlineWatchAct(ctx, { action: "poll" }, signal, { fetch, clock: c.clock });
+    release();
+    assert.equal((await pending).updating, undefined);
+    const separate = await shortlineWatchAct(other, { action: "poll", snapshot: true }, signal, { fetch: w.fetch, clock: c.clock });
+    assert.equal(separate.updating, undefined);
+
+  } finally { clean(ctx); clean(other); }
+});
+
+test("重挂载快照与普通轮询的受控延迟计时", async () => {
+  const a = tmpCtx(), b = tmpCtx(), c = dial("10:00"), w = world();
+  let calls = 0;
+  const fetch: typeof w.fetch = async (ctx, req) => {
+    calls++;
+    if (req.endpoint === "tx_quotes_batch") await new Promise((resolve) => setTimeout(resolve, 150));
+    return w.fetch(ctx, req);
+  };
+  try {
+    await shortlineWatchAct(a, { action: "poll" }, signal, { fetch, clock: c.clock });
+    await shortlineWatchAct(b, { action: "poll" }, signal, { fetch, clock: c.clock });
+    c.set("10:00:04");
+    calls = 0;
+    let start = performance.now();
+    await shortlineWatchAct(a, { action: "poll" }, signal, { fetch, clock: c.clock });
+    const ordinary = performance.now() - start, ordinaryCalls = calls;
+    calls = 0; start = performance.now();
+    const snap = await shortlineWatchAct(b, { action: "poll", snapshot: true }, signal, { fetch, clock: c.clock });
+    const snapshot = performance.now() - start, snapshotCalls = calls;
+    assert.equal(snap.updating, true);
+    await shortlineWatchAct(b, { action: "poll" }, signal, { fetch, clock: c.clock });
+    console.log(`受控报价延迟150ms: 普通=${ordinary.toFixed(2)}ms/${ordinaryCalls}调用, 快照=${snapshot.toFixed(2)}ms/${snapshotCalls}调用(后台继续)`);
+  } finally { clean(a); clean(b); }
+});
+
+test("台账身份变更不复用快照或旧在途名单", async () => {
+  const ctx = tmpCtx(), w = world(), c = dial("10:00");
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    const watch = ledgerUpsert(ctx, { kind: "watch", record: { symbol: "000001", name: "合成自选" } });
+    const held = ledgerUpsert(ctx, { kind: "position", record: { symbol: "000002", name: "合成持仓", shares: 100, cost: 10 } });
+    await poll(ctx, w, c);
+    c.set("10:00:04");
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const slow: typeof w.fetch = async (x, req) => {
+      if (req.endpoint === "tx_quotes_batch") { entered(); await gate; }
+      return w.fetch(x, req);
+    };
+    const old = shortlineWatchAct(ctx, { action: "poll" }, signal, { fetch: slow, clock: c.clock });
+    await started;
+    ledgerRemove(ctx, { kind: "watch", id: watch.id });
+    ledgerRemove(ctx, { kind: "position", id: held.id });
+    const current = await shortlineWatchAct(ctx, { action: "poll", snapshot: true }, signal, { fetch: w.fetch, clock: c.clock });
+    assert.equal(current.updating, undefined);
+    assert.deepEqual(current.watchlist, []);
+    assert.deepEqual(current.holdings, []);
+    release(); const oldResult = await old;
+    assert.deepEqual(oldResult.watchlist, []);
+    assert.deepEqual(oldResult.holdings, []);
+    const afterOld = await poll(ctx, w, c);
+    assert.deepEqual(afterOld.watchlist, []);
+    assert.deepEqual(afterOld.holdings, []);
+  } finally { release(); clean(ctx); }
+});
+
+test("台账增删与成本修改立即生效，公开名单和数据根隔离", async () => {
+  const ctx = tmpCtx(), other = tmpCtx(), w = world();
+  let now = sh("10:00"); const clock = () => now;
+  const get = (root: ServiceContext, snapshot = false) => shortlineWatchAct(root, { action: "poll", snapshot }, signal, { fetch: w.fetch, clock });
+  w.prices["600825"] = { price: 12 };
+  w.prices["000002"] = { price: 12 };
+  try {
+    const watch = ledgerUpsert(ctx, { kind: "watch", record: { symbol: "600825", name: "自选" } });
+    const held = ledgerUpsert(ctx, { kind: "position", record: { symbol: "000002", name: "持仓", shares: 100, cost: 10 } });
+    const first = await get(ctx);
+    assert.equal(first.holdings[0]?.pnl_pct, 20);
+    ledgerRemove(ctx, { kind: "watch", id: watch.id });
+    ledgerUpsert(ctx, { kind: "position", record: { ...held, cost: 6 } });
+    const changed = await get(ctx, true);
+    assert.deepEqual(changed.watchlist, []);
+    assert.equal(changed.holdings[0]?.pnl_pct, 100);
+    assert.ok(changed.ladder?.rows.some((r) => r.code === "600825"), "公开梯队仍保留同一股票");
+    const added = ledgerUpsert(ctx, { kind: "watch", record: { symbol: "000003", name: "新增" } });
+    const next = await get(ctx);
+    assert.deepEqual(next.watchlist.map((r) => r.code), ["000003"]);
+    assert.equal(next.watchlist[0]?.price, null);
+    const trade = ledgerUpsert(ctx, { kind: "trade", record: { symbol: "000004", name: "流水持仓", type: "opening", date: DAY, shares: 100, price: 8 } });
+    assert.ok((await get(ctx)).holdings.some((r) => r.code === "000004"));
+    ledgerRemove(ctx, { kind: "trade", id: trade.id });
+    assert.ok(!(await get(ctx, true)).holdings.some((r) => r.code === "000004"));
+    const separate = await get(other, true);
+    assert.deepEqual(separate.watchlist, []); assert.deepEqual(separate.holdings, []);
+    ledgerRemove(ctx, { kind: "watch", id: added.id });
+    now = sh("10:00", "2026-10-13");
+    const dayAfter = await get(ctx, true);
+    assert.equal(dayAfter.updating, undefined);
+    assert.deepEqual(dayAfter.watchlist, []);
+  } finally { clean(ctx); clean(other); }
+});
+
+test("删除私人来源后历史异动不回流，公开来源仍保留", async () => {
+  const ctx = tmpCtx(), w = world(), c = dial("10:00");
+  try {
+    const watch = ledgerUpsert(ctx, { kind: "watch", record: { symbol: "600825", name: "合成" } });
+    const file = alertsFile(ctx.dataRoot, DAY);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const alert = { ts: "10:00:00", code: "600825", name: "合成", kind: "急拉", change_pct: 2, price: 12, pct: 2, msg: "测试", sources: ["自选", "昨日4板"] };
+    fs.writeFileSync(file, JSON.stringify(alert) + "\n");
+    assert.deepEqual((await poll(ctx, w, c)).alerts[0]?.sources, ["自选", "昨日4板"]);
+    ledgerRemove(ctx, { kind: "watch", id: watch.id });
+    const after = await shortlineWatchAct(ctx, { action: "poll", snapshot: true }, signal, { fetch: w.fetch, clock: c.clock });
+    assert.deepEqual(after.alerts[0]?.sources, ["昨日4板"]);
   } finally { clean(ctx); }
 });

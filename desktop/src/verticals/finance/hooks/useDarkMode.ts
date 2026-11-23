@@ -1,21 +1,10 @@
-import { useEffect, useState } from "react";
+// 兼容层：旧版只有深浅两态，现在扩展成四主题。
+// 老代码里的 useDarkMode 仍可用，但实际走 useTheme。
+import { useTheme } from "./useTheme";
 
-import { storageGet, storageSet } from "@/lib/storage";
-
-// 恢复公开版暖橙主题，保留既有深浅主题选择。
-// 机制：亮色时给 <html> 加 .light（暗色为无类名的默认态）。
 export function useDarkMode() {
-  const [dark, setDark] = useState(() => {
-    const saved = storageGet("vr-theme");
-    if (saved) return saved === "dark";
-    return true; // 默认暗色
-  });
-
-  useEffect(() => {
-    document.documentElement.classList.toggle("light", !dark);
-    document.documentElement.classList.toggle("dark", dark);
-    storageSet("vr-theme", dark ? "dark" : "light");
-  }, [dark]);
-
-  return { dark, toggle: () => setDark((d) => !d) };
+  const { theme, setTheme } = useTheme();
+  const dark = theme === "dark" || theme === "original";
+  const toggle = () => setTheme(dark ? "light" : "dark");
+  return { dark, toggle };
 }

@@ -1,6 +1,7 @@
 ﻿param([switch]$SkipDoctor)
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+$env:PYTHONUTF8 = "1"
 Set-Location $root
 
 function Assert-NativeSuccess([string]$Step) {
@@ -15,8 +16,16 @@ Assert-NativeSuccess "Node 运行时预检"
 $venvPython = Join-Path $root ".venv\Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {
   if (Get-Command py -ErrorAction SilentlyContinue) {
-    & py -3.12 -c "import sys" 2>$null
-    if ($LASTEXITCODE -eq 0) { & py -3.12 -m venv .venv; Assert-NativeSuccess "创建 Python 3.12 虚拟环境" }
+    # Windows PowerShell converts redirected native stderr into a terminating
+    # error under Stop, preventing the supported Python 3 fallback.
+    $probePreference = $ErrorActionPreference
+    $hasPython312 = $false
+    try {
+      $ErrorActionPreference = "Continue"
+      & py -3.12 -c "import sys" 2>$null
+      $hasPython312 = $LASTEXITCODE -eq 0
+    } finally { $ErrorActionPreference = $probePreference }
+    if ($hasPython312) { & py -3.12 -m venv .venv; Assert-NativeSuccess "创建 Python 3.12 虚拟环境" }
     else { & py -3 -m venv .venv; Assert-NativeSuccess "创建 Python 3 虚拟环境" }
   }
   elseif (Get-Command python -ErrorAction SilentlyContinue) { & python -m venv .venv; Assert-NativeSuccess "创建 Python 虚拟环境" }
@@ -43,4 +52,4 @@ if (-not $SkipDoctor) {
   if ($doctorExit -eq 2) { Write-Warning "产品体检有待处理警告；安装已完成，请按上方提示处理。" }
 }
 
-Write-Host "Windows 初始化完成。运行 scripts\start.cmd 打开 Vibe AStock。" -ForegroundColor Green
+Write-Host "Windows 初始化完成。运行 scripts\start.cmd 打开工作台。" -ForegroundColor Green

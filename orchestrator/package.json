@@ -19,6 +19,7 @@
     "ajv": "^8.17.1",
     "mammoth": "^1.12.1",
     "pdfjs-dist": "^6.2.108",
+    "playwright-core": "1.65.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

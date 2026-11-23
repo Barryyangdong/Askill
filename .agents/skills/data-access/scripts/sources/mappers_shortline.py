@@ -488,7 +488,7 @@ def shortline_turnover_top_map(result: dict, ctx: dict) -> dict:
         a.num("turnover_rank", st["rank"], "名", key=k, note=n)
         a.num("close", st.get("close"), "元", key=k, note=n)
         a.num("change_pct", st.get("pct"), "%", key=k, note=n + "；收盘价 ÷ 前收 − 1")
-    extra = {"date": day, "top": result.get("top"), "text": render_turnover_top(result), "result": result,
+    extra = {"date": day, "source_close_date": day, "top": result.get("top"), "text": render_turnover_top(result), "result": result,
              "computation": _computation("shortline_watch.build_turnover_top", {"date": day, "top": result.get("top")}, note=f"通达信盘后包 {result.get('source_url')}")}
     return a.finish(True, extra, "成交额前 N 一只都没有")
 

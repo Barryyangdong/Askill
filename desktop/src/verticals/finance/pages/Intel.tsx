@@ -1,5 +1,8 @@
+import { digestIdentity } from "../lib/digestIdentity";
+import { intelReturnLocation, workbenchRestore } from "../lib/workbenchIntel";
+import { EventsStatus } from "../components/EventsStatus";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { TrendingUp, FileText, Newspaper, Rss, RefreshCw, Loader2, ExternalLink, AlertCircle, Sparkles, Lightbulb, Star } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -26,7 +29,7 @@ const TABS = [
   { key: "events", label: "事件概率", icon: TrendingUp, integrated: true, desc: "全球宏观预期概率 —— 预测市场的公开定价（Polymarket / Kalshi），只读、免登录" },
 ];
 
-interface Digest { loading?: boolean; text?: string; err?: string; needKey?: boolean }
+interface Digest { loading?: boolean; text?: string; err?: string; needKey?: boolean; sources?: string; generation?: string }
 interface TitleTranslation {
   status: "running" | "done" | "partial" | "need-key";
   done: number;
@@ -36,6 +39,7 @@ interface TitleTranslation {
 
 function InvestmentNewsPanel() {
   const [active, setActive] = useState("ai");
+  const digestRuns = useRef(new Map<string, number>());
   const [digests, setDigests] = useState<Record<string, Digest>>({});
   const [bulk, setBulk] = useState<{ running: boolean; done: number; total: number }>({ running: false, done: 0, total: 0 });
   const [titleTranslations, setTitleTranslations] = useState<Record<string, TitleTranslation>>({});
@@ -129,26 +133,29 @@ function InvestmentNewsPanel() {
   }, [cur, data?.generated_at, hasData, refreshing, translateIndustry]);
 
   const genDigest = async (ind: Industry) => {
-    if (!hasLlm()) { setDigests((d) => ({ ...d, [ind.key]: { needKey: true } })); return; }
-    setDigests((d) => ({ ...d, [ind.key]: { loading: true } }));
-    const ctx = ind.items.slice(0, 25).map((it) => `[${it.time}] ${it.source}｜${displayedHeadlineTranslation(it, translationCache.current) || it.title}`).join("\n");
-    // 资讯放在页面数据那一段：放进问题里，英文标题没翻译时 25 条就超过手打问题的 4000 字上限
-    const prompt =
-      `根据页面数据里「${ind.name}」赛道的近期资讯，提炼「今日要点」3-5 条：每条一句话（≤40 字），` +
-      `只客观陈述重要事件 / 趋势，不推荐标的、不预测涨跌、不构成建议。直接用「- 」列点，不要多余前后缀。`;
+    const generation = data?.generated_at ?? "unknown";
+    const key = digestIdentity(ind);
+    const run = (digestRuns.current.get(key) ?? 0) + 1;
+    digestRuns.current.set(key, run);
+    const update = (digest: Digest) => { if (digestRuns.current.get(key) === run) setDigests(d => ({ ...d, [key]: digest })); };
+    if (!hasLlm()) { update({ needKey: true }); return; }
+    const items = ind.items.slice(0, 25);
+    const sources = items.map(it => `- ${it.time} ${it.source}｜${it.title}｜${it.url}`).join("\n");
+    update({ loading: true, sources, generation });
+    const ctx = items.map(it => `[${it.time}] ${it.source}｜${displayedHeadlineTranslation(it, translationCache.current) || it.title}`).join("\n");
+    const prompt = `根据页面数据里「${ind.name}」赛道的近期资讯，提炼「今日要点」3-5 条：每条一句话（≤40 字），只客观陈述重要事件 / 趋势，不推荐标的、不预测涨跌、不构成建议。直接用「- 」列点，不要多余前后缀。`;
     try {
       let acc = "";
       await chatStream([{ role: "user", content: prompt }], `${ind.name}赛道资讯：\n${ctx}`, {
-        onDelta: (t) => { acc += t; setDigests((d) => ({ ...d, [ind.key]: { text: acc } })); },
+        onDelta: t => { acc += t; update({ loading: true, text: acc, sources, generation }); },
       });
-    } catch (e) {
-      setDigests((d) => ({ ...d, [ind.key]: { err: e instanceof ApiError ? e.message : "生成失败" } }));
-    }
+      update({ text: acc, sources, generation });
+    } catch (e) { update({ err: e instanceof ApiError ? e.message : "生成失败", sources, generation }); }
   };
 
   // 一键提炼全部赛道要点（串行，带进度；单赛道按需的按钮仍保留）
   const genAll = async () => {
-    if (!hasLlm()) { if (cur) setDigests((d) => ({ ...d, [cur.key]: { needKey: true } })); return; }
+    if (!hasLlm()) { if (cur) void genDigest(cur); return; }
     const targets = industries.filter((i) => i.items.length > 0);
     setBulk({ running: true, done: 0, total: targets.length });
     for (const ind of targets) {
@@ -158,7 +165,7 @@ function InvestmentNewsPanel() {
     setBulk((b) => ({ ...b, running: false }));
   };
 
-  const dg = cur ? digests[cur.key] : undefined;
+  const dg = cur ? digests[digestIdentity(cur)] : undefined;
   const tr = cur ? titleTranslations[cur.key] : undefined;
 
   return (
@@ -200,7 +207,7 @@ function InvestmentNewsPanel() {
         </div>
       )}
 
-      {!hasData && !err ? (
+      {!hasData && !err && !loading ? (
         <div className="rounded-lg border border-dashed border-border/70 p-8 text-center text-sm text-muted-foreground/70">
           还没有抓取资讯，点上方<b className="text-foreground">「刷新」</b>拉取（约 20-40 秒）。
         </div>
@@ -264,7 +271,7 @@ function InvestmentNewsPanel() {
                 ) : dg?.text ? (
                   <>
                     <div className="prose prose-sm dark:prose-invert max-w-none text-foreground"><ReactMarkdown remarkPlugins={[remarkGfm]} components={noRemoteImages}>{dg.text}</ReactMarkdown></div>
-                    <div className="mt-2"><SaveNoteButton kind="今日要点" title={`${cur.name} 今日要点`} content={dg.text} /></div>
+                    <div className="mt-2"><SaveNoteButton kind="今日要点" title={`${cur.name} 今日要点 · ${dg.generation}`} content={`${dg.text}\n\n资讯批次：${dg.generation}\n\n来源：\n${dg.sources ?? ""}`} /></div>
                   </>
                 ) : dg?.needKey ? (
                   <p className="text-sm text-muted-foreground">Agent 还没有可用模型。<Link to="/settings" className="text-primary">先选择模型</Link>，即可一键提炼本赛道今日要点。</p>
@@ -321,8 +328,8 @@ interface FeedRow { code: string; name: string; when: string; title: string; met
 interface Feed { rows: FeedRow[]; failed: string[] }
 const MAX_ROWS = 60;
 
-function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
-  const [codes, setCodes] = useState<string[]>(loadWatch);
+function WatchlistFeed({ kind, focused }: { kind: "filings" | "news"; focused?:string }) {
+  const [codes, setCodes] = useState<string[]>(()=>focused?[focused]:loadWatch());
   const [depNote, setDepNote] = useState<string | null>(null);
 
   // 打开先给存档、后台再刷：这里要按关注列表逐个拉，条数一多就是好几秒
@@ -377,7 +384,7 @@ function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
 
   // 刷新时顺便把关注列表重新读一遍（用户可能刚在别的页面加了自选）
   const refresh = () => {
-    const cs = loadWatch();
+    const cs = focused?[focused]:loadWatch();
     if (cs.join(",") !== codes.join(",")) setCodes(cs);   // 变了 → deps 变 → 自动重来
     else rerun();
   };
@@ -385,7 +392,7 @@ function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
   if (!codes.length) {
     return (
       <div className="rounded-lg border border-dashed border-border/70 p-8 text-center text-sm text-muted-foreground/70">
-        还没有关注股票。到<Link to="/daily-review" className="text-primary">「每日复盘」</Link>加自选（6 位代码），这里会汇总它们的{kind === "filings" ? "公告" : "新闻"}。
+        还没有关注股票。到<Link to="/my-stocks?tab=watch" className="text-primary">「自选与持仓」</Link>加自选（6 位代码），这里会汇总它们的{kind === "filings" ? "公告" : "新闻"}。
       </div>
     );
   }
@@ -394,7 +401,7 @@ function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
     <div>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Star className="h-3.5 w-3.5 text-primary/70" /> 关注 {codes.length} 只 · 共 {rows.length} 条{kind === "filings" ? "公告" : "新闻"}（近期）
+          <Star className="h-3.5 w-3.5 text-primary/70" /> {focused?`当前股票 ${focused}`:`关注 ${codes.length} 只`} · 共 {rows.length} 条{kind === "filings" ? "公告" : "新闻"}（近期）
           {/* 🔴 先给存档、后台刷 ⇒ 得让人看得出现在这一屏是哪一份 */}
           {refreshing && rows.length > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
@@ -450,6 +457,9 @@ export function Intel() {
   // 当前 Tab 由路由驱动（/intel/:tab），可以直接收藏、分享；侧栏只到资讯雷达这一级。不认识的参数回落到第一个
   const { tab: tabParam } = useParams();
   const navigate = useNavigate();
+  const [params]=useSearchParams();
+  const requested=params.get("symbol")??"";
+  const focused=/^\d{6}$/.test(requested)?requested:undefined;
   const tab = TABS.some((t) => t.key === tabParam) ? tabParam! : TABS[0]!.key;
   const cur = TABS.find((t) => t.key === tab)!;
 
@@ -462,11 +472,11 @@ export function Intel() {
 
   return (
     <div>
-      <PageHeader title="资讯雷达" subtitle="多来源资讯中心：AI 帮你跨源捞资讯、提炼要点" />
+      <PageHeader title="资讯雷达" subtitle="新闻 · 公告 · 事件" description="多来源资讯中心：AI 帮你跨源捞资讯、提炼要点" />
 
       <div className="mb-4 flex flex-wrap gap-2">
         {TABS.map(({ key, label, icon: Icon, integrated }) => (
-          <button key={key} onClick={() => navigate(`/intel/${key}`)}
+          <button key={key} onClick={() => navigate(`/intel/${key}${focused ? `?${params.toString()}` : ""}`)}
             className={cn("inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition-colors",
               tab === key ? "bg-primary/15 font-medium text-primary shadow-glow" : "text-muted-foreground hover:bg-muted/50")}>
             <Icon className="h-4 w-4" /> {label}
@@ -475,6 +485,7 @@ export function Intel() {
         ))}
       </div>
 
+      {focused&&["filings","news"].includes(cur.key)&&<div className="mb-3 flex items-center gap-3 text-xs"><span>仅查看 {focused}</span><button className="text-primary" onClick={()=>navigate(`/intel/${cur.key}`)}>查看全部自选</button><Link className="text-primary" to={intelReturnLocation(focused, workbenchRestore(params).group, workbenchRestore(params).firstSymbol ?? focused, params.get("groupSymbol"))}>返回个股工作台</Link></div>}
       <GlassCard glow>
         <div className="mb-3 flex items-center gap-2">
           <cur.icon className="h-5 w-5 text-primary" />
@@ -485,9 +496,9 @@ export function Intel() {
         {cur.key === "investment-news" ? (
           <InvestmentNewsPanel />
         ) : cur.key === "filings" ? (
-          <WatchlistFeed kind="filings" />
+          <WatchlistFeed key={`filings:${focused??"watch"}`} kind="filings" focused={focused} />
         ) : cur.key === "news" ? (
-          <WatchlistFeed kind="news" />
+          <WatchlistFeed key={`news:${focused??"watch"}`} kind="news" focused={focused} />
         ) : cur.key === "events" ? (
           <EventsPanel />
         ) : (
@@ -518,31 +529,12 @@ function EventsPanel() {
   const { data, err, loading, refreshing, staleNote, refresh } =
     useArchiveThenRefresh<MacroProbability>((r) => api.macroProbability(r), []);
 
-  if (loading) return <p className="mt-4 text-sm text-muted-foreground">正在取…（这一页还没有存档）</p>;
-  if (err) return <p className="mt-4 text-sm text-destructive">{err}</p>;
-  if (!data || data.items.length === 0)
-    return <p className="mt-4 text-sm text-muted-foreground">这一轮没取到合约报价（上游可能暂时不可用），不代表没有相关事件。</p>;
-
   const byTopic = new Map<string, MacroProbItem[]>();
-  for (const it of data.items) byTopic.set(it.topic, [...(byTopic.get(it.topic) ?? []), it]);
+  for (const it of data?.items ?? []) byTopic.set(it.topic, [...(byTopic.get(it.topic) ?? []), it]);
 
   return (
     <div className="mt-3">
-      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
-        <span>{`共 ${data.items.length} 份合约`}</span>
-        {data.partial && <span className="text-warning">· 部分源没取到，这不是完整清单</span>}
-        <span className="text-[11px] text-muted-foreground/60">{`更新于 ${data.updated}`}</span>
-        {refreshing && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
-            <Loader2 className="h-3 w-3 animate-spin" /> 刷新中（下面是上次的存档）
-          </span>
-        )}
-        {staleNote && <span className="text-[11px] text-warning">{staleNote}</span>}
-        <button onClick={refresh} disabled={refreshing}
-          className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-0.5 text-[11px] hover:text-foreground disabled:opacity-50">
-          <RefreshCw className="h-3 w-3" /> 刷新
-        </button>
-      </p>
+      <EventsStatus data={data} err={err} loading={loading} refreshing={refreshing} staleNote={staleNote} refresh={refresh} />
 
       {[...byTopic.entries()].map(([topic, items]) => (
         <div key={topic} className="mt-4">
@@ -579,7 +571,7 @@ function EventsPanel() {
       ))}
 
       {/* 🔴 护栏与数字同屏 —— 照抄取数层原话，不改写 */}
-      {data.how_to_read.length > 0 && (
+      {data && data.how_to_read.length > 0 && (
         <div className="mt-4 rounded-lg border border-border/60 bg-muted/20 p-3">
           <p className="mb-1 text-xs font-semibold text-muted-foreground">怎么读这组数</p>
           {data.how_to_read.map((h: string) => (

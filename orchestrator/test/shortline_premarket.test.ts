@@ -254,7 +254,7 @@ test("盘前提醒:前一交易日带日期现取连板天梯;公告 / 停牌 / 
   const m = r.messages[0]!;
   assert.equal(m.title, `盘前提醒 ${DAY}`);
   assert.equal(m.dedupeKey, `shortline_premarket:${DAY}`);
-  assert.equal(m.link, "/shortline");
+  assert.equal(m.link, `/shortline?date=${PREV}&reminder=premarket&reminderDay=${DAY}`);
   assert.deepEqual(m.lines, [
     "隔夜外围:道琼斯 +0.83% · 纳斯达克 +0.64% · 标普500 +0.59%(报价日 10-09);A50 期指 13729.16(较前结算 -0.17%,报价 10-10 05:14);美元兑人民币 6.6925(2026-10-09)",
     `${PREV} 连板 4 只:甲传媒 7板、甲股份 6天5板、乙科技 2板、丙光电 2板`,

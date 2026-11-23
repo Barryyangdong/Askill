@@ -26,8 +26,14 @@ for (const agent of ["claude", "codebuddy"] as const) {
         assert.equal(actual, agent);
         assert.equal(local.controlledMcp, undefined, "模型只组参数，不自己跑计算或取数");
         assert.ok(local.outputSchema);
-        assert.match(local.userPrompt, /真实能力说明/);
+        assert.equal(local.reasoningEffort, replies.length === 2 ? "medium" : "low", "规划与结果转写分别使用有界推理，不修改模型来源");
+        const schema = local.outputSchema as { properties: { message: { minLength: number; pattern: string } } };
+        assert.equal(schema.properties.message.minLength, 1);
+        assert.equal(new RegExp(schema.properties.message.pattern).test(" \n\t"), false);
+        assert.match(local.userPrompt, replies.length === 2 ? /真实能力说明/ : /已确认的任务/);
+        assert.ok(typeof local.timeoutMs === "number" && local.timeoutMs <= 180_000);
         if (replies.length === 1) {
+          assert.equal(local.thinkingEnabled,false);
           assert.match(local.userPrompt, /唯一可用的真实结果/);
           assert.match(local.userPrompt, /0.42/);
         }
@@ -86,7 +92,7 @@ test("报告格式失败只修正模型输出，不重跑真实工具", async ()
   assert.equal(toolCalls, 2);
 });
 
-for (const broken of ["非 JSON", model("ready", { title: "x".repeat(161) }),
+for (const broken of ["非 JSON", model("ready", { message: "" }), model("ready", { message: " \n\t" }), model("ready", { title: "x".repeat(161) }),
   model("ready", { logic: ["建议建仓"] }), model("ready", { extra: "unexpected" })]) {
   test(`结构或边界连续两次失败明确拒绝，不执行工具 (${broken.slice(0, 30)})`, async () => {
     let modelCalls = 0;
@@ -124,12 +130,19 @@ test("组参数期间取消，不再启动正式工具", async () => {
 test("条件齐备后真实调用工具，并用工具返回生成完整报告", async () => {
   const chats = [model("ready"), model("complete")];
   const calls: unknown[] = [];
+  const sessions: string[] = [];
   const deps: GuidedToolDeps = {
     chat: async (o, r) => {
       assert.ok(o.outputSchema, "每轮都必须带结构化输出约束");
       assert.match(String(o.developerInstructions), /追问/);
-      assert.match(String(o.contextText), /真实能力说明/);
-      if (chats.length === 1) assert.match(r.message, /唯一可用的真实结果/);
+      sessions.push(r.session!);
+      if (chats.length === 2) assert.match(String(o.contextText), /真实能力说明/);
+      else {
+        assert.match(r.message, /唯一可用的真实结果/);
+        assert.match(String(o.contextText), /已确认的任务/);
+        assert.match(String(o.contextText), /验证主题/);
+        assert.doesNotMatch(String(o.contextText), /choices|真实能力说明/);
+      }
       return { session: "x", reply: chats.shift()!, redacted: 0, duration_ms: 1 };
     },
     runTool: async (_name, body) => {
@@ -142,6 +155,7 @@ test("条件齐备后真实调用工具，并用工具返回生成完整报告",
   assert.equal(out.status, "complete");
   assert.equal(out.hypothesis, "历史样本可以验证该想法。");
   assert.match(out.report ?? "", /核心结果/);
+  assert.equal(new Set(sessions).size, 2, "报告不重放规划阶段的能力示例与会话历史");
   assert.deepEqual(calls, [{ action: "catalog" }, { start: "2020-01-01" }]);
 });
 

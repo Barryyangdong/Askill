@@ -3,9 +3,9 @@ import { Fragment, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { hideIf } from "@/lib/privacy";
+import { hideIf, maskPrivateText } from "@/lib/privacy";
 import {
-  boardText, money, moneySigned, pctSigned, ratePct, rowState, sharesText, tone,
+  boardText, maskJournalText, money, moneySigned, pctSigned, ratePct, rowState, sharesText, tone,
   type EnvRow, type EnvView, type JournalRow, type JournalView,
 } from "@/lib/journal";
 import { BTN_GHOST, GroupTable, Notes, Panel, Slot, Tile } from "./bits";
@@ -183,7 +183,7 @@ function TradeTable({ v, env, hide, act }: { v: Ready; env: Load<EnvView>; hide:
                     <td className="px-2 py-2"><EnvCell e={e} env={env} /></td>
                     <td className="whitespace-nowrap px-2 py-2 text-muted-foreground">{env.state === "loading" ? "…" : boardText(e)}</td>
                     <td className="max-w-[220px] px-2 py-2 text-muted-foreground">
-                      <span className="line-clamp-2" title={r.note}>{r.note}</span>
+                      <span className="line-clamp-2" title={hide ? maskPrivateText(maskJournalText(r.note, true)) : r.note}>{hide ? maskPrivateText(maskJournalText(r.note, true)) : r.note}</span>
                       {r.planned_stop !== null && (
                         <span className="block text-[10px] text-muted-foreground/80">
                           止损 {hideIf(hide, String(r.planned_stop))}{r.planned_target !== null && ` · 目标 ${hideIf(hide, String(r.planned_target))}`}

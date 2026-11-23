@@ -32,7 +32,7 @@ export function Sectors() {
     <div>
       <PageHeader
         title="产业研究"
-        subtitle={`${sectors.length} 个板块 · 每个都配好分步提示词：先读研报，再按栏目一页页梳理，由你的 AI 查资料完成`}
+        subtitle={`${sectors.length} 个板块 · 产业链研究`}
       />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">

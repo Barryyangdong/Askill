@@ -36,6 +36,22 @@ const DATE = { type: "string", anyOf: [{ maxLength: 0 }, { format: "date" }] };
 const TEXT = (max = 500) => ({ type: "string", maxLength: max });
 const NONEMPTY = (max = 500) => ({ type: "string", minLength: 1, maxLength: max, pattern: "\\S" });
 const COUNT = { type: "integer", minimum: 0 };
+const WORKSPACE_SOURCE = { type: "object", additionalProperties: false, required: ["page"], properties: {
+  page: { anyOf: [{enum: ["/research", "/backtest", "/debate", "/tasks", "/observations", "/workbench", "/intel", "/watch", "/watch/intraday", "/shortline", "/daily-review", "/modes", "/candidates", "/calendar", "/notes", "/my-stocks"]}, {type:"string",pattern:"^/(?:shortline|intel)/[A-Za-z0-9_-]+$",maxLength:120}] },
+  symbol: REQUIRED_SYMBOL, date: DATE, job: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$" },
+  run: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$" },
+  id: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$" },
+  mode: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$" },
+  pattern: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$" },
+  thesis: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$" },
+  message: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$" },
+  object: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$" },
+  kind: { enum: ["criterion", "thesis", "action"] }, due: DATE, reminderDay: DATE,
+  reminder: {enum:["close","premarket"]}, group: {enum:["1","2","3"]}, version: {type:"string",pattern:"^[1-9][0-9]{0,8}$"},
+  firstSymbol: REQUIRED_SYMBOL, groupSymbol: REQUIRED_SYMBOL,
+  tab: {type:"string",pattern:"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"},
+  anchor: {type:"string",pattern:"^#(?:observation|criterion)-[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"},
+} };
 
 /** AI 复盘 / 周报的一段:正文 + 数字核对(三档分开)+ 引到的证据行(「查看依据」) */
 const reviewSection = (ids: readonly string[]) => ({
@@ -100,7 +116,7 @@ export const FINANCE_ENUM_LABELS: Record<string, string> = {
   pending: "待判", met: "已达成", broken: "已触发", dropped: "已放弃",
   open: "待办", done: "已完成",
   review: "复盘", highlight: "今日要点", ask: "问 Agent", debate: "多空辩论", audit: "反思审计",
-  backtest: "回测", compare: "研究对比",
+  backtest: "回测", compare: "研究对比", research: "研究报告",
   opening: "期初持仓", buy: "买入", sell: "卖出", dividend: "现金分红", split: "送转 / 拆股",
   ...DIRECTION_LABELS,
   ...Object.fromEntries(VERIFY_METRICS.map((m) => [m.key, m.label])),
@@ -112,6 +128,17 @@ export const FINANCE_ENUM_LABELS: Record<string, string> = {
  *    自选、笔记、论点、判据、复盘这些可以给模型看。新增种类时想清楚放哪边。
  */
 export const FINANCE_LEDGER_KINDS: Record<string, LedgerKindDef> = {
+  plan_review: {
+    label: "计划执行复核", hiddenFromAssistant: true, managedWrites: true,
+    properties: {
+      criterion_id: NONEMPTY(80), symbol: SYMBOL,
+      outcome: {enum:["not_triggered","unexecuted","as_planned","deviation","unknown"]},
+      reason: NONEMPTY(2000),
+      trade_ids: {type:"array",maxItems:50,uniqueItems:true,items:NONEMPTY(80)},
+      snapshot: {type:"object"},
+    },
+    required:["criterion_id","outcome","reason","trade_ids","snapshot"],
+  },
   /** 用户手动记录已发生的清仓，不下单、不自动扣减另一张持有台账。 */
   closed_position: {
     label: "清仓记录",
@@ -202,8 +229,12 @@ export const FINANCE_LEDGER_KINDS: Record<string, LedgerKindDef> = {
   criterion: {
     label: "判据",
     properties: {
+      workspace_source: WORKSPACE_SOURCE,
       symbol: SYMBOL,
       thesis_id: TEXT(80),
+      pattern_source: { type: "object", additionalProperties: false, required: ["pattern", "run_id", "version", "name", "sample_date", "observed_at", "reason"], properties: {
+        pattern: {enum:["leader","first_board","weak_to_strong"]}, run_id: NONEMPTY(100), version: {type:"integer",minimum:1}, name: NONEMPTY(80), sample_date: DATE, observed_at: NONEMPTY(40), reason: TEXT(1000),
+      } },
       type: { type: "string", enum: ["decision_point", "falsifier"] },
       statement: NONEMPTY(1000),
       /** 到期日:裁决点通常有,证伪条件可以没有(它是随时可能触发的条件,不是日程) */
@@ -213,6 +244,9 @@ export const FINANCE_LEDGER_KINDS: Record<string, LedgerKindDef> = {
       /** 判定那天与判定时写的理由(事件日历页「判据回看」写入;改回待判时清掉) */
       judged_at: DATE,
       verdict_note: TEXT(1000),
+      rule: { type: "object", additionalProperties: false, required: ["metric", "operator", "value"], properties: {
+        metric: { enum: ["price", "pct", "amount_yuan"] }, operator: { enum: ["gte", "lte"] }, value: { type: "number" },
+      } },
     },
     required: ["type", "statement"],
   },
@@ -249,8 +283,9 @@ export const FINANCE_LEDGER_KINDS: Record<string, LedgerKindDef> = {
   note: {
     label: "研究记录",
     properties: {
+      workspace_source: WORKSPACE_SOURCE,
       symbol: SYMBOL,
-      category: { type: "string", enum: ["review", "highlight", "ask", "debate", "audit", "backtest", "compare"] },
+      category: { type: "string", enum: ["review", "highlight", "ask", "debate", "audit", "backtest", "compare", "research"] },
       title: NONEMPTY(160),
       /** markdown 正文；回测 / 多空辩论会保留完整多阶段报告，不能沿用短笔记的 2 万字上限。 */
       body: TEXT(100000),

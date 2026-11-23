@@ -37,7 +37,7 @@ from backtest.stdio_utf8 import force_utf8_stdio
 sys.path.insert(0, str(REPO_ROOT / ".agents" / "skills" / "data-access" / "scripts"))
 from sources.sina import apply_adjust, parse_adjust_factor_js  # noqa: E402
 
-PERIODS = {"day": "日线", "week": "周线", "month": "月线"}
+PERIODS = {"day": "日线", "week": "周线", "month": "月线", "m5": "5 分钟", "m15": "15 分钟", "m60": "60 分钟"}
 ADJUSTS = {"qfq": "前复权", "hfq": "后复权", "none": "不复权"}
 MA_WINDOWS = (5, 10, 20, 60)
 MARKET_LABELS = {"a_share": "A 股", "us_equity": "美股", "hk_equity": "港股"}
@@ -86,17 +86,30 @@ def _a_share(code: str, period: str, adjust: str, out_dir: Path) -> Dict[str, An
         _, is_stock = _a_lookup(six)
     except LoaderError:
         is_stock = True
-    span = A_SHARE_SPAN_DAYS[period]
+    minute = period in ("m5", "m15", "m60")
+    span = A_SHARE_SPAN_DAYS.get(period)
     today = _market_today("a_share")
     start = (today - timedelta(days=span)).isoformat() if span else A_SHARE_FIRST_DAY
     # 🔴 取**不复权**价，复权在下面用新浪因子做（原因见模块说明）
-    env = _run_fetch("tx_kline", code, {"period": period, "adjust": "", "start": start,
-                                        "end": today.isoformat()}, out_dir, sys.executable, FETCH_TIMEOUT)
+    args = {"period": period, "adjust": "", "count": 320} if minute else {"period": period, "adjust": "", "start": start, "end": today.isoformat()}
+    env = _run_fetch("tx_kline", code, args, out_dir, sys.executable, FETCH_TIMEOUT)
     _envelope_ok(env, "腾讯 K 线")
     refs = [r for r in (env.get("extra") or {}).get("raw_files") or [] if Path(r).name.startswith("extracted_")]
     if not refs:
         raise KlineError("腾讯 K 线信封里没有抽取后的序列文件")
     rows = (_read_raw(out_dir, refs[-1]).get("rows")) or []
+    if minute:
+        stamps = set()
+        for row in rows:
+            stamp = row.get("datetime")
+            try:
+                datetime.strptime(stamp, "%Y-%m-%d %H:%M")
+            except (TypeError, ValueError) as exc:
+                raise KlineError("分钟线时间格式无效") from exc
+            if stamp in stamps:
+                raise KlineError("分钟线存在重复时刻")
+            stamps.add(stamp)
+            row["date"], row["adjust"] = stamp, "none"
     want = f"{ex.lower()}{six}"
     got = {str(r.get("code") or "") for r in rows}
     if got != {want}:
@@ -104,6 +117,9 @@ def _a_share(code: str, period: str, adjust: str, out_dir: Path) -> Dict[str, An
     if {str(r.get("adjust") or "") for r in rows} != {"none"}:
         raise KlineError("腾讯 K 线返回的不是不复权价，无法再按复权因子换算")
     notes: List[str] = []
+    if minute:
+        notes.append("北京时间，最多最近 320 根不复权分钟线；最后一根可能尚未结束。不是完整历史分钟库，不能据此进行长期分钟回测。")
+        notes.append("分钟成交量可能由来源在下一交易日回填；涨跌幅相对上一根收盘，不是当日涨跌幅。")
 
     unit = _volume_unit(env)
     scale = {"股": 1, "手": 100}.get(unit or "")
@@ -171,14 +187,39 @@ def _yahoo(code: str, market: str, period: str, adjust: str, out_dir: Path) -> D
             "fetched_at": env.get("fetched_at"), "adjust": "split", "adjust_label": "拆股已调整（不含分红）", "notes": notes}
 
 
+def structure_series(series: Dict[str, Any]) -> Dict[str, Any]:
+    """Trailing-only descriptive readings, with full windows and explicit gaps."""
+    close = pd.Series(series["close"], dtype="float64")
+    high = pd.Series(series["high"], dtype="float64")
+    low = pd.Series(series["low"], dtype="float64")
+    opened = pd.Series(series["open"], dtype="float64")
+    volume = pd.Series(series["volume"], dtype="float64")
+    span = (high - low).where(high > low)
+    high20, low20 = high.rolling(20).max(), low.rolling(20).min()
+    width20 = (high20 - low20).where(high20 > low20)
+    previous_volume = volume.shift(1).rolling(5).mean()
+    mean20, std20 = close.rolling(20).mean(), close.rolling(20).std(ddof=0)
+    values = {
+        "range20": (close - low20) / width20,
+        "volume5": volume / previous_volume.where(previous_volume > 0),
+        "upper_wick": (high - pd.concat([opened, close], axis=1).max(axis=1, skipna=False)) / span,
+        "lower_wick": (pd.concat([opened, close], axis=1).min(axis=1, skipna=False) - low) / span,
+        "band_upper": mean20 + 2 * std20,
+        "band_middle": mean20,
+        "band_lower": mean20 - 2 * std20,
+    }
+    return {key: [_num(v, 6) for v in values] for key, values in values.items()}
+
+
 def build(req: Dict[str, Any], out_dir: Path) -> Dict[str, Any]:
     raw = req.get("symbol")
     if not isinstance(raw, str) or not raw.strip() or len(raw) > 20:
         raise KlineError("请给一个代码，如 600519 / AAPL / 00700.HK")
     period = req.get("period", "day")
     if period not in PERIODS:
-        raise KlineError("period 只能是 day / week / month")
-    adjust = req.get("adjust", "qfq")
+        raise KlineError("period 只能是 day / week / month / m5 / m15 / m60")
+    minute = period in ("m5", "m15", "m60")
+    adjust = req.get("adjust", "none" if minute else "qfq")
     if adjust not in ADJUSTS:
         raise KlineError("adjust 只能是 qfq / hfq / none")
     try:
@@ -186,6 +227,8 @@ def build(req: Dict[str, Any], out_dir: Path) -> Dict[str, Any]:
         market = market_of(code)
     except LoaderError as exc:
         raise KlineError(str(exc)) from exc
+    if minute and (market != "a_share" or adjust != "none"):
+        raise KlineError("分钟图仅支持沪深不复权行情，请选择不复权；港美股分钟图暂未接入")
     try:
         got = _a_share(code, period, adjust, out_dir) if market == "a_share" else _yahoo(code, market, period, adjust, out_dir)
     except LoaderError as exc:
@@ -208,6 +251,7 @@ def build(req: Dict[str, Any], out_dir: Path) -> Dict[str, Any]:
         # 收盘价简单移动平均；不够天数的位置是 None，不拿更短的窗口凑
         "ma": {str(n): [_num(v) for v in close.rolling(n).mean()] for n in MA_WINDOWS},
     }
+    series["structure"] = structure_series(series)
     i_hi = max(range(len(rows)), key=lambda i: series["high"][i] or float("-inf"))
     i_lo = min(range(len(rows)), key=lambda i: series["low"][i] if series["low"][i] is not None else float("inf"))
     notes = list(got["notes"])
@@ -237,7 +281,7 @@ CATALOG = {
                    "港美股走 Yahoo（拆股已调整、不含分红）。不支持北交所。只给行情，不给买卖点。",
     "parameters": {
         "symbol": "600519 / 600519.SH / AAPL / 00700.HK",
-        "period": "day（近 5 年）/ week（近 10 年）/ month（全部）",
+        "period": "day（近 5 年）/ week（近 10 年）/ month（全部）/ m5、m15、m60（沪深最近最多 320 根，只有不复权）",
         "adjust": "qfq 前复权 / hfq 后复权 / none 不复权（只对 A 股有效）",
         "charts": "true 时附整段序列（界面画图用）",
     },

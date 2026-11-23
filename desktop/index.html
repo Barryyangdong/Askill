@@ -3,14 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" sizes="96x96" href="/src/verticals/finance/lib/askill-logo.png?v=2" />
     <!-- 占位:真正的标题由组装根按注册进来的垂类品牌名写入(见 main.tsx)。
          🔴 别在这里写死栏目名 —— 这是 Core 的壳,换个行业不该改它。 -->
-    <title>Vibe AStock</title>
+    <title>短线王</title>
     <!-- 首帧就按上次选择上色,避免深色用户先闪一下白屏(令牌默认是浅色) -->
     <script>
       try {
-        var t = localStorage.getItem("vra-theme");
-        document.documentElement.dataset.theme = t === "light" ? "light" : "dark";
+        var _VALID = ["dark","light","tonghuashun","original"];
+        var _t = localStorage.getItem("askill-theme") || localStorage.getItem("vr-theme");
+        document.documentElement.dataset.theme = _VALID.indexOf(_t) >= 0 ? _t : "dark";
+        var _dark = (_t === "original" || _t !== "light" && _t !== "tonghuashun");
+        document.documentElement.classList.toggle("dark", _dark);
+        document.documentElement.classList.toggle("light", !_dark);
       } catch (e) {
         document.documentElement.dataset.theme = "dark";
       }

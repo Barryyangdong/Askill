@@ -8,7 +8,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import { currentPlugin } from "./plugin.ts";
-import { HOME_PREFIXES, gateRegexps, gateStagePatterns, packCriticalScripts, reportSections, stageCalcs, stageScripts, stageSlots, stages, fetchEnv,
+import { HOME_PREFIXES, packCriticalScripts, reportSections, stageCalcs, stageScripts, stageSlots, stages, fetchEnv,
   type RunConfig, type RunStatus, type Stage, type StageStatus } from "./config.ts";
 import { loadLedgerFromDisk, type Ledger } from "./fetchrun.ts";
 import { PLAN_REL, type EndpointDef, type PlanFile, type StagePlan } from "./registry.ts";
@@ -17,6 +17,8 @@ import { extraSectionErrors, requiredExtraSections } from "./report_sections.ts"
 import { checkNumberFidelity, quotedHistory, summarizeFidelityViolations, type FidelityResult } from "./number_fidelity.ts";
 import { resultProjection, type ResultProjectionItem } from "./calc_projection.ts";
 import { reportCitationErrors, type ReportSourceRef } from "./report_library.ts";
+import { stageComplianceErrors } from "./stage_gate.ts";
+export { proseStrings, stageComplianceErrors } from "./stage_gate.ts";
 
 /** 复算:对每条 calc 记录用同样的函数 / 实参 / 引用重新调用 calc cli,比对 id / status / value / unit / inputs_resolved 与退出码。*/
 export type CalcVerifier = (cfg: RunConfig, run: RunView) => ValidationResult;
@@ -360,30 +362,6 @@ export function validateStage(stage: Stage, run: RunView): ValidationResult {
   // ⇒ 建议写进 summary / notes / gaps[].detail 就能绕过产出红线(全审 r3-P1-2)。
   errors.push(...stageComplianceErrors(stage, so));
   return ok(errors, warnings);
-}
-
-/** 递归收集所有字符串**值**(不含键);id / 引用类字段跳过 —— 它们是标识符,不是自由文本 */
-// ⚠️ 只排除**真正受约束**的字段:id / 引用是格式化标识符,stage / status / reason_code 是枚举。
-// 🔴 `operation` 曾被误列在这里 —— 它 schema 上只要求"非空字符串",建议写进去就能绕过阶段 gate
-//    并原样进附录(修复复审 r1-P1-3)。判断标准是"这个字段的取值受不受控",不是"名字像不像标识符"。
-const NON_PROSE_KEYS = new Set(["evidence_ids", "calculation_ids", "raw_ref", "id", "calculation_id", "stage", "status", "reason_code"]);
-export function proseStrings(v: unknown, key = ""): string[] {
-  if (typeof v === "string") return NON_PROSE_KEYS.has(key) ? [] : [v];
-  if (Array.isArray(v)) return v.flatMap((x) => proseStrings(x, key));
-  if (v && typeof v === "object") return Object.entries(v as Record<string, unknown>).flatMap(([k, x]) => proseStrings(x, k));
-  return [];
-}
-
-/**
- * 阶段产物的合规检查。
- * ⚠️ 用的是**收窄后的**词表(`gateStagePatterns()`)+ 全部正则规则:直接套报告那份词表会拒掉
- * 免责声明与机构评级统计这类合法内容(实测 320 个真实产物 13 处误报,收窄后 0 处)。见 config.ts。
- * ⚠️ 刻意**按值递归**而不是枚举字段名 —— 枚举字段名会把垂类字段写进 Core,而且新增字段必然漏。
- */
-export function stageComplianceErrors(stage: string, so: unknown): string[] {
-  // 各段文字之间空一行:gate 按段落查跨行拼出来的词,不同字段的文字不能首尾拼在一起
-  const g = complianceGate(proseStrings(so).join("\n\n"), gateStagePatterns(), [], gateRegexps());
-  return g.hits.map((h) => `阶段 ${stage} 的产物文本触发产出红线(${h.pattern}):${h.text.slice(0, 100)}`);
 }
 
 /**

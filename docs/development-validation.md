@@ -29,6 +29,16 @@ npm run build --prefix desktop
 
 逐项检查退出码，不能把最后一项成功当作前面全部成功。平台跳过项、构建警告单独记载。
 
+Windows PowerShell 运行后端回归前，给测试指定本项目虚拟环境，避免落到不存在的 `python3` 命令：
+
+```powershell
+$env:VRA_PYTHON = (Resolve-Path .venv\Scripts\python.exe).Path
+$env:PYTHONUTF8 = "1"
+npm test --prefix orchestrator
+```
+
+Windows 文件符号链接安全测试需要操作系统赋予创建符号链接的权限，POSIX 命名管道测试需要对应系统能力。环境不具备时记录具体失败，不删除路径安全断言或伪造全部通过。
+
 `python -m mypy` 是 Python 类型检查，配置在仓库根目录 `mypy.ini`。mypy 不随产品安装，开发机装一次：
 `python -m pip install mypy==2.4.0`（与 CI 同版本）。
 

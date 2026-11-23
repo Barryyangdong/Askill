@@ -1,10 +1,17 @@
+import { JourneyLink } from "@/components/JourneyLink";
+import { StockDetail } from "@/components/StockDetail";
 /**
  * 盯盘 · 实时动态:持仓与自选、昨日梯队、大票、昨日成交额前十的当下读数,和盘中异动流。
  * 移植自 Vibe AStock v2.0.0 的「实时动态」「昨日梯队」两页(合成一页);异动规则同 VA:
  * 3 分钟内涨跌 ≥ 1.5% 记急拉 / 急跌,碰到 / 离开涨停价记封板 / 开板,同一只同一类 5 分钟不重复。
  * 只列客观读数,不排序打分、不给买卖倾向。
  */
-import { useState, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
+import { normalizeMarketSymbol } from "@/lib/marketSymbol";
+import { DataStamp } from "@/components/ui/DataStamp";
+import { storageGet, storageSet } from "@/lib/storage";
+import { PageTabs } from "@/components/ui/PageTabs";
+import { createContext, useContext, lazy, Suspense, useState, useEffect, useRef, type ReactNode } from "react";
 import { BarChart3, Building2, Layers, Radio, Wallet, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAiPage } from "../../../core/ai/pageContext";
@@ -12,7 +19,13 @@ import { Section } from "./FactsPanels";
 import { finite, pctColor, signed, yi } from "./format";
 import { GapsAndSource } from "./ViewBits";
 import { useWatchPoll } from "./useWatchPoll";
+import { quoteCoverage, quoteEpoch } from "./quoteCoverage";
 import type { AlertKind, LadderWatchRow, WatchAlert, WatchRow, WatchView } from "./watchTypes";
+
+const LazyKlineCard = lazy(() => import("@/components/KlineCard").then(m => ({ default: m.KlineCard })));
+const LazyObservationCards = lazy(() => import("@/components/ObservationCards").then(m => ({ default: m.ObservationCards })));
+const LazyStockComparison = lazy(() => import("@/components/StockComparison").then(m => ({ default: m.StockComparison })));
+const StockSelection = createContext<{ code: string | null; pick: (row: WatchRow) => void } | null>(null);
 
 export const THRESHOLDS = [1.5, 3, 5];
 export type Scope = "all" | "mine";
@@ -65,26 +78,46 @@ function Price({ r }: { r: WatchRow }) {
 }
 
 function Name({ r }: { r: WatchRow }) {
-  return <span className="whitespace-nowrap"><span className="font-medium">{r.name}</span> <span className="font-mono text-[11px] text-muted-foreground">{r.code}</span></span>;
+  const selection = useContext(StockSelection);
+  if (selection) return <span className="whitespace-nowrap"><button type="button" aria-label={`查看 ${r.name || r.code} 走势`} aria-pressed={selection.code === normalizeMarketSymbol(r.code)} onClick={() => selection.pick(r)} className="inline-flex min-h-11 min-w-11 items-center font-medium text-primary hover:underline md:min-h-0 md:min-w-0">{r.name || r.code}</button> <span className="font-mono text-[11px] text-muted-foreground">{r.code}</span></span>;
+  return <span className="whitespace-nowrap"><JourneyLink to={`/research?symbol=${encodeURIComponent(r.code)}`} className="font-medium hover:text-primary">{r.name}</JourneyLink> <span className="font-mono text-[11px] text-muted-foreground">{r.code}</span></span>;
 }
 
 type Col = { key: string; head: string; cell: (r: never) => ReactNode; className?: string };
 function StockTable<R extends WatchRow>({ rows, cols, empty, label }: { rows: R[]; cols: Col[]; empty: string; label: string }) {
-  if (!rows.length) return <p className="text-[13px] text-muted-foreground">{empty}</p>;
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState("original");
+  const shown = rows.filter(r => `${r.name} ${r.code}`.toLowerCase().includes(search.trim().toLowerCase()));
+  if (sort !== "original") shown.sort((a, b) => {
+    const av = finite(sort === "amount" ? a.amount_yuan : a.pct), bv = finite(sort === "amount" ? b.amount_yuan : b.pct);
+    if (av === null) return bv === null ? 0 : 1;
+    if (bv === null) return -1;
+    return sort === "asc" ? av - bv : bv - av;
+  });
+  if (!rows.length) return <div className="py-6 text-[13px] text-muted-foreground"><p>{empty}</p>
+    {(label === "自选" || label === "持仓") && <JourneyLink className="mt-3 inline-block rounded border border-border px-3 py-1.5 text-primary hover:bg-muted" to={`/my-stocks?tab=${label === "自选" ? "watch" : "hold"}`}>{label === "自选" ? "添加自选" : "管理持仓"}</JourneyLink>}
+  </div>;
   return (
     <div className="overflow-x-auto">
-      <table aria-label={label} className="w-full text-left text-[12px]">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <input aria-label={`筛选${label}`} placeholder="名称 / 代码" value={search} onChange={e => setSearch(e.target.value)} className="w-36 rounded border border-border bg-background px-2 py-1 text-xs" />
+        <select aria-label={`${label}排序`} value={sort} onChange={e => setSort(e.target.value)} className="rounded border border-border bg-background px-2 py-1 text-xs"><option value="original">默认顺序</option><option value="desc">涨幅优先</option><option value="asc">跌幅优先</option><option value="amount">成交额优先</option></select>
+        <span className="text-xs text-muted-foreground">{shown.length} / {rows.length} 只</span>
+      </div>
+      <table aria-label={label} className="data-table w-full text-left text-[12px]">
         <thead className="text-[11px] text-muted-foreground">
-          <tr>{cols.map((c) => <th key={c.key} className={cn("whitespace-nowrap px-2 py-1 font-medium", c.className)}>{c.head}</th>)}</tr>
+          <tr>{cols.map((c) => <th key={c.key} className={cn("whitespace-nowrap px-2 py-1 font-medium", c.className)}>{c.head}</th>)}<th className="px-2 py-1 text-right font-medium">报价时间</th></tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
+          {shown.map((r) => (
             <tr key={r.code} className="border-t border-border/40">
               {cols.map((c) => <td key={c.key} className={cn("whitespace-nowrap px-2 py-1", c.className)}>{(c.cell as (x: R) => ReactNode)(r)}</td>)}
+              <td className="whitespace-nowrap px-2 py-1 text-right font-mono text-muted-foreground" title={r.quote_time ?? "来源未提供时间"}>{quoteEpoch(r.quote_time) === null ? "未知" : new Date(quoteEpoch(r.quote_time)!).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}{!r.today && " · 非今日"}</td>
             </tr>
           ))}
         </tbody>
       </table>
+      {!shown.length && <p className="py-4 text-xs text-muted-foreground">没有匹配的股票</p>}
     </div>
   );
 }
@@ -114,14 +147,14 @@ function AlertFeed({ v, threshold, scope, onThreshold, onScope }: { v: WatchView
           ))}
         </div>
         <div role="group" aria-label="异动显示范围" className="inline-flex items-center gap-1 rounded-lg border border-border/60 p-0.5">
-          {([["all", "全部盯的票"], ["mine", "只看持仓与自选"]] as const).map(([k, label]) => (
+          {([["all", "全部"], ["mine", "持仓与自选"]] as const).map(([k, label]) => (
             <button key={k} type="button" aria-pressed={scope === k} onClick={() => onScope(k)}
               className={cn("rounded-md px-2 py-0.5", scope === k ? "bg-primary/15 font-medium text-primary" : "text-muted-foreground hover:text-foreground")}>
               {label}
             </button>
           ))}
         </div>
-        <span className="text-[11px] text-muted-foreground">只筛这一页;封板、开板一直显示。低于 {v.rules.surge_pct}% 的变动不记。</span>
+        <span className="text-[11px] text-muted-foreground">封板 / 开板不受幅度筛选限制</span>
       </div>
       {shown.length === 0 ? (
         <p role="status" className="text-[13px] text-muted-foreground">
@@ -154,11 +187,32 @@ export function LiveView({ v, threshold, scope, ladderMin, onThreshold, onScope,
   /** 页面切到后台:不再取行情,异动也不判断 */
   paused?: boolean;
 }) {
+  const [pool, setPoolState] = useState(() => {
+    const saved = storageGet("Askill-watch-pool");
+    return saved && ["ladder", "watchlist", "holdings", "bigcap", "turnover"].includes(saved) ? saved : "ladder";
+  });
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [observationOpen, setObservationOpen] = useState(false);
+  const [query, setQuery] = useSearchParams();
+  const previewOpener = useRef<HTMLElement | null>(null);
+  const code = normalizeMarketSymbol(query.get("symbol"));
+
+  const selected = code ? { code, name: [...v.watchlist, ...v.holdings, ...(v.ladder?.rows ?? []), ...(v.bigcap?.top ?? []), ...(v.bigcap?.bottom ?? []), ...(v.turnover?.rows ?? [])].find(r => normalizeMarketSymbol(r.code) === code)?.name ?? "" } : null;
+  const setSelected = (value: { code: string; name: string } | null) => setQuery(previous => {
+    const next = new URLSearchParams(previous);
+    if (value) next.set("symbol", value.code); else next.delete("symbol");
+    return next;
+  });
+  const setPool = (next: string) => { setSelected(null); setCompareOpen(false); setPoolState(next); storageSet("Askill-watch-pool", next); };
   const detecting = v.detecting && !paused;
   const ls = v.ladder ? ladderStats(v.ladder.rows) : null;
   const ladderRows = (v.ladder?.rows ?? []).filter((r) => r.boards >= ladderMin);
+  const poolRows = pool === "watchlist" ? v.watchlist : pool === "holdings" ? v.holdings : pool === "bigcap" ? [...(v.bigcap?.top ?? []), ...(v.bigcap?.bottom ?? [])] : pool === "turnover" ? v.turnover?.rows ?? [] : ladderRows;
+  const [coverageNow,setCoverageNow]=useState(Date.now);
+  useEffect(()=>{const timer=setInterval(()=>setCoverageNow(Date.now()),10000);return()=>clearInterval(timer);},[]);
+  const coverage = quoteCoverage(poolRows, Math.max(coverageNow,Date.now()));
   return (
-    <div className="space-y-4">
+    <StockSelection.Provider value={{ code: selected?.code ?? null, pick: row => { previewOpener.current = document.activeElement as HTMLElement; setCompareOpen(false); setObservationOpen(false); setSelected({ code: row.code, name: row.name }); } }}><div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2 text-[12px]">
         <span className={cn("inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5",
           detecting ? "border-danger/50 bg-danger/10 text-danger" : "border-border/60 text-muted-foreground")}>
@@ -169,20 +223,33 @@ export function LiveView({ v, threshold, scope, ladderMin, onThreshold, onScope,
           ? <span role="status" className="text-warning">页面在后台,已暂停刷新(北京时间 {v.clock} 的读数);切回来就接着取</span>
           : <span className="text-muted-foreground">北京时间 <b className="font-mono text-foreground">{v.clock}</b> · {v.detecting ? "每 3 秒刷新" : `每 ${Math.round(v.poll_ms / 1000)} 秒刷新`};实际时效以行情时间为准</span>}
         {error && <span role="alert" className="text-warning">这次没取到:{error}。先显示上一次的内容,稍后自动重试</span>}
+        {v.updating && <span role="status" className="text-warning">显示 {v.snapshot_at ? new Date(v.snapshot_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }) : "时间未知"} 的快照，正在更新</span>}
       </div>
 
-      <AlertFeed v={v} threshold={threshold} scope={scope} onThreshold={onThreshold} onScope={onScope} />
+      <DataStamp mode="quote" dataAt={v.quote_day} stale={Boolean(error)} />
+      <details className="rounded border border-border bg-card px-3 py-2 text-xs"><summary className="cursor-pointer">报价覆盖：{coverage.fresh}/{coverage.total} 只一分钟内 · 查看诊断</summary><div aria-label="当前池报价覆盖" className="mt-2 flex flex-wrap gap-x-5 gap-y-2">
+        <strong>当前池 {coverage.total} 只</strong><span>一分钟内 {coverage.fresh}</span><span>较早报价 {coverage.old}</span><span className={coverage.missing || coverage.unknown ? "text-warning" : "text-muted-foreground"}>缺价 {coverage.missing} · 时间未知 {coverage.unknown}</span><span className="text-muted-foreground">{v.detecting ? "按来源报价时间统计" : "非连续竞价，保留最近报价"} · 不代表全市场覆盖</span>
+      </div></details>
+      <div className={cn("watch-workspace", selected && "watch-workspace-selected")}>
+        <div className="watch-list min-w-0">
+          <PageTabs label="行情池" value={pool} onChange={setPool} options={[
+            { key: "ladder", label: "昨日梯队" }, { key: "watchlist", label: "自选" },
+            { key: "holdings", label: "持仓" }, { key: "bigcap", label: "大票" },
+            { key: "turnover", label: "成交额" },
+          ]} />
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Section icon={Wallet} title="持仓" hint="只列现价、今日涨跌和浮动盈亏 %;股数和成本在「自选与持仓」页。">
+
+
+      <div className="space-y-4" hidden={pool !== "holdings" && pool !== "watchlist"}>
+        <div hidden={pool !== "holdings"}><Section icon={Wallet} title="持仓" hint="只列现价、今日涨跌和浮动盈亏 %;股数和成本在「自选与持仓」页。">
           <StockTable label="持仓" rows={v.holdings} cols={[NAME, PRICE, PCT, PNL]} empty="还没有 A 股持仓(B 股、港美股不在这里盯)。" />
-        </Section>
-        <Section icon={Wallet} title="自选">
+        </Section></div>
+        <div hidden={pool !== "watchlist"}><Section icon={Wallet} title="自选">
           <StockTable label="自选" rows={v.watchlist} cols={[NAME, PRICE, PCT, AMOUNT]} empty="自选里还没有 A 股。在「自选与持仓」页加。" />
-        </Section>
+        </Section></div>
       </div>
 
-      <Section icon={Layers} title={v.ladder ? `昨日梯队(${v.ladder.sample_date} 涨停 ${v.ladder.rows.length} 只,最高 ${v.ladder.highest} 板)` : "昨日梯队"}
+      <div hidden={pool !== "ladder"}><Section icon={Layers} title={v.ladder ? `昨日梯队(${v.ladder.sample_date} 涨停 ${v.ladder.rows.length} 只,最高 ${v.ladder.highest} 板)` : "昨日梯队"}
         hint="上一个交易日收盘仍封在涨停的票,今天走得怎么样。「封住」= 现价在涨停价(只在连续竞价和收盘后说)。">
         {!v.ladder ? <p className="text-[13px] text-muted-foreground">昨日梯队这次没取到,看下面的说明。</p> : (
           <>
@@ -204,10 +271,10 @@ export function LiveView({ v, threshold, scope, ladderMin, onThreshold, onScope,
             <StockTable label="昨日梯队" rows={ladderRows} cols={[BOARDS, NAME, SECTOR, PRICE, PCT, SEAL]} empty="这个板位以上没有票。" />
           </>
         )}
-      </Section>
+      </Section></div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Section icon={Building2} title={v.bigcap ? `大票涨幅前十(500 亿以上 ${v.bigcap.total} 只)` : "大票涨幅前十"} hint="市值 500 亿以上的票每 30 秒取一次;下面附跌幅前五。">
+      <div className="space-y-4" hidden={pool !== "bigcap" && pool !== "turnover"}>
+        <div hidden={pool !== "bigcap"}><Section icon={Building2} title={v.bigcap ? `大票涨幅前十(500 亿以上 ${v.bigcap.total} 只)` : "大票涨幅前十"} hint="市值 500 亿以上的票每 30 秒取一次;下面附跌幅前五。">
           {!v.bigcap ? <p className="text-[13px] text-muted-foreground">大票名单这次没取到。</p> : (
             <>
               <StockTable label="大票涨幅前十" rows={v.bigcap.top} cols={[NAME, PRICE, PCT, AMOUNT]} empty="大票行情还没取到。" />
@@ -219,15 +286,33 @@ export function LiveView({ v, threshold, scope, ladderMin, onThreshold, onScope,
               )}
             </>
           )}
-        </Section>
-        <Section icon={BarChart3} title={v.turnover ? `昨日成交额前十(${v.turnover.date})` : "昨日成交额前十"} hint="上一个交易日成交额最大的十只,看今天的表现;成交额是今天的。">
+        </Section></div>
+        <div hidden={pool !== "turnover"}><Section icon={BarChart3} title={v.turnover ? `昨日成交额前十(${v.turnover.date})` : "昨日成交额前十"} hint="上一个交易日成交额最大的十只,看今天的表现;成交额是今天的。">
           {!v.turnover ? <p className="text-[13px] text-muted-foreground">昨日成交额前十这次没取到。</p>
             : <StockTable label="昨日成交额前十" rows={v.turnover.rows} cols={[RANK, NAME, PRICE, PCT, AMOUNT]} empty="没有数据。" />}
-        </Section>
+        </Section></div>
       </div>
 
+        </div>
+          {selected && <StockDetail title={selected.name || selected.code} onClose={() => setSelected(null)}>
+            <Suspense fallback={<p role="status" className="flex h-80 items-center justify-center text-sm text-muted-foreground">正在打开 {selected.name || selected.code} 的图表…</p>}>
+              <LazyKlineCard compact symbol={selected.code} title={selected.name} action={<>
+                <button type="button" aria-expanded={compareOpen} onClick={() => setCompareOpen(open => !open)} className="rounded border border-border px-2 py-1 text-xs">双股对比</button>
+                <button type="button" aria-expanded={observationOpen} onClick={() => setObservationOpen(open => !open)} className="rounded border border-border px-2 py-1 text-xs">观察记录</button>
+                <JourneyLink to={`/observations?symbol=${encodeURIComponent(selected.code)}`} className="text-xs text-primary hover:underline">建立观察计划 →</JourneyLink>
+                <JourneyLink to={`/workbench?symbol=${encodeURIComponent(selected.code)}`} className="text-xs text-primary hover:underline">打开个股工作台 →</JourneyLink>
+                <button type="button" onClick={() => setSelected(null)} className="rounded border border-border px-2 py-1 text-xs">收起走势</button>
+              </>} />
+            </Suspense>
+      {compareOpen && selected && <Suspense fallback={<p role="status">正在打开对比…</p>}><LazyStockComparison key={selected.code} initialSymbol={selected.code} /></Suspense>}
+            {observationOpen && <Suspense fallback={<p role="status">正在打开观察记录…</p>}><LazyObservationCards symbol={selected.code} /></Suspense>}
+          </StockDetail>}
+        <aside className="watch-events" aria-label="盘中异动"><AlertFeed v={v} threshold={threshold} scope={scope} onThreshold={onThreshold} onScope={onScope} /></aside>
+      </div>
+
+
       <GapsAndSource gaps={v.notes} source={v.source} />
-    </div>
+    </div></StockSelection.Provider>
   );
 }
 

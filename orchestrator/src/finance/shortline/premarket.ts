@@ -218,7 +218,7 @@ export function premarketMessage(p: PremarketParts): NotifyMessage {
     lines.push(...p.severeGaps);
   }
   lines.push(p.ipo);
-  return { title: `盘前提醒 ${p.day}`, lines, link: "/shortline", dedupeKey: `shortline_premarket:${p.day}` };
+  return { title: `盘前提醒 ${p.day}`, lines, link: ladder.date ? `/shortline?date=${ladder.date}&reminder=premarket&reminderDay=${p.day}` : "/inbox", dedupeKey: `shortline_premarket:${p.day}` };
 }
 
 // ---------------------------------------------------------------- 任务

@@ -324,7 +324,7 @@ test("事件流:关键节点都要落盘,且摘要随之变化(审计账本)", a
 });
 
 test("🔴 fileChanges 必须是绝对路径,且落在运行目录内(这是与 validator 的契约)", () => {
-  const runDir = "/tmp/some-run";
+  const runDir = path.resolve(os.tmpdir(), "some-run");
   // validator 用 path.resolve(f) 判越界,而 path.resolve 是**相对当前工作目录**解析的。
   // 给相对路径的话,`stages/profile.json` 会被解析成 <cwd>/stages/profile.json,
   // 于是合法产物被判成"写入了运行目录之外的文件",阶段直接失败。

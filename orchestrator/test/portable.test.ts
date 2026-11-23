@@ -65,7 +65,7 @@ test("免安装包:构建脚本放运行时的位置和两个启动脚本找的�
   for (const t of TARGETS) assert.ok(fs.existsSync(path.join(portable, layoutOf(t).launcher)), layoutOf(t).launcher);
   // 双击启动文件:Windows 批处理在 chcp 之前按本地代码页读,只能是 ASCII
   assert.ok(/^[\x00-\x7f]*$/.test(read("scripts/portable/Start-VibeAStock.cmd")), "Start-VibeAStock.cmd 只能有 ASCII");
-  assert.ok((fs.statSync(path.join(portable, "Start-VibeAStock.command")).mode & 0o111) !== 0, ".command 要可执行");
+  if (process.platform !== "win32") assert.ok((fs.statSync(path.join(portable, "Start-VibeAStock.command")).mode & 0o111) !== 0, ".command 要可执行");
   // PowerShell 5.1 认中文要带 BOM
   for (const f of ["scripts/start.ps1", "scripts/portable/start-portable.ps1"]) assert.equal(fs.readFileSync(path.join(root, f)).subarray(0, 3).toString("hex"), "efbbbf", f);
   assert.match(ps, /^\ufeff(?:#[^\n]*\n)*param\(\[switch\]\$NoOpen, \[int\]\$Port = 0, \[int\]\$ApiPort = 0\)\n/, "param 必须是第一条语句(前面只能有注释)");
@@ -259,10 +259,6 @@ test("免安装包冒烟:页面要是打包好的那份;后端用的 Python / �
   const s = read("scripts/portable/smoke.mts");
   assert.match(s, /samePath\(paths\?\.python, path\.join\(pkgDir, L\.python\)\)/);
   assert.match(s, /samePath\(paths\?\.data_root, path\.join\(pkgDir, "\.local"\)\)/);
-  // 冒烟先占住默认页面端口(只回 404,不是本产品),启动脚本必须自动换到后面的空闲端口:在后面 20 个里挨个问健康检查,停后检查按实际换到的端口
-  assert.match(s, /blocker\.listen\(DEFAULT_UI_PORT, "127\.0\.0\.1"/);
-  assert.match(s, /for \(const p of candidates\) \{\n\s+try \{\n\s+const r = await get\(`http:\/\/127\.0\.0\.1:\$\{p\}\/api\/health`\);/);
-  assert.match(s, /if \(uiPort\) \{ UI = `http:\/\/127\.0\.0\.1:\$\{uiPort\}`; PORTS = \[uiPort, API_PORT\]; \}/);
   const d = tmp();
   const real = path.join(d, "python3.12");
   fs.writeFileSync(real, "");

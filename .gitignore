@@ -24,3 +24,6 @@ dist/
 # 系统与日志
 .DS_Store
 *.log
+
+# 游资蒸馏源素材归档（原始抓包 zip，含图片与爬虫中间产物，体积大且非核心；成品提炼数据见 knowledge/mentors/tuixue.json）
+knowledge/mentors/*.zip

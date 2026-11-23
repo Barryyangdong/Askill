@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 import { createApiServer } from "../src/api.ts";
 import { deleteRun, ServiceError, type ServiceContext } from "../src/service.ts";
+import { reserveResearch, watchResearchCancellation, updateResearchControl, readResearchControl, readResearchDeletion } from "../src/research_control.ts";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -29,6 +30,174 @@ function writeManifest(dir: string, body: string | object): void {
   fs.writeFileSync(path.join(dir, "manifest.json"), typeof body === "string" ? body : JSON.stringify(body));
 }
 const codeOf = (e: unknown): string | undefined => (e instanceof ServiceError ? e.code : undefined);
+
+test("completed control authorizes retry after its manifest was partially deleted", context => {
+  const t = tmpCtx();
+  const id = "partial-complete";
+  const dir = mkRun(t.runs, id);
+  writeManifest(dir, { status: "complete", finished_at: FINISHED });
+  const owner = reserveResearch(t.ctx.dataRoot, id);
+  updateResearchControl(t.ctx.dataRoot, id, owner.token, "complete");
+  const originalRm = fs.rmSync;
+  const fault = context.mock.method(fs, "rmSync", (target: fs.PathLike, options?: fs.RmOptions) => {
+    if (String(target) === dir) {
+      fs.unlinkSync(path.join(dir, "manifest.json"));
+      throw Object.assign(Error("partial completed run removal"), { code: "EBUSY" });
+    }
+    return originalRm(target, options);
+  });
+  try {
+    assert.throws(() => deleteRun(t.ctx, id), e => codeOf(e) === "delete_failed");
+    fault.mock.restore();
+    assert.equal(deleteRun(t.ctx, id).deleted, true);
+    assert.equal(readResearchDeletion(t.ctx.dataRoot, id), null);
+  } finally { fault.mock.restore(); t.cleanup(); }
+});
+
+test("final receipt cleanup failure is retryable with both data directories already absent", context => {
+  const t = tmpCtx();
+  const id = "receipt-only";
+  const dir = mkRun(t.runs, id);
+  const owner = reserveResearch(t.ctx.dataRoot, id);
+  watchResearchCancellation(t.ctx.dataRoot, id, owner.token).close();
+  const receiptFile = path.join(t.ctx.dataRoot, "research-deletions", `${id}.json`);
+  const originalUnlink = fs.unlinkSync;
+  const fault = context.mock.method(fs, "unlinkSync", (target: fs.PathLike) => {
+    if (String(target) === receiptFile) throw Object.assign(Error("receipt busy"), { code: "EBUSY" });
+    return originalUnlink(target);
+  });
+  try {
+    assert.throws(() => deleteRun(t.ctx, id), e => codeOf(e) === "delete_failed");
+    assert.equal(fs.existsSync(dir), false);
+    assert.equal(readResearchControl(t.ctx.dataRoot, id), null);
+    assert.equal(readResearchDeletion(t.ctx.dataRoot, id)?.token, owner.token);
+    fault.mock.restore();
+    assert.equal(deleteRun(t.ctx, id).deleted, true);
+    assert.equal(readResearchDeletion(t.ctx.dataRoot, id), null);
+  } finally { fault.mock.restore(); t.cleanup(); }
+});
+
+for (const hasManifest of [false, true]) for (const partial of [false, true]) {
+  test(`interrupted run deletion retries after ${partial ? "partial" : "blocked"} removal (manifest: ${hasManifest})`, context => {
+    const t = tmpCtx();
+    const id = "retry-run";
+    const dir = mkRun(t.runs, id);
+    if (hasManifest) writeManifest(dir, { status: "running", finished_at: null });
+    fs.writeFileSync(path.join(dir, "report.md"), "partial output");
+    fs.writeFileSync(path.join(dir, "events.jsonl"), "{}\n");
+    const owner = reserveResearch(t.ctx.dataRoot, id);
+    watchResearchCancellation(t.ctx.dataRoot, id, owner.token).close();
+    const originalRm = fs.rmSync;
+    const fault = context.mock.method(fs, "rmSync", (target: fs.PathLike, options?: fs.RmOptions) => {
+      if (String(target) === dir) {
+        if (partial) {
+          if (hasManifest) fs.unlinkSync(path.join(dir, "manifest.json"));
+          fs.unlinkSync(path.join(dir, "report.md"));
+        }
+        throw Object.assign(Error("synthetic run busy"), { code: "EBUSY" });
+      }
+      return originalRm(target, options);
+    });
+    try {
+      assert.throws(() => deleteRun(t.ctx, id), e => codeOf(e) === "delete_failed");
+      assert.equal(readResearchControl(t.ctx.dataRoot, id)?.state, "failed");
+      assert.equal(readResearchDeletion(t.ctx.dataRoot, id)?.token, owner.token);
+      assert.throws(() => reserveResearch(t.ctx.dataRoot, id), /删除尚未完成/);
+      fault.mock.restore();
+      assert.equal(deleteRun(t.ctx, id).deleted, true);
+      assert.equal(fs.existsSync(dir), false);
+      assert.equal(readResearchControl(t.ctx.dataRoot, id), null);
+      assert.equal(readResearchDeletion(t.ctx.dataRoot, id), null);
+      assert.equal(deleteRun(t.ctx, id).deleted, false);
+    } finally { fault.mock.restore(); t.cleanup(); }
+  });
+}
+
+for (const partial of [false, true]) {
+  test(`control cleanup failure is retryable after run removal (partial control: ${partial})`, context => {
+    const t = tmpCtx();
+    const id = "retry-control";
+    const dir = mkRun(t.runs, id);
+    const controlDir = path.join(t.ctx.dataRoot, "research-control", id);
+    const owner = reserveResearch(t.ctx.dataRoot, id);
+    watchResearchCancellation(t.ctx.dataRoot, id, owner.token).close();
+    const originalRm = fs.rmSync;
+    const fault = context.mock.method(fs, "rmSync", (target: fs.PathLike, options?: fs.RmOptions) => {
+      if (String(target) === controlDir) {
+        if (partial) fs.unlinkSync(path.join(controlDir, "owner.json"));
+        throw Object.assign(Error("synthetic control busy"), { code: "EBUSY" });
+      }
+      return originalRm(target, options);
+    });
+    try {
+      assert.throws(() => deleteRun(t.ctx, id), e => codeOf(e) === "delete_failed");
+      assert.equal(fs.existsSync(dir), false);
+      assert.equal(readResearchDeletion(t.ctx.dataRoot, id)?.token, owner.token);
+      assert.throws(() => reserveResearch(t.ctx.dataRoot, id), /删除尚未完成/);
+      fault.mock.restore();
+      assert.equal(deleteRun(t.ctx, id).deleted, true);
+      assert.equal(fs.existsSync(controlDir), false);
+      assert.equal(readResearchDeletion(t.ctx.dataRoot, id), null);
+      assert.equal(deleteRun(t.ctx, id).deleted, false);
+      assert.notEqual(reserveResearch(t.ctx.dataRoot, id).token, owner.token);
+    } finally { fault.mock.restore(); t.cleanup(); }
+  });
+}
+
+for (const hasManifest of [false, true]) for (const queryStatusFirst of [false, true]) {
+  test(`DELETE interrupted run (manifest: ${hasManifest}, status queried: ${queryStatusFirst})`, async () => {
+    const t = tmpCtx();
+    const id = "interrupted";
+    const dir = mkRun(t.runs, id);
+    if (hasManifest) writeManifest(dir, { run_id: id, status: "running", finished_at: null });
+    const record = reserveResearch(t.ctx.dataRoot, id);
+    const worker = watchResearchCancellation(t.ctx.dataRoot, id, record.token);
+    const token = "t".repeat(32);
+    const server = createApiServer(t.ctx, { token });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
+    const base = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
+    const headers = { Authorization: `Bearer ${token}` };
+    const del = () => fetch(`${base}/runs/${id}`, { method: "DELETE", headers });
+    try {
+      assert.equal((await (await del()).json()).error, "run_in_progress");
+      assert.equal(fs.existsSync(dir), true);
+      // Release without publishing a terminal result, as on abnormal process exit.
+      worker.close();
+      if (queryStatusFirst) {
+        const status = await (await fetch(`${base}/runs/${id}/status`, { headers })).json();
+        assert.equal(status.status, "failed");
+      }
+      const response = await del();
+      assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+      assert.deepEqual(await response.json(), { run_id: id, deleted: true });
+      assert.equal(fs.existsSync(dir), false);
+      assert.equal(fs.existsSync(path.join(t.ctx.dataRoot, "research-control", id)), false);
+    } finally {
+      worker.close();
+      await new Promise<void>(r => server.close(() => r()));
+      t.cleanup();
+    }
+  });
+}
+
+test("recovered control never permits corrupt manifests; live terminal owner remains in progress", () => {
+  const t = tmpCtx();
+  const id = "failed-owner";
+  const dir = mkRun(t.runs, id);
+  const record = reserveResearch(t.ctx.dataRoot, id);
+  const worker = watchResearchCancellation(t.ctx.dataRoot, id, record.token);
+  try {
+    updateResearchControl(t.ctx.dataRoot, id, record.token, "failed");
+    assert.throws(() => deleteRun(t.ctx, id), e => codeOf(e) === "run_in_progress");
+    assert.ok(fs.existsSync(dir));
+    worker.close();
+    for (const corrupt of ["{broken", "null", "[]", '"text"']) {
+      writeManifest(dir, corrupt);
+      assert.throws(() => deleteRun(t.ctx, id), e => codeOf(e) === "manifest_corrupt");
+      assert.ok(fs.existsSync(dir));
+    }
+  } finally { worker.close(); t.cleanup(); }
+});
 
 test("deleteRun:清单确认结束(complete+finished_at)→ 正常删,目录消失", () => {
   const t = tmpCtx(); try {
@@ -108,7 +277,7 @@ test("deleteRun:删除成功时连带清掉 control 目录,不留孤儿(否则�
 });
 
 // chmod 在 Windows 上挡不住目录删除,这条只在 POSIX 跑(仓库既有写法,见 ingest.test.ts)
-test("deleteRun:清 control 失败 → delete_failed(不是 500),且运行目录原封不动(锁住「先 control 后目录」的顺序)",
+test("deleteRun:清 control 失败保留删除凭据，恢复权限后可继续清理",
   { skip: process.platform === "win32" }, () => {
   const t = tmpCtx(); try {
     const d = mkRun(t.runs, "run-locked");
@@ -120,9 +289,10 @@ test("deleteRun:清 control 失败 → delete_failed(不是 500),且运行目录
     try {
       // 删除动作自身失败抛的是 fs 的 errno 错误,不接就是 HTTP 500 "internal",用户看不到一句有用的话
       assert.throws(() => deleteRun(t.ctx, "run-locked"), (e: unknown) => codeOf(e) === "delete_failed");
-      // 顺序反过来的话运行目录已经没了,而 control 成孤儿 —— 这条断言就是用来钉住顺序的
-      assert.equal(fs.existsSync(d), true, "第一步失败时运行目录必须还在");
+      assert.equal(fs.existsSync(d), false, "先删除运行目录，再清控制记录");
+      assert.ok(readResearchDeletion(t.ctx.dataRoot, "run-locked"), "独立凭据允许控制目录部分删除后重试");
     } finally { fs.chmodSync(croot, 0o700); }
+    assert.equal(deleteRun(t.ctx, "run-locked").deleted, true);
   } finally { t.cleanup(); }
 });
 

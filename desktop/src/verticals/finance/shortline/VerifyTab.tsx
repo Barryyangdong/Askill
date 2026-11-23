@@ -4,7 +4,7 @@
  *   - 基准发生率:这个方向历史上本来多常见,判对一次值多少;
  *   - 「事后」:下一场开盘竞价(09:15)以后才写或改的条件照样对账,但不计入命中率。
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ClipboardCheck, History, PenLine, Plus, X } from "lucide-react";
 import { backend } from "@/lib/backend";
 import { cn } from "@/lib/utils";
@@ -229,12 +229,12 @@ export function verifySummary(r: VerifyResult): string {
   return out.join("\n");
 }
 
-export function VerifyView({ r, onSaved }: { r: VerifyResult; onSaved: () => void }) {
+export function VerifyView({ r, onSaved, planRef }: { r: VerifyResult; onSaved: () => void; planRef?: (el: HTMLDivElement | null) => void }) {
   return (
     <div className="space-y-4">
       <div className="grid gap-4 xl:grid-cols-2">
         <CheckView c={r.check} />
-        <PlanEditor r={r} onSaved={onSaved} />
+        <div ref={planRef} role="region" aria-label="次日验证条件" tabIndex={-1} className="min-w-0 scroll-mt-4"><PlanEditor r={r} onSaved={onSaved} /></div>
       </div>
       <TrackView t={r.track} />
       <GapsAndSource gaps={safeArray<string>(r.gaps)} source={r.source} />
@@ -242,7 +242,14 @@ export function VerifyView({ r, onSaved }: { r: VerifyResult; onSaved: () => voi
   );
 }
 
-export function VerifyTab({ day, refreshNonce, onBusy }: ViewTabProps) {
+export function VerifyTab({ day, refreshNonce, onBusy, focusPlan = false }: ViewTabProps & { focusPlan?: boolean }) {
+  const focused = useRef(false);
+  const focusEditor = useCallback((el: HTMLDivElement | null) => {
+    if (!el || !focusPlan || focused.current) return;
+    focused.current = true;
+    el.scrollIntoView({ block: "start" });
+    (el.querySelector<HTMLElement>("select, button:not(:disabled)") ?? el).focus({ preventScroll: true });
+  }, [focusPlan]);
   const [st, reload] = useShortlineView<VerifyResult>("shortline_verify", day, undefined, refreshNonce, onBusy);
   const r = st.state === "done" ? st.data : null;
   useAiPage(r ? {
@@ -252,7 +259,7 @@ export function VerifyTab({ day, refreshNonce, onBusy }: ViewTabProps) {
     suggestions: ["结合这一天的情绪读数,明天哪几个读数值得写成验证条件", "上一晚的条件哪些对了、哪些错了,错在哪", "我写的条件是不是太容易成立了(看基准发生率)"],
   } : null);
   return (
-    <ViewSlot st={st} label="明日验证">{(d) => <VerifyView r={d} onSaved={reload} />}</ViewSlot>
+    <ViewSlot st={st} label="明日验证">{(d) => <VerifyView r={d} onSaved={reload} planRef={focusEditor} />}</ViewSlot>
   );
 }
 

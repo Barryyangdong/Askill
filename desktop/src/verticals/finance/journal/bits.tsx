@@ -1,5 +1,6 @@
 /** 交易日志各分页共用的小件:面板、读数格、分组表、提示行、慢视图的加载与失败 */
 import type { ReactNode } from "react";
+import { ContextHelp } from "@/components/ui/ContextHelp";
 import { cn } from "@/lib/utils";
 import { hideIf } from "@/lib/privacy";
 import { moneySigned, pctSigned, ratePct, tone, type Group } from "@/lib/journal";
@@ -11,12 +12,11 @@ export const SMALL_SAMPLE = 10;
 export function Panel({ title, hint, actions, children, className }: { title: ReactNode; hint?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
   return (
     <section className={cn("glass p-4 sm:p-5", className)}>
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-semibold">{title}</h3>
+        {hint && <ContextHelp>{hint}</ContextHelp>}
         {actions && <div className="ml-auto flex flex-wrap items-center gap-2">{actions}</div>}
       </div>
-      {hint && <p className="mb-3 mt-1 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
-      {!hint && <div className="mb-3" />}
       {children}
     </section>
   );

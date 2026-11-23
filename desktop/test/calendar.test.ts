@@ -1,3 +1,4 @@
+import { navPageOf } from "../src/verticals/finance/lib/nav.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -51,6 +52,6 @@ test("页面:不给建议、取不到单独列出、选择只存在本机偏好�
   assert.match(src, /storageSet\("vr-calendar-groups"/);
   assert.doesNotMatch(src, /localStorage/);
   assert.doesNotMatch(src, /目标价|评级|买入|卖出/);
-  assert.match(read("lib/nav.ts"), /\{ to: "\/calendar", label: "事件日历", icon: "CalendarDays" \}/);
+  assert.deepEqual(navPageOf("/calendar")?.page, {to:"/calendar",label:"事件日历",icon:"CalendarDays"});
   assert.match(src, /<Link to="\/my-stocks\?tab=watch"[^>]*>自选股<\/Link>/, "空状态带去自选与持仓的自选分页");
 });

@@ -33,50 +33,40 @@ test("辩论 HTTP 客户端真正向 fetch 传递信号，并保留重复编号�
   }
 });
 
-test("辩论提前取消不发请求；取数和阶段请求都传信号，晚到结果不回写页面", async () => {
-  const start = backend.debateStart, advance = backend.debateAdvance;
+test("辩论提前断开不发请求；离页后的迟到事件不回写页面", async () => {
+  const run = backend.debateRun;
   let requests = 0, emitted = 0;
   try {
-    backend.debateStart = async () => { requests++; return pending(); };
+    backend.debateRun = async () => { requests++; return pending(); };
     await debateStream("300308", 1, {}, AbortSignal.abort());
     assert.equal(requests, 0);
-
-    for (const cancelAt of ["start", "advance"]) {
-      const ctrl = new AbortController();
-      backend.debateStart = async (_symbol, _depth, signal) => {
-        assert.equal(signal, ctrl.signal); requests++;
-        if (cancelAt === "start") ctrl.abort();
-        return pending();
-      };
-      backend.debateAdvance = async (_id, signal) => {
-        assert.equal(signal, ctrl.signal); requests++;
-        ctrl.abort();
-        return { ...pending(), done: true, outcome: "completed", stages: [{ id: "bull", label: "多方", status: "done", text: "晚到内容" }] };
-      };
-      const before = requests;
-      const final = await debateStream("300308", 1, { onDelta: () => emitted++, onStageDone: () => emitted++, onError: () => emitted++ }, ctrl.signal);
-      assert.equal(final, undefined);
-      assert.equal(requests - before, cancelAt === "start" ? 1 : 2);
-      assert.equal(emitted, 0);
-    }
-  } finally { backend.debateStart = start; backend.debateAdvance = advance; }
+    const ctrl = new AbortController();
+    backend.debateRun = async (_symbol, _depth, onEvent, signal) => {
+      assert.equal(signal, ctrl.signal); requests++;
+      ctrl.abort();
+      const state:DebateState = {...pending(),done:true,outcome:"completed",stages:[{id:"bull",label:"多方",status:"done",text:"迟到内容"}]};
+      onEvent({type:"done",state});
+      return state;
+    };
+    const final = await debateStream("300308",1,{onDelta:()=>emitted++,onStageDone:()=>emitted++,onError:()=>emitted++},ctrl.signal);
+    assert.equal(final,undefined); assert.equal(requests,1); assert.equal(emitted,0);
+  } finally {backend.debateRun=run;}
 });
 
-test("停止未确认时保留失败原因与已经完成的阶段，不误报全场没跑起来", async () => {
-  const start = backend.debateStart, advance = backend.debateAdvance;
-  const errors: string[] = [], completed: string[] = [];
+test("停止未确认时保留失败原因与已经完成的阶段", async () => {
+  const run = backend.debateRun;
+  const errors:string[]=[],completed:string[]=[];
   try {
-    backend.debateStart = async () => pending();
-    backend.debateAdvance = async () => ({ ...pending(), done: true, outcome: "failed", stages: [
-      { id: "bull", label: "多方", status: "done", text: "已完成部分" },
-      { id: "bear", label: "空方", status: "failed", text: "", error: "agent_shutdown_failed:进程树退出未确认，不能视为已取消" },
-    ] });
-    const result = await debateStream("300308", 1, {
-      onError: message => errors.push(message), onStageDone: (_stage, _label, text) => completed.push(text),
-    });
-    assert.equal(result?.outcome, "failed");
-    assert.deepEqual(completed, ["已完成部分"]);
-    assert.match(errors.at(-1)!, /agent_shutdown_failed.*未确认/);
-    assert.ok(errors.every(x => !x.includes("所有阶段都失败") && !x.includes("根本没跑起来")));
-  } finally { backend.debateStart = start; backend.debateAdvance = advance; }
+    backend.debateRun = async (_symbol,_depth,onEvent) => {
+      const state:DebateState={...pending(),done:true,outcome:"failed",stages:[
+        {id:"bull",label:"多方",status:"done",text:"已完成部分"},
+        {id:"bear",label:"空方",status:"failed",text:"",error:"agent_shutdown_failed:进程树退出未确认，不能视为已取消"},
+      ]};
+      onEvent({type:"done",state}); return state;
+    };
+    const result=await debateStream("300308",1,{onError:message=>errors.push(message),onStageDone:(_stage,_label,text)=>completed.push(text)});
+    assert.equal(result?.outcome,"failed");assert.deepEqual(completed,["已完成部分"]);
+    assert.ok(errors.some(x=>/agent_shutdown_failed.*未确认/.test(x)));
+    assert.ok(errors.every(x=>!x.includes("所有阶段都失败")&&!x.includes("根本没跑起来")));
+  } finally {backend.debateRun=run;}
 });

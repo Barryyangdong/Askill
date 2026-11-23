@@ -1,7 +1,7 @@
 """按代码 / 名称 / 拼音找标的的 **JSON 入口**：stdin 进 ``{query}`` 或 ``{queries: [...]}``，stdout 出候选。
 
-给四个页面共用的搜索框和自选批量粘贴用，不需要模型。走东财搜索框同款联想接口（取数层
-``sources.eastmoney.suggest_rows``），它本身认中文名、拼音首字母和代码：「gzmt」「茅台」「600519」都能到贵州茅台。
+给共用搜索框和自选批量粘贴用，不需要模型。优先东财，主源异常或无结果时切换腾讯联想。
+支持中文名、拼音首字母和代码；响应中标明实际来源。
 
 🔴 只留本产品能处理的三地标的：沪深京 A 股（含科创板、创业板）、沪深场内基金（ETF / LOF）、
    港股、美股。指数、板块、期货、期权、债券、场外基金、新三板、其他国家的股票一律不进候选。
@@ -100,13 +100,60 @@ def _clean_query(q: Any) -> str:
     return q
 
 
-def search(query: str, limit: int = DEFAULT_LIMIT) -> List[Dict[str, Any]]:
-    """一次联想：去重后按接口原顺序给前 limit 个。接口不通抛 SearchError。"""
+def tencent_suggest_rows(query: str) -> List[Dict[str, Any]]:
+    """腾讯联想转成统一候选行；只解析数据，不执行返回的 JavaScript。"""
+    from sources._http import http_get
+    response = http_get("https://smartbox.gtimg.cn/s3/", params={"q": query, "t": "all"},
+                        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"}, timeout=8)
+    response.raise_for_status()
+    return parse_tencent_suggestions(response.text)
+
+
+def parse_tencent_suggestions(text: str) -> List[Dict[str, Any]]:
+    match = re.fullmatch(r'\s*v_hint\s*=\s*("(?:[^"\\]|\\.)*")\s*;?\s*', text)
+    if not match:
+        raise ValueError("联想返回结构不正确")
+    payload = json.loads(match.group(1))
+    if payload in ("", "N"):
+        return []
+    rows: List[Dict[str, Any]] = []
+    for item in payload.split("^"):
+        fields = item.split("~")
+        if len(fields) != 5:
+            continue
+        exchange, code, name, pinyin, kind = fields
+        mkt, board = "", ""
+        if exchange in ("sh", "sz", "bj") and re.fullmatch(r"\d{6}", code):
+            if kind == "GP-A":
+                board = "京A" if exchange == "bj" else "科创板" if code.startswith("68") else "创业板" if code.startswith("30") else "沪A" if exchange == "sh" else "深A"
+            elif kind in ("ETF", "LOF"):
+                board = "基金"
+            mkt = "1" if exchange == "sh" else "0"
+        elif exchange == "hk" and kind in ("GP", "ETF"):
+            mkt, board = HK_MKT, "港股"
+        elif exchange == "us" and kind in ("GP", "ETF"):
+            ticker, _, venue = code.rpartition(".")
+            mkt = {"oq": "105", "o": "105", "n": "106", "a": "107", "p": "107"}.get(venue.lower(), "")
+            code, board = ticker.upper(), "美股"
+        if mkt and board:
+            rows.append({"Code": code, "Name": name, "MktNum": mkt, "SecurityTypeName": board, "PinYin": pinyin})
+    return rows
+
+
+def _search(query: str, limit: int) -> tuple[List[Dict[str, Any]], str]:
     from sources.eastmoney import suggest_rows   # 延迟导入：入参校验不需要联网层
+    rows, source, primary_ok = [], "东财搜索联想", False
     try:
         rows = suggest_rows(query, FETCH_COUNT)
-    except Exception as exc:  # noqa: BLE001 — 网络 / 风控 / 返回不是 JSON，统一成一句能看懂的话
-        raise SearchError(f"名称搜索暂时不通（{type(exc).__name__}），可以直接输入代码：600519 / 00700.HK / AAPL") from exc
+        primary_ok = True
+    except Exception:  # noqa: BLE001 — 单源异常交给独立备用源，不向用户暴露解析异常。
+        pass
+    if not rows:
+        try:
+            rows, source = tencent_suggest_rows(query), "腾讯搜索联想"
+        except Exception as exc:  # noqa: BLE001
+            if not primary_ok:
+                raise SearchError("名称搜索服务暂不可用，请稍后重试，或直接输入完整代码") from exc
     out: List[Dict[str, Any]] = []
     seen = set()
     for row in rows:
@@ -114,7 +161,12 @@ def search(query: str, limit: int = DEFAULT_LIMIT) -> List[Dict[str, Any]]:
         if m and m["symbol"] not in seen:
             seen.add(m["symbol"])
             out.append(m)
-    return out[:limit]
+    return out[:limit], source
+
+
+def search(query: str, limit: int = DEFAULT_LIMIT) -> List[Dict[str, Any]]:
+    """主源异常或无结果时自动切换；候选保留原有市场过滤。"""
+    return _search(query, limit)[0]
 
 
 def resolve(query: str, matches: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -161,16 +213,17 @@ def build(req: Dict[str, Any]) -> Dict[str, Any]:
         items = []
         for raw in qs:
             q = _clean_query(raw)
-            matches = search(q, DEFAULT_LIMIT)
+            matches, source = _search(q, DEFAULT_LIMIT)
             # code：这段文字如果当代码理解是什么（纯字母没搜到时，界面可以让用户确认「就按美股代码加」）
             # resolve 收窄了候选时，它给的 matches 覆盖前面的完整列表
-            items.append({"query": q, "code": normalize_code(q), "matches": matches, **resolve(q, matches)})
-        return {"items": items, "source": "东财搜索联想"}
+            items.append({"query": q, "code": normalize_code(q), "matches": matches, "source": source, **resolve(q, matches)})
+        return {"items": items, "source": "标的搜索联想（各项标注实际来源）"}
     q = _clean_query(req.get("query"))
     limit = req.get("limit", DEFAULT_LIMIT)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIMIT:
         raise SearchError(f"limit 要是 1 到 {MAX_LIMIT} 的整数")
-    return {"query": q, "matches": search(q, limit), "source": "东财搜索联想"}
+    matches, source = _search(q, limit)
+    return {"query": q, "matches": matches, "source": source}
 
 
 CATALOG = {

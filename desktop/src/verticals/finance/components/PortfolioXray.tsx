@@ -1,3 +1,4 @@
+import { FormActions, FormField, FormToolbar } from "@/components/ui/FormToolbar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, AlertTriangle, CheckCircle2, Loader2, RefreshCw, SlidersHorizontal } from "lucide-react";
 
@@ -145,10 +146,9 @@ function ThresholdEditor({ value, onChange }: { value: XrayThresholds; onChange:
   };
   return (
     <div className="mb-4 rounded-lg border border-border/60 bg-muted/10 p-3">
-      <div className="flex flex-wrap items-end gap-3">
+      <FormToolbar>
         {TH_FIELDS.map((f) => (
-          <label key={f.key} className="space-y-1" title={f.hint}>
-            <span className="block text-[11px] text-muted-foreground">{f.label}{f.unit === "%" ? "（%）" : ""}</span>
+          <FormField key={f.key} label={<span title={f.hint}>{f.label}{f.unit === "%" ? "（%）" : ""}</span>}>
             <input
               value={draft[f.key]} inputMode="decimal" placeholder="不提醒" aria-label={`${f.label}提醒线`}
               onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })}
@@ -156,13 +156,15 @@ function ThresholdEditor({ value, onChange }: { value: XrayThresholds; onChange:
               onKeyDown={(e) => { if (e.key === "Enter") commit(f.key, f.unit, (e.target as HTMLInputElement).value); }}
               className="w-24 rounded-md border border-border bg-background/60 px-2 py-1 font-mono text-sm"
             />
-          </label>
+          </FormField>
         ))}
-        <button
-          onClick={() => { onChange({ ...DEFAULT_THRESHOLDS }); setDraft(Object.fromEntries(TH_FIELDS.map((f) => [f.key, f.unit === "%" ? String((DEFAULT_THRESHOLDS[f.key] ?? 0) * 100) : String(DEFAULT_THRESHOLDS[f.key])])) as Record<keyof XrayThresholds, string>); setErr(""); }}
-          className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground"
-        >恢复起点值</button>
-      </div>
+        <FormActions>
+          <button
+            onClick={() => { onChange({ ...DEFAULT_THRESHOLDS }); setDraft(Object.fromEntries(TH_FIELDS.map((f) => [f.key, f.unit === "%" ? String((DEFAULT_THRESHOLDS[f.key] ?? 0) * 100) : String(DEFAULT_THRESHOLDS[f.key])])) as Record<keyof XrayThresholds, string>); setErr(""); }}
+            className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground"
+          >恢复起点值</button>
+        </FormActions>
+      </FormToolbar>
       <p className="mt-2 text-[11px] leading-5 text-muted-foreground">
         提醒线由你自己定，留空就不提醒这一项。起点值只是方便第一次用，不是我们的建议；超线只说明数字超过了你设的线，不代表好坏。
       </p>

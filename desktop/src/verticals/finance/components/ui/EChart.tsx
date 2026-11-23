@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import * as echarts from "echarts/core";
 import { LineChart, BarChart, HeatmapChart, CandlestickChart } from "echarts/charts";
 import {
-  GridComponent, TooltipComponent, LegendComponent, MarkLineComponent,
+  GridComponent, TooltipComponent, LegendComponent, MarkLineComponent, MarkPointComponent,
   VisualMapContinuousComponent, DataZoomInsideComponent, DataZoomSliderComponent,
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
@@ -10,19 +10,21 @@ import { CanvasRenderer } from "echarts/renderers";
 // 按需注册：全量 echarts 约 1MB，这里只打包用到的折线 / 柱状 / 热力图 / K 线与基础组件。
 // 热力图要配连续型 visualMap；长序列（回测净值、K 线）要配缩放条。
 echarts.use([
-  LineChart, BarChart, HeatmapChart, CandlestickChart, GridComponent, TooltipComponent, LegendComponent, MarkLineComponent,
+  LineChart, BarChart, HeatmapChart, CandlestickChart, GridComponent, TooltipComponent, LegendComponent, MarkLineComponent, MarkPointComponent,
   VisualMapContinuousComponent, DataZoomInsideComponent, DataZoomSliderComponent, CanvasRenderer,
 ]);
 
 interface Props {
   option: echarts.EChartsCoreOption;
   height?: number;
+  syncGroup?: string;
 }
+const groupUsers=new Map<string,number>();
 
 // 轻量 ECharts 容器：初始化 / 跟随窗口 resize / 卸载时 dispose。
 // 主题策略：容器本身不感知亮暗色。调用方要么在 option 里用两种模式都可读的颜色，
 // 要么像回测图表那样读 CSS 颜色令牌、主题切换时重算 option。
-export function EChart({ option, height = 300 }: Props) {
+export function EChart({ option, height = 300, syncGroup }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const inst = useRef<echarts.ECharts | null>(null);
   const [failed, setFailed] = useState(false);
@@ -40,6 +42,15 @@ export function EChart({ option, height = 300 }: Props) {
       inst.current = null;
     };
   }, []);
+
+  useEffect(()=>{
+    const chart=inst.current;if(!chart||!syncGroup)return;
+    chart.group=syncGroup;groupUsers.set(syncGroup,(groupUsers.get(syncGroup)??0)+1);echarts.connect(syncGroup);
+    return()=>{
+      chart.group='';const remaining=(groupUsers.get(syncGroup)??1)-1;
+      if(remaining>0)groupUsers.set(syncGroup,remaining);else{groupUsers.delete(syncGroup);echarts.disconnect(syncGroup);}
+    };
+  },[syncGroup]);
 
   useEffect(() => {
     // notMerge=true：整份替换，避免旧 series 残留（刷新后型号增减时）

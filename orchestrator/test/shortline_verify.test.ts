@@ -341,6 +341,24 @@ test("写条件:整晚替换;没变的不重写;下一场开盘后不收;不是�
   } finally { cleanup(ctx); }
 });
 
+test("人物研判追加条件保留已写的条件和时间，重试不重复，方向冲突不覆盖", async () => {
+  const ctx = fakeCtx();
+  const date = "2026-10-09";
+  const time = date+"T12:00:00Z";
+  const save = (action:string,metric:string,direction:string,reason:string) => act(ctx,{action,date,items:[{metric,direction,reason}]},time);
+  try {
+    ctx.setCfg({klines:K});
+    const original = await save("save","limit_up_count","up","我的观察");
+    await save("append","broken_rate","down","人物方法的反证");
+    await save("append","broken_rate","down","另一种表述");
+    await assert.rejects(save("append","limit_up_count","down","相反判断"),/其他方向/);
+    const current = itemsByDate(ledgerList(ctx,"verification").verification!).byDate.get(date)!;
+    assert.equal(current.length,2);
+    assert.deepEqual(current.find(it=>it.metric==="limit_up_count"),original.items[0]);
+    assert.equal(current.find(it=>it.metric==="broken_rate")?.reason,"人物方法的反证");
+  } finally {cleanup(ctx);}
+});
+
 test("🔴 写条件整晚只落一次盘:写盘失败时原来那晚一条不少(审计 2026-10-11 Codex 范围 2 第 4 条)", async () => {
   const ctx = fakeCtx();
   const list = () => ledgerList(ctx, "verification").verification!;

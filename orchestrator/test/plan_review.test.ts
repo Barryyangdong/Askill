@@ -1,0 +1,26 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import '../src/finance/register.ts';
+import {upsertRecord,kinds} from '../src/ledger.ts';
+import {planReviewData,savePlanReview} from '../src/finance/plan_review.ts';
+test('execution review stays private, snapshots evidence, and preserves versions',()=>{
+ const ctx={dataRoot:fs.mkdtempSync(path.join(os.tmpdir(),'askill-plan-'))};
+ const c=upsertRecord(ctx.dataRoot,'criterion',{symbol:'600825',type:'decision_point',statement:'公开测试条件',status:'met'});
+ const t=upsertRecord(ctx.dataRoot,'trade',{symbol:'600825',type:'buy',date:'2026-11-13',shares:100,price:10});
+ const body={criterion_id:c.id,outcome:'as_planned',reason:'依据实际明细复核',trade_ids:[t.id]};
+ const a=savePlanReview(ctx,body);savePlanReview(ctx,{...body,outcome:'deviation',reason:'重新核对后发现偏差'});
+ upsertRecord(ctx.dataRoot,'trade',{...t,price:11});
+ assert.equal(((a.snapshot as any).trades[0]).price,10);
+ assert.equal(planReviewData(ctx).reviews.length,2);assert.equal(planReviewData(ctx).counts.deviation,1);
+ upsertRecord(ctx.dataRoot,'criterion',{...c,statement:'修改后的条件'});assert.equal(planReviewData(ctx).counts.stale,1);
+ assert.equal(kinds().plan_review.hiddenFromAssistant,true);assert.equal(kinds().plan_review.managedWrites,true);
+ assert.throws(()=>savePlanReview(ctx,{...body,outcome:'not_triggered',trade_ids:[]}));
+ assert.throws(()=>savePlanReview(ctx,{...body,trade_ids:[]}));
+ const other=upsertRecord(ctx.dataRoot,'trade',{symbol:'600519',type:'buy',date:'2026-11-13',shares:100,price:10});
+ assert.throws(()=>savePlanReview(ctx,{...body,trade_ids:[other.id]}));
+ const pending=upsertRecord(ctx.dataRoot,'criterion',{symbol:'600825',type:'decision_point',statement:'尚未核验',status:'pending'});
+ assert.throws(()=>savePlanReview(ctx,{...body,criterion_id:pending.id,outcome:'unexecuted',trade_ids:[]}));
+});

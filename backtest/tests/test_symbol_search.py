@@ -57,6 +57,7 @@ def fake(monkeypatch):
         calls.append((keyword, count))
         return [dict(r) for r in SAMPLES.get(keyword, [])]
     monkeypatch.setattr(em, "suggest_rows", suggest)
+    monkeypatch.setattr(S, "tencent_suggest_rows", lambda _q: [])
     return calls
 
 
@@ -110,12 +111,27 @@ def test_api_failure_says_type_the_code(monkeypatch, capsys):
     def boom(*_a, **_k):
         raise ConnectionError("reset")
     monkeypatch.setattr(em, "suggest_rows", boom)
-    with pytest.raises(S.SearchError, match="直接输入代码"):
+    monkeypatch.setattr(S, "tencent_suggest_rows", boom)
+    with pytest.raises(S.SearchError, match="直接输入完整代码"):
         S.search("茅台")
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"query": "茅台"})))
     S.main()
     d = json.loads(capsys.readouterr().out)
-    assert d["ok"] is False and "直接输入代码" in d["error"]
+    assert d["ok"] is False and "直接输入完整代码" in d["error"]
+
+
+def test_broken_primary_uses_tencent_with_real_market_filters(monkeypatch):
+    def broken(*_a):
+        raise json.JSONDecodeError("JSONP", "callback({})", 0)
+    payload = 'v_hint="sh~600825~\\u65b0\\u534e\\u4f20\\u5a92~xhcm~GP-A^sh~000001~指数~zs~ZS^hk~13005~权证~qz~QZ^us~tctzf.ps~粉单~fd~GP^us~brk.b.n~伯克希尔~bk~GP";'
+    monkeypatch.setattr(em, "suggest_rows", broken)
+    monkeypatch.setattr(S, "tencent_suggest_rows", lambda _q: S.parse_tencent_suggestions(payload))
+    got = S.build({"query": "新华传媒"})
+    assert got["source"] == "腾讯搜索联想"
+    assert [m["symbol"] for m in got["matches"]] == ["600825", "BRK.B"]
+    assert got["matches"][0]["name"] == "新华传媒"
+    with pytest.raises(ValueError):
+        S.parse_tencent_suggestions('alert("not data")')
 
 
 @pytest.mark.parametrize("q, pick, reason", [

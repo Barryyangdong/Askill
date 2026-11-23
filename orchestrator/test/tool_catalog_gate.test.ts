@@ -14,7 +14,7 @@ import { FINANCE_PLUGIN } from "../src/finance/plugin.ts";
 import { complianceGate } from "../src/gate.ts";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const PYTHON = process.env.VRA_PYTHON ?? "python3";
+const PYTHON = process.env.VRA_PYTHON ?? (process.platform === "win32" ? "python" : "python3");
 
 function strings(v: unknown): string[] {
   if (typeof v === "string") return [v];

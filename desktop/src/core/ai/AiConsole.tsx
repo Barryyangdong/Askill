@@ -66,6 +66,8 @@ export function AiConsole({ open, onClose, send, configured, copy, renderReplyAc
    */
   const [threads, setThreads] = useState<AiThread[]>(listThreads);
   const [threadId, setThreadId] = useState(() => listThreads()[0]?.id ?? newThreadId());
+  const [draft, setDraft] = useState({ thread: "", text: "" });
+  const inputText = draft.thread === threadId ? draft.text : "";
   const chat = useAiChat(threadId, send);
   const [height, setHeight] = useState(readH);
   const dragRef = useRef<{ y: number; h: number } | null>(null);
@@ -248,6 +250,9 @@ export function AiConsole({ open, onClose, send, configured, copy, renderReplyAc
             <AiMessages
               msgs={inSync ? chat.msgs : []}
               loading={chat.loading || !inSync}
+                progress={inSync ? chat.progress : null}
+                recoverableQuestion={inSync ? chat.recoverableQuestion : null}
+                onRecover={question => { if (!inputText) setDraft({ thread: threadId, text: question }); }}
               err={chat.err}
               info={chat.info}
               renderReply={renderReply}
@@ -258,6 +263,8 @@ export function AiConsole({ open, onClose, send, configured, copy, renderReplyAc
               displayText={displayText}
             />
             <AiComposer
+              value={inputText}
+              onValueChange={text => setDraft({ thread: threadId, text })}
               placeholder={copy.placeholder}
               disabled={chat.loading || !inSync}
               onStop={chat.loading && inSync ? chat.abort : undefined}

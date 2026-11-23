@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import "../src/finance/register_tasks.ts";
 import type { LedgerRecord } from "../src/ledger.ts";
-import { ServiceError, ledgerList, ledgerRemove, ledgerUpsert, type ServiceContext } from "../src/service.ts";
+import { ServiceError, ledgerList, ledgerRemove, ledgerReplace, ledgerUpsert, type ServiceContext } from "../src/service.ts";
 import { replayTrades, tradeOf, type Trade } from "../src/finance/holdings.ts";
 import { T0_WARNING, buildEpisodes } from "../src/finance/journal/episodes.ts";
 import { DEFAULT_FEES, estimateFee } from "../src/finance/journal/fees.ts";
@@ -289,6 +290,60 @@ const bad = (re: RegExp) => (e: unknown) => e instanceof ServiceError && e.code 
 type Avail = Extract<JournalView, { available: true }>;
 const view = async (ctx: ServiceContext) => (await journalView(ctx, {}, sig, NOW)) as JournalView;
 const act = async (ctx: ServiceContext, body: Record<string, unknown>) => journalAct(ctx, body, sig, NOW);
+
+test("成交请求标识在响应丢失、标注缺失和删除流水后仍防重", withRoot(async (ctx) => {
+  const body = { action: "record", request_id: "b829600e-5cb7-4bd9-ae76-1f700cbd94e1", symbol: "600519", fills: [{ type: "buy", date: "2026-10-09", shares: 100, price: 10 }], note: "复核" };
+  assert.deepEqual((await act(ctx, { action: "record_status", request_id: body.request_id })).result, { recorded: false });
+  await assert.rejects(act(ctx, { ...body, symbol: "invalid" }), (e: unknown) => e instanceof ServiceError && e.code === "record_rejected");
+  assert.deepEqual((await act(ctx, { action: "record_status", request_id: body.request_id })).result, { recorded: false });
+  const result = (await act(ctx, body)).result as { trade_ids: string[]; tag: LedgerRecord };
+  assert.deepEqual((await act(ctx, { action: "record_status", request_id: body.request_id })).result, { recorded: true });
+  assert.deepEqual((await act(ctx, { action: "record_cancel", request_id: body.request_id })).result, { state: "recorded" });
+  const partial = (e: unknown) => e instanceof ServiceError && e.code === "partial";
+  await assert.rejects(act({ ...ctx }, body), partial);
+  await assert.rejects(act(ctx, { ...body, symbol: " 600519 ", fills: [{ ...body.fills[0], fee: null }], ignored: "x" }), partial);
+  const entry = pathToFileURL(path.join(REPO, "orchestrator/src/finance/journal/view.ts")).href;
+  const register = pathToFileURL(path.join(REPO, "orchestrator/src/finance/register_tasks.ts")).href;
+  const script = `import ${JSON.stringify(register)}; import { journalAct } from ${JSON.stringify(entry)}; const [ctx, body] = JSON.parse(process.argv[1]); try { await journalAct(ctx, body); process.exitCode = 1; } catch (e) { if (e.code !== 'partial') { console.error(e); process.exitCode = 1; } }`;
+  const restarted = spawnSync(process.execPath, ["--input-type=module", "-e", script, JSON.stringify([ctx, body])], { encoding: "utf8" });
+  assert.equal(restarted.status, 0, restarted.stderr);
+  assert.equal(ledgerList(ctx, "trade").trade!.length, 1);
+  assert.doesNotMatch(JSON.stringify(ledgerList(ctx, "trade")), /receipts|b829600e/);
+  const trade = ledgerList(ctx, "trade").trade![0]!;
+  ledgerUpsert(ctx, { kind: "trade", record: { ...trade, price: 11 } });
+  ledgerReplace(ctx, { kind: "trade", match: () => true, records: [{ ...trade, price: 12 }] });
+  await assert.rejects(act(ctx, body), partial);
+  await assert.rejects(act(ctx, { ...body, note: "不同" }), (e: unknown) => e instanceof ServiceError && e.code === "request_conflict");
+  ledgerRemove(ctx, { kind: "journal_tag", id: result.tag.id });
+  await assert.rejects(act(ctx, body), partial);
+  ledgerRemove(ctx, { kind: "trade", id: result.trade_ids[0]! });
+  await assert.rejects(act({ ...ctx }, body), partial);
+  assert.equal(ledgerList(ctx, "trade").trade!.length, 0);
+}));
+
+test("取消未到达请求会持久化墓碑并拒绝迟到成交", withRoot(async (ctx) => {
+  const body = { action: "record", request_id: "ed29600e-5cb7-4bd9-ae76-1f700cbd94e1", symbol: "600519", fills: [{ type: "buy", date: "2026-10-09", shares: 100, price: 10 }] };
+  assert.deepEqual((await act(ctx, { action: "record_status", request_id: body.request_id })).result, { recorded: false });
+  assert.deepEqual((await act(ctx, { action: "record_cancel", request_id: body.request_id })).result, { state: "cancelled" });
+  assert.deepEqual((await act({ ...ctx }, { action: "record_cancel", request_id: body.request_id })).result, { state: "cancelled" });
+  await assert.rejects(act(ctx, body), (e: unknown) => e instanceof ServiceError && e.code === "request_cancelled");
+  assert.equal(ledgerList(ctx, "trade").trade!.length, 0);
+}));
+
+test("标注落盘失败后同一请求不再写成交", withRoot(async (ctx) => {
+  const body = { action: "record", request_id: "bc29600e-5cb7-4bd9-ae76-1f700cbd94e1", symbol: "600519", fills: [{ type: "buy", date: "2026-10-09", shares: 100, price: 10 }], note: "复核" };
+  const rename = fs.renameSync;
+  fs.renameSync = ((from, to) => {
+    if (String(to).endsWith("journal_tag.json")) throw new Error("模拟标注落盘失败");
+    return rename(from, to);
+  }) as typeof fs.renameSync;
+  try {
+    await assert.rejects(act(ctx, body), (e: unknown) => e instanceof ServiceError && e.code === "partial");
+  } finally { fs.renameSync = rename; }
+  assert.equal(ledgerList(ctx, "trade").trade!.length, 1);
+  await assert.rejects(act(ctx, body), (e: unknown) => e instanceof ServiceError && e.code === "partial");
+  assert.equal(ledgerList(ctx, "trade").trade!.length, 1);
+}));
 
 test("视图:空账本也能打开;设置默认值标出来;没有流水就没有交易", withRoot(async (ctx) => {
   const v = await view(ctx);

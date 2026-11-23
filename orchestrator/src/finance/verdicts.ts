@@ -284,7 +284,7 @@ export function verdictMessage(day: string, fresh: VerdictItem[], olderPending: 
   if (fresh.length > 10) lines.push(`另有 ${fresh.length - 10} 条,见事件日历页`);
   if (olderPending) lines.push(`另有 ${olderPending} 条早先到期、还没判`);
   lines.push("到「事件日历」页对照后,标记兑现与否");
-  return { title: `判据到期 ${day}`, lines, link: "/calendar", dedupeKey: `verdict_due:${day}` };
+  return { title: `判据到期 ${day}`, lines, link: "/calendar", context: { type: "criteria", refs: fresh.map(it => ({id:it.id,date:it.due})) }, dedupeKey: `verdict_due:${day}` };
 }
 
 export async function verdictDue(j: JobContext): Promise<JobResult> {

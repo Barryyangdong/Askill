@@ -24,14 +24,14 @@ export function firstBoardPrompt(date: string, s: FirstBoardStock): string {
     "个股层面只陈述已经发生的客观数据与事实;方向与强弱判断做到题材板块层面为止,且必须有这个题材板块整体的证据。不预测个股涨跌,不推荐任何标的,不构成投资建议。这是约束,不必在答案中复述。";
 }
 
-export function FirstBoardPanel({ fb }: { fb: FirstBoardResult }) {
+export function FirstBoardPanel({ fb, embedded, stockNotes }: { fb: FirstBoardResult; embedded?: boolean; stockNotes?: Map<string, string> }) {
   const draft = useAiDraft();
   const stocks = safeArray<FirstBoardStock>(fb.stocks);
   return (
-    <div className="glass p-4">
+    <div className={embedded ? "min-w-0" : "glass p-4"}>
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <Flame className="h-4 w-4 text-primary" />
-        <h3 className="text-sm font-semibold">首板名单</h3>
+        {!embedded && <Flame className="h-4 w-4 text-primary" />}
+        <h3 className="text-sm font-semibold">首板明细</h3>
         <Caliber text={
           "「炸板」为数据源记录的当日开板次数;0 表示未记录开板,不证明买盘强弱或持续性。\n" +
           "没收盘时名单是取数时点仍涨停的股票,还会变;收盘后才是最终涨停名单。\n" +
@@ -53,9 +53,9 @@ export function FirstBoardPanel({ fb }: { fb: FirstBoardResult }) {
       ) : stocks.length === 0 ? (
         <p className="py-4 text-center text-sm text-muted-foreground">这一天没有首板涨停股</p>
       ) : (
-        <div className="max-h-[28rem] overflow-auto">
+        <div className="overflow-x-auto">
           <table className="w-full text-[12px]">
-            <thead className="sticky top-0 bg-card">
+            <thead className="bg-card">
               <tr className="border-b border-border text-left text-[11px] text-muted-foreground">
                 {["名称", "首封", "炸板", "收盘", "涨幅", "成交额", "流通市值", "涨停原因", "行业", ""].map((h) => (
                   <th key={h} className="whitespace-nowrap px-2 py-1.5 font-medium">{h}</th>
@@ -64,7 +64,7 @@ export function FirstBoardPanel({ fb }: { fb: FirstBoardResult }) {
             </thead>
             <tbody>
               {stocks.map((s) => (
-                <tr key={s.code} className="border-b border-border/30">
+                <tr key={s.code} title={stockNotes?.get(s.code)} className="border-b border-border/30">
                   <td className="whitespace-nowrap px-2 py-1.5">
                     <span className="font-medium">{s.name}</span> <span className="text-[10px] text-muted-foreground">{s.code}</span>
                     {s.rebound && <span className="ml-1 rounded bg-warning/15 px-1 text-[10px] font-bold text-warning">反包</span>}

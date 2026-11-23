@@ -1,3 +1,6 @@
+import { pollDeepRun } from "../lib/reportTaskPoll";
+import { Link } from "react-router-dom";
+import { ReportText } from "../components/ReportText";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Upload, FileText, Trash2, Download, Loader2, FolderOpen, Bot, Search, Play, Route } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
@@ -44,12 +47,16 @@ export function MyReports() {
   const linkedReport = params.get("report");
   const linkedPage = params.get("page");
   const openedCitation = useRef("");
+  const panelOrigin = useRef<"citation" | "manual" | null>(null);
+  const [citationError, setCitationError] = useState("");
   const [reports, setReports] = useState<MyReport[]>([]);
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [panel, setPanel] = useState<{ kind: "preview" | "delete"; report: MyReport; text?: string; truncated?: boolean; error?: string; page?: string | null } | null>(null);
+  const [panel, setPanel] = useState<{ kind: "preview" | "delete"; report: MyReport; text?: string; truncated?: boolean; error?: string; downloadError?: string; page?: string | null } | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const previewSequence = useRef(0);
+  const downloadSequence = useRef(0);
+  const [downloadError, setDownloadError] = useState<{ report: MyReport; message: string } | null>(null);
   useEffect(() => {
     if (panel && !dialogRef.current?.open) dialogRef.current?.showModal();
   }, [panel]);
@@ -57,31 +64,34 @@ export function MyReports() {
   const closePanel = () => {
     if (deleting) return;
     previewSequence.current += 1;
-    setPanel(null);
-    if (linkedReport) setParams({}, { replace: true });
+    setPanel(null); panelOrigin.current = null;
+    if (linkedReport) setParams(previous => {const next=new URLSearchParams(previous);next.delete("report");next.delete("page");return next;}, { replace: true });
   };
-  const preview = async (r: MyReport, page?: string | null) => {
+  const preview = async (r: MyReport, page?: string | null, origin: "citation" | "manual" = "manual") => {
+    panelOrigin.current = origin;
     const pageNumber = Number(page);
     const verifiedPage = Number.isSafeInteger(pageNumber) && pageNumber > 0 && r.pages !== null && pageNumber <= r.pages ? String(pageNumber) : null;
     const sequence = ++previewSequence.current;
-    setPanel({ kind: "preview", report: r });
+    setPanel({ kind: "preview", report: r, page: verifiedPage });
     try {
       const result = await backend.reportPreview(r.id);
-      if (previewSequence.current === sequence) setPanel({ kind: "preview", report: r, text: result.text, truncated: result.truncated, page: verifiedPage });
+      if (previewSequence.current === sequence) setPanel(current => current?.kind === "preview" ? { ...current, text: result.text, truncated: result.truncated } : current);
     } catch (e) {
-      if (previewSequence.current === sequence) setPanel({ kind: "preview", report: r, error: friendlyAgentError(e) });
+      if (previewSequence.current === sequence) setPanel(current => current?.kind === "preview" ? { ...current, error: friendlyAgentError(e) } : current);
     }
   };
   const [err, setErr] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
-    if (!linkedReport) { openedCitation.current = ""; return; }
-    const key = `${linkedReport}:${linkedPage ?? ""}`;
+    const key = linkedReport ? `${linkedReport}:${linkedPage ?? ""}` : "";
+    if (openedCitation.current !== key && panelOrigin.current === "citation") {
+      previewSequence.current += 1; setPanel(null); panelOrigin.current = null;
+    }
+    if (!linkedReport) { openedCitation.current = ""; setCitationError(""); return; }
     if (!loaded || openedCitation.current === key) return;
-    openedCitation.current = key;
     const found = reports.find(r => r.id === linkedReport);
-    if (found) void preview(found, linkedPage);
-    else setErr("这条引用对应的资料已移除或当前资料库没有收录，无法打开原文。原始对话仍保留。");
+    if (found) { openedCitation.current = key; setCitationError(""); void preview(found, linkedPage, "citation"); }
+    else { openedCitation.current = ""; setCitationError("这条引用对应的资料已移除或当前资料库没有收录，无法打开原文。原始对话仍保留。"); }
   }, [linkedReport, linkedPage, loaded, reports]);
   const [drag, setDrag] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
@@ -92,6 +102,7 @@ export function MyReports() {
   const [taskAnswer, setTaskAnswer] = useState("");
   const [taskNotice, setTaskNotice] = useState("");
   const [deepRunId, setDeepRunId] = useState<string | null>(null);
+  const [deepFingerprint, setDeepFingerprint] = useState<string | null>(null);
   const [cancelPending, setCancelPending] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const taskAbortRef = useRef<AbortController | null>(null);
@@ -142,10 +153,18 @@ export function MyReports() {
   };
 
   const download = async (r: MyReport) => {
+    const sequence = previewSequence.current;
+    const operation = ++downloadSequence.current;
+    const current = () => previewSequence.current === sequence && downloadSequence.current === operation;
+    setDownloadError(null);
+    setPanel(panel => current() && panel?.kind === "preview" && panel.report.id === r.id ? { ...panel, downloadError: undefined } : panel);
     try {
       await downloadReport(r.id, r.name);
     } catch (e) {
-      setErr(e instanceof ApiError ? e.message : "下载失败");
+      if (!current()) return;
+      const message = e instanceof ApiError ? e.message : "下载失败，请重试。";
+      setDownloadError({ report: r, message });
+      setPanel(panel => current() && panel?.kind === "preview" && panel.report.id === r.id ? { ...panel, downloadError: message } : panel);
     }
   };
 
@@ -167,7 +186,7 @@ export function MyReports() {
 
   const submitTask = async () => {
     const goal = objective.trim();
-    if (!goal || !selected.length || taskBusy || busy || deleting) return;
+    if (!goal || !selected.length || taskBusy || busy || deleting || deepRunId) return;
     const controller = new AbortController();
     taskAbortRef.current?.abort();
     taskAbortRef.current = controller;
@@ -222,14 +241,16 @@ export function MyReports() {
       const started = result.events.find((event) => event.type === "started");
       if (result.status === "running" && routed.route.target === "deep" && started) {
         setDeepRunId(started.runId);
+        setDeepFingerprint(routed.route.routeFingerprint);
         setTaskNotice("完整六阶段研究已启动。当前页面会持续更新；即使离开页面，研究仍会在本机继续运行，并进入「个股研究」的历史记录。");
         while (!controller.signal.aborted && taskStatus === "running") {
           await waitFor(2_000, controller.signal);
-          const snapshot = await backend.resumeTask(started.runId, routed.route.routeFingerprint, controller.signal);
+          const snapshot = await pollDeepRun(started.runId, routed.route.routeFingerprint, (id, fingerprint) => backend.resumeTask(id, fingerprint, controller.signal));
           taskStatus = snapshot.status;
           taskEvents = snapshot.events;
         }
       }
+      setDeepRunId(null); setDeepFingerprint(null);
       const artifact = taskEvents.find((event) => event.type === "artifact");
       const failed = taskEvents.find((event) => event.type === "failed");
       if (taskStatus === "completed" && typeof artifact?.payload?.answer === "string") {
@@ -247,9 +268,30 @@ export function MyReports() {
       if (taskAbortRef.current === controller) {
         taskAbortRef.current = null;
         setTaskBusy(false);
-        setDeepRunId(null); setCancelPending(false);
+        setCancelPending(false);
       }
     }
+  };
+
+  const retryDeep = async () => {
+    if (!deepRunId || !deepFingerprint || taskBusy) return;
+    const controller = new AbortController();
+    taskAbortRef.current = controller; setTaskBusy(true); setTaskError("");
+    try {
+      let snapshot = await pollDeepRun(deepRunId, deepFingerprint, (id, fingerprint) => backend.resumeTask(id, fingerprint, controller.signal));
+      while (snapshot.status === "running" && !controller.signal.aborted) {
+        await waitFor(2_000, controller.signal);
+        snapshot = await pollDeepRun(deepRunId, deepFingerprint, (id, fingerprint) => backend.resumeTask(id, fingerprint, controller.signal));
+      }
+      if (controller.signal.aborted) return;
+      const artifact = snapshot.events.find(event => event.type === "artifact");
+      const failed = snapshot.events.find(event => event.type === "failed");
+      const answer = artifact?.payload?.answer ?? artifact?.payload?.report;
+      if (snapshot.status === "completed" && typeof answer === "string") { setTaskAnswer(answer); setTaskNotice("研究已完成，正式报告已写入本机研究历史。"); }
+      else setTaskError(typeof failed?.payload?.message === "string" ? failed.payload.message : "这次任务没有生成可交付结果。");
+      setDeepRunId(null); setDeepFingerprint(null);
+    } catch (e) { if (!controller.signal.aborted) setTaskError(friendlyAgentError(e)); }
+    finally { if (taskAbortRef.current === controller) { taskAbortRef.current = null; setTaskBusy(false); setCancelPending(false); } }
   };
 
   const cancelDeep = async () => {
@@ -281,7 +323,7 @@ export function MyReports() {
     <div>
       <PageHeader
         title="我的研报"
-        subtitle="上传后自动提取正文并进入本地资料库；对话会检索引用，A 股研报还能进入个股研究。原文件只保存在本机。"
+        subtitle="本地资料库 · 原文件仅存本机" description="上传后自动提取正文并进入本地资料库；对话会检索引用，A 股研报还能进入个股研究。原文件只保存在本机。"
       />
 
       <div className="mb-4 grid gap-2 sm:grid-cols-2">
@@ -316,7 +358,7 @@ export function MyReports() {
           className="w-full resize-y rounded-xl border border-border/70 bg-background/45 px-3 py-2.5 text-sm outline-none placeholder:text-muted-foreground/65 focus:border-primary/60 disabled:opacity-50" />
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
           <p className="text-xs text-muted-foreground">已选 {selected.length} 份 · 由系统自动判断</p>
-          <button type="button" onClick={() => void submitTask()} disabled={!selected.length || !objective.trim() || taskBusy || busy || deleting}
+          <button type="button" onClick={() => void submitTask()} disabled={!selected.length || !objective.trim() || taskBusy || busy || deleting || !!deepRunId}
             className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-35">
             {taskBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
             {taskBusy ? "正在判断并处理…" : "开始任务"}
@@ -334,6 +376,7 @@ export function MyReports() {
           <p className="mt-1 text-xs leading-5 text-muted-foreground">{routeDecision.reason}</p>
         </div>}
         {taskNotice && <div className="mt-3 rounded-xl border border-warning/30 bg-warning/[0.06] p-3 text-sm text-foreground/80">{taskNotice}</div>}
+        {deepRunId && <div className="mt-3 text-sm"><Link className="text-primary underline" to="/research?tab=research">前往个股研究历史</Link><span className="ml-2">运行 ID：{deepRunId}</span>{!taskBusy && <button type="button" className="ml-3 text-primary underline" onClick={() => void retryDeep()}>重试查询原研究</button>}</div>}
         {taskError && <div className="mt-3 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{taskError}</div>}
         {taskAnswer && <div className="research-paper mt-4 rounded border border-border">
           <p className="mb-3 text-xs font-semibold text-muted-foreground">任务结果</p>
@@ -389,9 +432,11 @@ export function MyReports() {
         </div>
       </GlassCard>
 
+      {citationError && <div role="alert" className="mb-4 text-sm text-destructive">{citationError} <button type="button" className="underline" onClick={() => void load()}>重新读取列表</button></div>}
+      {downloadError && <div role="alert" className="mb-4 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{downloadError.message} <button type="button" className="ml-2 underline" onClick={() => void download(downloadError.report)}>重试下载</button></div>}
       {err && (
         <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-          {err}
+          {err} <button type="button" className="ml-2 underline" onClick={()=>void load()}>重新读取列表</button>
         </div>
       )}
 
@@ -404,9 +449,10 @@ export function MyReports() {
         </div>
         {panel.kind === "preview" ? <>
           <p className="mb-3 text-xs text-muted-foreground">本地提取的正文，不保留原文件版式；完整文件可下载查看。{panel.truncated ? "内容较长，此处仅显示前 10 万字或已提取部分。" : ""}</p>
-          {panel.page && <p className="mb-2 text-xs text-primary">引用指向第 {panel.page} 页。请在下方正文中查找“第 {panel.page} 页”标记；若不在预览范围内，请下载原文件核对。</p>}
+          {panel.page && <p className="mb-2 text-xs text-primary">引用指向第 {panel.page} 页，正文加载后将定位到对应页。</p>}
           <button type="button" onClick={() => void download(panel.report)} className="mb-3 text-sm text-primary">下载完整原文件</button>
-          {panel.error ? <p role="alert">{panel.error}</p> : panel.text === undefined ? <p role="status">正在读取正文…</p> : <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words text-sm">{panel.text}</pre>}
+          {panel.downloadError && <p role="alert" className="mb-3 text-sm text-destructive">{panel.downloadError}</p>}
+          {panel.error ? <p role="alert">{panel.error} <button type="button" className="ml-2 underline" onClick={()=>void preview(panel.report,panel.page,panelOrigin.current ?? "manual")}>重新读取正文</button></p> : panel.text === undefined ? <p role="status">正在读取正文…</p> : <ReportText key={panel.report.id} text={panel.text} page={panel.page} />}
         </> : <>
           <p className="mb-4 text-sm">将从本地资料库移除这份研报及正文索引，此操作不可撤销。</p>
           {panel.error && <p role="alert" className="mb-3 text-sm text-destructive">{panel.error}</p>}
@@ -415,11 +461,11 @@ export function MyReports() {
       </dialog>}
 
       {/* 列表（按正文里识别到的标的代码分组） */}
-      {reports.length === 0 ? (
+      {!loaded&&!err ? <p role="status" className="py-8 text-center text-sm text-muted-foreground">正在读取本地资料库…</p> : reports.length === 0 ? (
         <GlassCard>
           <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
             <FolderOpen className="h-8 w-8 text-muted-foreground/40" />
-          还没有归档的研报。把研报拖进上面的框，正文提取成功后就会进入本地资料库。
+          {err ? "资料列表未取得，请重试；这不代表资料库为空。" : "还没有归档的研报。把研报拖进上面的框，正文提取成功后就会进入本地资料库。"}
           </div>
         </GlassCard>
       ) : (
@@ -456,7 +502,7 @@ export function MyReports() {
                       <Download className="h-4 w-4" />
                     </button>
                     <button
-                      onClick={() => { previewSequence.current += 1; setPanel({ kind: "delete", report: r }); }}
+                      onClick={() => { previewSequence.current += 1; panelOrigin.current = "manual"; setPanel({ kind: "delete", report: r }); }}
                       disabled={taskBusy || busy || deleting}
                       className="shrink-0 text-muted-foreground/50 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-35"
                       title="删除"

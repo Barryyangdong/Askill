@@ -9,7 +9,7 @@ import "../src/finance/register_tasks.ts";
 import type { LedgerRecord } from "../src/ledger.ts";
 import { currentSchedule } from "../src/notify.ts";
 import { ServiceError, ledgerUpsert, type ServiceContext } from "../src/service.ts";
-import { listViews } from "../src/views.ts";
+import { listViews, runView } from "../src/views.ts";
 import { SNAPSHOT_SCHEMA, snapshotKey } from "../src/snapshot.ts";
 import {
   ANN_MAX_AGE_MS, calibration, dueCriteria, factsFromAnnouncements, judgedList, sinceDay, verdictDue, verdictLabel, verdictMessage, verdictReview, type VerdictItem,
@@ -99,7 +99,8 @@ test("提醒消息:逐条写判据和期间公告,不写建议", () => {
   ], 2);
   assert.equal(m.title, "判据到期 2026-10-08");
   assert.equal(m.dedupeKey, "verdict_due:2026-10-08");
-  assert.equal(m.link, "/calendar");
+  assert.equal(m.link,"/calendar");
+  assert.deepEqual(m.context?.refs.map(x=>x.id),["c1","c2","c3"]);
   assert.deepEqual(m.lines, [
     "中际旭创 300308 裁决点 到期 2026-10-08:800G 出货过半",
     "  2026-09-01 以来公告 18 条,最近:2026-10-07 关于获得发明专利证书的公告",
@@ -196,3 +197,13 @@ test("定时任务:只报新到期的;同一条不天天推;改了到期日到�
   const r5 = await job("2026-10-09", r4.state, true);
   assert.equal(r5.messages[0]!.lines.filter((l) => /到期 2026-/.test(l)).length, 2, "手动运行列出全部到期没判的");
 }));
+
+ test("提醒对象视图只返回指定同股记录，拒绝私人台账种类", withRoot(async ctx=>{
+ const a=ledgerUpsert(ctx,{kind:"criterion",record:{symbol:"600000",type:"decision_point",statement:"A",due:"2026-11-16",status:"pending"}});
+ const b=ledgerUpsert(ctx,{kind:"criterion",record:{symbol:"600000",type:"decision_point",statement:"B",due:"2026-11-17",status:"met"}});
+ const signal=new AbortController().signal;
+ const result=await runView(ctx,"calendar_objects",{kind:"criterion",ids:a.id},signal) as {records:LedgerRecord[]};
+ assert.deepEqual(result.records.map(r=>r.id),[a.id]);assert.notEqual(a.id,b.id);
+ await assert.rejects(runView(ctx,"calendar_objects",{kind:"holding",ids:a.id},signal),/不支持/);
+ const missing=await runView(ctx,"calendar_objects",{kind:"criterion",ids:"deleted"},signal) as {records:LedgerRecord[]};assert.deepEqual(missing.records,[]);
+ }));

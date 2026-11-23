@@ -143,21 +143,21 @@ test("doctor:版本比较;密钥扫描命中 sk-… / Bearer / 环境密钥值,�
   fs.writeFileSync(path.join(repo, ".local", "x.json"), '"sk-ABCDEFGHIJKLMNOPQRSTUVWX0123"');
   // 第一行被 "sk-" + 拼接打散,不应命中;第二行 Bearer 命中;第三行经环境变量值命中;测试目录里的 sk- 与 .local 不命中
   const r1 = scanSecrets(repo, { MY_API_KEY: "SUPERSECRETVALUE1234567890", SHORT_KEY: "abc" });
-  assert.deepEqual(r1.hits.map((h) => `${h.file}:${h.line}:${h.what}`).sort(), ["src/a.ts:2:Bearer token", "src/a.ts:3:环境变量 MY_API_KEY 的值"]);
+  assert.deepEqual(r1.hits.map((h) => `${h.file}:${h.line}:${h.what}`).sort(), [`${path.join("src", "a.ts")}:2:Bearer token`, `${path.join("src", "a.ts")}:3:环境变量 MY_API_KEY 的值`]);
   assert.equal(r1.truncated, false); assert.ok(r1.scanned >= 3);
   fs.writeFileSync(path.join(repo, "src", "b.md"), "token sk-ABCDEFGHIJKLMNOPQRSTUVWX0123 here\n");
-  assert.ok(scanSecrets(repo, {}).hits.some((h) => h.file === "src/b.md" && h.what.startsWith("sk-")));
+  assert.ok(scanSecrets(repo, {}).hits.some((h) => h.file === path.join("src", "b.md") && h.what.startsWith("sk-")));
   // 高置信形态在测试目录也命中:PEM / AWS / GitHub / JWT;字面赋值形态在源码命中
   // 夹具用拼接构造,避免本测试源码自己被扫描命中
   fs.writeFileSync(path.join(repo, "test", "pem.txt"), "-----BEGIN RSA " + "PRIVATE KEY-----\n" + "AKIA" + "ABCDEFGHIJKLMNOP" + "\nghp_" + "a".repeat(36) + "\n");
   fs.writeFileSync(path.join(repo, "src", "c.py"), 'api_key = "' + "abcdefghij" + "0123456789" + 'xyz"\n');
   fs.writeFileSync(path.join(repo, "test", "more.txt"), "ASIA" + "ABCDEFGHIJKLMNOP" + "\ngithub_pat_" + "A1".repeat(12) + "\nxapp-" + "1-A2B3C4D5E6" + "\nxoxe-" + "1234567890-abc" + "\n");
   const r2 = scanSecrets(repo, {});
-  const whats = new Set(r2.hits.filter((h) => h.file === "test/pem.txt").map((h) => h.what));
+  const whats = new Set(r2.hits.filter((h) => h.file === path.join("test", "pem.txt")).map((h) => h.what));
   assert.ok(whats.has("PEM 私钥") && whats.has("AWS access key") && whats.has("GitHub token"), [...whats].join(","));
-  const more = r2.hits.filter((h) => h.file === "test/more.txt").map((h) => h.what);
+  const more = r2.hits.filter((h) => h.file === path.join("test", "more.txt")).map((h) => h.what);
   assert.deepEqual(more, ["AWS access key", "GitHub token", "Slack token", "Slack token"], more.join(","));
-  assert.ok(r2.hits.some((h) => h.file === "src/c.py" && /字面赋值/.test(h.what)));
+  assert.ok(r2.hits.some((h) => h.file === path.join("src", "c.py") && /字面赋值/.test(h.what)));
   // 免安装包根下的 runtime/(自带的 Node / Python)不扫;别处叫 runtime 的目录照扫
   fs.mkdirSync(path.join(repo, "runtime", "python"), { recursive: true });
   fs.mkdirSync(path.join(repo, "src", "runtime"));
@@ -314,4 +314,29 @@ test("init 命令行:带了 --provider / --python 却没给值直接报错(任�
   }
   assert.deepEqual(initOptionsFromArgs(parseArgs(["--provider", "deepseek", "--force"])), { python: undefined, provider: "deepseek", force: true });
   assert.deepEqual(initOptionsFromArgs(parseArgs([])), { python: undefined, provider: undefined, force: false });
+});
+
+
+test("doctor DNS probe is opt-in and reports unknown separately", async (t) => {
+  const doctorRepo = tmpDoctorRepo();
+  t.after(() => fs.rmSync(doctorRepo, { recursive: true, force: true }));
+  const base = { PATH: "/usr/bin", HOME: FAKE_HOME };
+  const good: Exec = () => ({ status: 0, stdout: "", stderr: "" });
+  const doctor = (env: Record<string, string>, extra: Partial<Parameters<typeof runDoctor>[0]> = {}) =>
+    runDoctor({ repoRoot: doctorRepo, env, exec: good, python: "/fake/python", writeReport: false, probeAgents: probes("ready"), ...extra });
+  const byId = (r: Awaited<ReturnType<typeof runDoctor>>) => Object.fromEntries(r.checks.map((c) => [c.id, c]));
+  let dnsCalls = 0;
+  const dns = (complete: boolean, fake: string[] = []) => () => { dnsCalls++; return { complete, fake }; };
+  const offline = await doctor(base, { net: false, probeProxyDns: dns(true) });
+  assert.equal(dnsCalls, 0);
+  assert.match(byId(offline).net_proxy!.detail, /未进行 DNS 探测/);
+  const unknown = await doctor(base, { net: true, probeProxyDns: dns(false) });
+  assert.match(byId(unknown).net_proxy!.detail, /无法判断/);
+  const publicDns = await doctor(base, { net: true, probeProxyDns: dns(true) });
+  assert.match(byId(publicDns).net_proxy!.detail, /解析到公网/);
+  const fakeDns = await doctor(base, { net: true, probeProxyDns: dns(true, ["example.invalid"]) });
+  assert.match(byId(fakeDns).net_proxy!.detail, /fake-IP/);
+  const partialFake = await doctor(base, { net: true, probeProxyDns: dns(false, ["example.invalid"]) });
+  assert.match(byId(partialFake).net_proxy!.detail, /fake-IP.*部分 DNS 解析未完成/);
+
 });

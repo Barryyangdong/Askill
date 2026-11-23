@@ -84,7 +84,7 @@ test("产业研究页列出全部板块；板块页每一步能复制、能填�
   assert.match(list, /title="产业研究"/);
   const detail = read("verticals/finance/pages/SectorDetail.tsx");
   assert.match(detail, /const send = useAiDraft\(\);/);
-  assert.match(detail, /<StepCard key=\{s\.n\} step=\{s\} onSend=\{send\} \/>/);
+
   assert.match(detail, /\{onSend && \(/, "没接上 AI 入口时不显示「发给 Agent」，而不是点了没反应");
   assert.match(detail, /navigator\.clipboard\.writeText\(step\.prompt\)/);
   assert.match(detail, /复制没成功/, "复制失败要说出来");

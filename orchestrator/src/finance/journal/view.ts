@@ -17,9 +17,10 @@
  * 🔴 个人交易数据不进 AI:这一页不往 AI 提问上下文里放任何东西(VA 合规口径),MCP 也不给交易日志工具。
  * 🔴 成交只在 `trade` 里:改数量、价格、删成交去「我的股票」,这里不另存一份。
  */
+import crypto from "node:crypto";
 import { localClock } from "../../notify.ts";
 import type { LedgerIssue, LedgerRecord } from "../../ledger.ts";
-import { ServiceError, ledgerCheck, ledgerInsertMany, ledgerRemove, ledgerSnapshot, ledgerUpsert, type ServiceContext } from "../../service.ts";
+import { ServiceError, ledgerCheck, ledgerInsertMany, ledgerReceipt, ledgerCancelReceipt, ledgerRemove, ledgerSnapshot, ledgerUpsert, type ServiceContext } from "../../service.ts";
 import { SCHEDULE_TZ } from "../schedule.ts";
 import { replayTrades, tradeOf, tradeProblem, type Trade } from "../holdings.ts";
 import { DEFAULT_RULES, PLAYBOOKS, RULE_KEYS, RULE_LABELS, ruleProblem, type Rules } from "./defs.ts";
@@ -266,6 +267,10 @@ function actManual(ctx: ServiceContext, body: Record<string, unknown>): LedgerRe
 /** 记一笔交易:成交 → 交易流水(整批),再写标注 */
 export const RECORD_MAX_FILLS = 50;
 function actRecord(ctx: ServiceContext, body: Record<string, unknown>, now: Date): { trade_ids: string[]; tag: LedgerRecord | null } {
+  const key = body.request_id;
+  if (key !== undefined && (typeof key !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(key))) bad("请求标识不合法");
+  const hash = (value: unknown) => crypto.createHash("sha256").update(JSON.stringify(value, (k, v: unknown) => k === "request_id" ? undefined : v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v)).digest("hex");
+  const legacyDigest = hash(body);
   const symbol = typeof body.symbol === "string" ? body.symbol.trim() : "";
   if (!isJournalSymbol(symbol)) bad(JOURNAL_ONLY_STOCKS);
   const name = typeof body.name === "string" ? body.name.trim() : "";
@@ -282,6 +287,15 @@ function actRecord(ctx: ServiceContext, body: Record<string, unknown>, now: Date
     return r;
   });
   const tag = tagFields(body, { manual: false });
+  const digest = hash({ records: recs, tag });
+  if (typeof key === "string") {
+    const prior = ledgerReceipt(ctx, "trade", key);
+    if (prior) {
+      if (!prior.ids.length) throw new ServiceError("request_cancelled", "该请求已取消，不能再写入成交");
+      if (prior.digest !== digest && prior.digest !== legacyDigest) throw new ServiceError("request_conflict", "请求标识已用于不同内容，请核对后开始新记录");
+      throw new ServiceError("partial", "这次请求的成交已处理过，请核对流水与标注；不会再次写入成交");
+    }
+  }
   // 先把所有检查做完再写:写了流水、标注却写不进去,用户就得去两个地方收拾
   if (Object.keys(tag).length) checkTag(ctx, { symbol, trade_id: "x", ...tag });
   const d = loadJournalData(ctx);
@@ -307,7 +321,7 @@ function actRecord(ctx: ServiceContext, body: Record<string, unknown>, now: Date
   const holders = new Set(pending.map((t) => hypo.find((e) => e.trade_ids.includes(t.id))?.id ?? ""));
   if (holders.size !== 1) bad("这几笔成交中间卖光过,不是同一笔交易:请分开记");
 
-  const added = ledgerInsertMany(ctx, { kind: "trade", records: recs });
+  const added = ledgerInsertMany(ctx, { kind: "trade", records: recs, ...(typeof key === "string" ? { receipt: { key, digest } } : {}) });
   const ids = added.map((r) => r.id);
   if (!Object.keys(tag).length) return { trade_ids: ids, tag: null };
   const fresh = loadJournalData(ctx);
@@ -434,9 +448,23 @@ function actModeDelete(ctx: ServiceContext, body: Record<string, unknown>): { re
 
 export async function journalAct(ctx: ServiceContext, body: Record<string, unknown>, _signal?: AbortSignal, now = new Date()): Promise<{ result: unknown; view: JournalView }> {
   const a = body.action;
+  if (a === "record_status" || a === "record_cancel") {
+    if (typeof body.request_id !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(body.request_id)) bad("请求标识不合法");
+    if (a === "record_cancel") return { result: { state: ledgerCancelReceipt(ctx, "trade", body.request_id as string) }, view: await buildJournalView(ctx, now) };
+    const receipt = ledgerReceipt(ctx, "trade", body.request_id as string);
+    return { result: { recorded: !!receipt?.ids.length }, view: await buildJournalView(ctx, now) };
+  }
+  let recorded: unknown;
+  if (a === "record") {
+    try { recorded = actRecord(ctx, body, now); }
+    catch (e) {
+      if (body.request_id !== undefined && e instanceof ServiceError && e.code === "bad_request") throw new ServiceError("record_rejected", e.message);
+      throw e;
+    }
+  }
   const result = a === "tag" ? actTag(ctx, body, now)
     : a === "manual" ? actManual(ctx, body)
-    : a === "record" ? actRecord(ctx, body, now)
+    : a === "record" ? recorded
     : a === "delete_tag" ? actDeleteTag(ctx, body)
     : a === "settings" ? actSettings(ctx, body)
     : a === "mode_save" ? actModeSave(ctx, body, now)

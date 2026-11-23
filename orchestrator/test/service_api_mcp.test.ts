@@ -4,7 +4,9 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { removeTestTemp } from "./helpers/temp_cleanup.ts";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -94,7 +96,7 @@ test("界面选定来源的辩论沿用内部材料上限，而不是普通消�
   const llm = { provider: "cli-claude" };
   const id = "debate-long-source";
   startDebateCore({ id, symbol: "300308", sourceFingerprint: runtimeSourceFingerprint(REPO, root, llm), gaps: [],
-    envelopes: [{ evidence: Array.from({ length: 80 }, (_, i) => ({ id: `ev-long-${i}`, field: "sample", value: "仅为验收的合成材料".repeat(10) })) }] });
+    envelopes: [{ evidence: Array.from({ length: 80 }, (_, i) => ({ id: `ev-long-${i}`, field: `sample-${i}`, value: "仅为验收的合成材料".repeat(10) })) }] });
   const out = await debateAdvance(ctx, { id, llm });
   assert.equal(out.stages[0]!.status, "done", out.stages[0]!.error);
   assert.ok(fs.readFileSync(cli.stdinFile, "utf8").length > 4000);
@@ -141,9 +143,8 @@ function fakeNodeExecutable(dir: string, name: string, source: string): string {
   }
   const script = path.join(dir, `${name}.cjs`);
   const bin = path.join(dir, `${name}.ps1`);
-  fs.writeFileSync(script, source);
-  const quote = (s: string) => s.replaceAll("'", "''");
-  fs.writeFileSync(bin, `& '${quote(process.execPath)}' '${quote(script)}' @args\r\nexit $LASTEXITCODE\r\n`);
+  fs.writeFileSync(script, `#!/usr/bin/env node\n${source}`);
+  fs.writeFileSync(bin, `#!/usr/bin/env pwsh\n$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\n& "node$exe" "$basedir/${name}.cjs" $args\nexit $LASTEXITCODE\n`);
   return bin;
 }
 
@@ -277,7 +278,7 @@ test("断开 /debate 取数请求会结束子进程，不继续取下一源或�
     if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* 已退出 */ } }
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
-    fs.rmSync(ctx.repoRoot, { recursive: true, force: true });
+    await removeTestTemp(ctx.repoRoot);
   }
 });
 
@@ -758,7 +759,7 @@ test("HTTP API:token 必需 / 非本机 Origin 403 / 跨站 403 / 非 JSON POST 
     const r500 = await call("GET", "/runs");
     assert.equal(r500.code, 500); assert.deepEqual(r500.json, { error: "internal" });
     fs.rmSync(path.join(ctx.dataRoot, "runs"));
-  } finally { srv.close(); }
+  } finally { await new Promise<void>(resolve => srv.close(() => resolve())); }
   // 回环判定口径(前置 token 检查与 cookie 开关共用)
   for (const h of ["127.0.0.1", "localhost", "::1", "[::1]"]) assert.equal(isLoopbackHost(h), true, h);
   for (const h of ["0.0.0.0", "192.168.1.2", "example.com", ""]) assert.equal(isLoopbackHost(h), false, h);
@@ -771,10 +772,10 @@ test("HTTP API:token 必需 / 非本机 Origin 403 / 跨站 403 / 非 JSON POST 
     assert.equal(await get2(`/login?token=${TOKEN}`), 404);
     assert.equal(await get2("/ui", { Cookie: `${API_COOKIE}=${TOKEN}` }), 401);
     assert.equal(await get2("/ui", { Authorization: `Bearer ${TOKEN}` }), 200);
-  } finally { srv2.close(); }
+  } finally { await new Promise<void>(resolve => srv2.close(() => resolve())); }
   const tk = resolveToken(ctx, {});
   assert.equal(tk.source, "generated"); assert.ok(tk.token.length >= 32 && fs.existsSync(tk.file));
-  assert.equal((fs.statSync(tk.file).mode & 0o777), 0o600);
+  if (process.platform !== "win32") assert.equal((fs.statSync(tk.file).mode & 0o777), 0o600);
   assert.equal(resolveToken(ctx, {}).source, "file");
   assert.equal(resolveToken(ctx, { VRA_API_TOKEN: "e".repeat(20) }).source, "env");
 });
@@ -858,7 +859,7 @@ test("MCP 使用说明里的端点数和层数现读注册表,注册表读不到
   for (const e of reg.endpoints as { layer: string }[]) if (!byLayer.has(e.layer) && byLayer.size < 3) byLayer.set(e.layer, e);
   const picked = [...byLayer.values()];
   fs.writeFileSync(path.join(repo, "datasources", "registry.json"), JSON.stringify({ ...reg, endpoints: picked }));
-  const ctx = { repoRoot: repo, dataRoot: path.join(repo, ".local"), python: "python3", node: process.execPath } as ServiceContext;
+  const ctx = { repoRoot: repo, dataRoot: path.join(repo, ".local"), python: PY, node: process.execPath } as ServiceContext;
   assert.match(serverInstructions(ctx), /全量 3 个端点、3 层,不带过滤/);
   fs.rmSync(path.join(repo, "datasources", "registry.json"));
   const bare = serverInstructions(ctx);
@@ -919,7 +920,7 @@ test("README 的「在 Claude Code / Codex / Cursor 里调用」:命令指向真
   assert.ok(fs.existsSync(path.join(REPO, entry)), "README 里的入口文件要存在");
   const docs = [
     { file: "README.md", intro: `${PRODUCT_NAME} 提供 MCP 接口`, count: `共 ${regs.length} 个工具：${readOnly} 个只读`, pageChoice: /页面「接入 AI」里的选择不算/ },
-    { file: "README_en.md", intro: `${PRODUCT_NAME} provides an MCP interface`, count: `There are ${regs.length} tools: ${readOnly} read-only`, pageChoice: /"Connect AI" page does not count/ },
+    { file: "README_en.md", intro: `${PRODUCT_SLUG} provides an MCP interface`, count: `There are ${regs.length} tools: ${readOnly} read-only`, pageChoice: /"Connect AI" page does not count/ },
   ];
   for (const d of docs) {
     const md = fs.readFileSync(path.join(REPO, d.file), "utf8");
@@ -941,7 +942,7 @@ test("README 的「在 Claude Code / Codex / Cursor 里调用」:命令指向真
 test("台账全量读取也要过 safePath —— 防线只在次要入口生效等于没有防线", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-ledgersvc-"));
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), "vra-outside-"));
-  const ctx = { repoRoot: root, dataRoot: root, python: "python3", node: process.execPath } as ServiceContext;
+  const ctx = { repoRoot: root, dataRoot: root, python: PY, node: process.execPath } as ServiceContext;
 
   // 先正常写一条,确保目录与文件存在
   ledgerUpsert(ctx, { kind: "position", record: { symbol: "300308", shares: 1, cost: 1 } });
@@ -966,7 +967,7 @@ const realRepoCtx = (): ServiceContext => ({
 
 const svcCtx = (): ServiceContext => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-svc-"));
-  return { repoRoot: root, dataRoot: root, python: "python3", node: process.execPath } as ServiceContext;
+  return { repoRoot: root, dataRoot: root, python: PY, node: process.execPath } as ServiceContext;
 };
 
 test("🔴 /ledger 的 records 与 issues 必须来自同一次读盘(分两次读会自相矛盾)", () => {
@@ -990,8 +991,8 @@ test("🔴 /ledger 的 records 与 issues 必须来自同一次读盘(分两次�
 test("🔴 垂类自管的台账种类(managedWrites)不许经通用接口写或删,读照常;别的种类不受影响", async () => {
   const ctx = svcCtx();
   const managed = Object.entries(currentPlugin().ledger?.kinds ?? {}).filter(([, d]) => d.managedWrites === true).map(([k]) => k);
-  // 金融包:明日验证有 09:15 时间锁,AI 复盘 / 周报只由自己的流程写(连同数字核对结果)
-  assert.deepEqual(managed.sort(), ["shortline_review", "shortline_weekly_review", "verification"]);
+  // 金融包:计划复核保留快照契约；明日验证有时间锁；AI 复盘与周报由专属流程写入。
+  assert.deepEqual(managed.sort(), ["plan_review", "shortline_review", "shortline_weekly_review", "verification"]);
   // 内部写入照常(页面自己的写入流程走这些)
   const seeded = ledgerUpsert(ctx, { kind: "verification", record: { date: "2026-10-09", metric: VERIFY_METRIC_KEYS[0]!, direction: DIRECTIONS[0]! } });
   const server = createApiServer(ctx, { token: "t-test-token-0123456789" });
@@ -1145,6 +1146,30 @@ test("single-flight 取消只影响该订阅者;全部取消后可立即重试",
   } finally { fs.rmSync(ctx.repoRoot, { recursive: true, force: true }); }
 });
 
+test("市场摘要复用有证据的部分结果；刷新、无数据与未启用的端点仍重取", async () => {
+  const ctx = fakeCtx();
+  const script = path.join(ctx.repoRoot, ".agents/skills/data-access/scripts/fetch_endpoint.py");
+  try {
+    fs.writeFileSync(script, `import json, sys
+ep = sys.argv[sys.argv.index('--endpoint') + 1]
+print(json.dumps({"status":"partial", "evidence":[] if ep == "em_market_breadth" else [{"field":"close","value":17}], "missing":[{"field":"volume"}]}))
+sys.exit(2)
+`);
+    const request = { endpoint: "em_market_trend", args: { end: "2026-11-19" } };
+    assert.equal((await fetchEndpoint(ctx, request)).cached, false);
+    const second = await fetchEndpoint(ctx, request);
+    assert.equal(second.cached, true);
+    assert.equal(second.envelope.status, "partial");
+    assert.deepEqual(second.envelope.missing, [{ field: "volume" }]);
+    assert.equal((await fetchEndpoint(ctx, { ...request, refresh: true })).cached, false);
+    assert.equal((await fetchEndpoint(ctx, { ...request, args: { end: "2026-11-18" } })).cached, false);
+    for (const endpoint of ["em_market_breadth", "em_zt_pool"]) {
+      await fetchEndpoint(ctx, { endpoint });
+      assert.equal((await fetchEndpoint(ctx, { endpoint })).cached, false);
+    }
+  } finally { fs.rmSync(ctx.repoRoot, { recursive: true, force: true }); }
+});
+
 test("🔴 cache_only 没快照就报错,绝不偷偷联网", async () => {
   const ctx = realRepoCtx();
   await assert.rejects(
@@ -1183,7 +1208,7 @@ test("displayUrl 剥掉用户名 / 密码 / 查询串 / 片段", () => {
 });
 
 test("🔴 /chat 的 llm 在**边界**上校验形状 —— 畸形负载给可读的 400，不是 500", async () => {
-  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: fs.mkdtempSync(path.join(os.tmpdir(), "vra-llmshape-")), python: "python3", node: process.execPath };
+  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: fs.mkdtempSync(path.join(os.tmpdir(), "vra-llmshape-")), python: PY, node: process.execPath };
   const bad: [unknown, string][] = [
     ["x", "llm 必须是一个对象"],
     // 🔴 显式 null 不算"没传":当没传处理等于给"静默换一家去打"留了后门
@@ -1246,7 +1271,7 @@ test("普通对话通过所选本机订阅或模型 API 来源实际到达无工
 
 test("全局 direct 模式让普通对话与标题翻译走同一份已验证 API，不启动 Agent", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-direct-service-"));
-  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: root, python: "python3", node: process.execPath };
+  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: root, python: PY, node: process.execPath };
   const calls: { url: string; auth: string; body: Record<string, unknown> }[] = [];
   const oldFetch = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -1318,7 +1343,7 @@ test("全局 direct 模式让普通对话与标题翻译走同一份已验证 AP
 
 test("🔴 直连资料问答只接受本轮真实 id 与页码", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-direct-citation-"));
-  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: root, python: "python3", node: process.execPath };
+  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: root, python: PY, node: process.execPath };
   const report = await addReport(root, { name: "独特收入变化.md", content: Buffer.from("独特收入变化的原文。", "utf8").toString("base64") });
   const oldFetch = globalThis.fetch;
   let reply = `伪造引用 [资料:${"b".repeat(32)} p.-]`;
@@ -1342,7 +1367,7 @@ test("🔴 直连资料问答只接受本轮真实 id 与页码", async () => {
 
 test("全局 direct 模式在任何副作用前拒绝需要 Agent 的能力", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-direct-boundary-"));
-  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: root, python: "python3", node: process.execPath };
+  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: root, python: PY, node: process.execPath };
   const isAgentRequired = (error: unknown) => error instanceof ServiceError && error.code === "agent_required";
   try {
     assert.throws(
@@ -1391,7 +1416,7 @@ test("全局 direct 模式在任何副作用前拒绝需要 Agent 的能力", as
 
 test("Claude / CodeBuddy 业务入口保留参数与模式门控，不再因来源一律拒绝", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-claude-boundary-"));
-  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: root, python: "python3", node: process.execPath };
+  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: root, python: PY, node: process.execPath };
   const code = (expected: string) => (error: unknown) => error instanceof ServiceError && error.code === expected;
   const tool = listTools()[0]?.name;
   assert.ok(tool, "金融插件必须至少声明一个工具");
@@ -1434,7 +1459,7 @@ fs.renameSync(${JSON.stringify(pidFile)}+'.tmp',${JSON.stringify(pidFile)});
 setInterval(()=>{},1000);
 `);
   const ctx: ServiceContext = {
-    repoRoot: REPO, dataRoot: path.join(root, "data"), python: "python3",
+    repoRoot: REPO, dataRoot: path.join(root, "data"), python: PY,
     node: process.execPath,
   };
   fs.mkdirSync(ctx.dataRoot, { recursive: true });
@@ -1442,9 +1467,11 @@ setInterval(()=>{},1000);
   process.env.CLAUDE_BIN = bin;
   const server = createApiServer(ctx, { token: TOKEN });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  let request: http.ClientRequest | undefined;
+  let pid = 0;
   try {
     const port = (server.address() as { port: number }).port;
-    const request = http.request({
+    request = http.request({
       host: "127.0.0.1", port, path: "/chat", method: "POST",
       headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
     });
@@ -1457,7 +1484,7 @@ setInterval(()=>{},1000);
     }
     if (!fs.existsSync(pidFile)) request.destroy();
     assert.ok(fs.existsSync(pidFile), "假 Claude 必须真的启动，才能证明取消链路");
-    const pid = readTestPid(pidFile);
+    pid = readTestPid(pidFile);
     request.destroy();
     for (let i = 0; i < 100; i += 1) {
       try { process.kill(pid, 0); } catch { break; }
@@ -1465,8 +1492,21 @@ setInterval(()=>{},1000);
     }
     assert.throws(() => process.kill(pid, 0), /ESRCH/);
   } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    if (oldBin === undefined) delete process.env.CLAUDE_BIN; else process.env.CLAUDE_BIN = oldBin;
-    fs.rmSync(root, { recursive: true, force: true });
+    request?.destroy();
+    try {
+      // A failed cancellation assertion must still clean up this test's CLI.
+      // Keep the fixture and report permission failures instead of hiding them.
+      if (!pid && fs.existsSync(pidFile)) pid = readTestPid(pidFile);
+      let alive = false;
+      if (pid) { try { process.kill(pid, 0); alive = true; } catch {} }
+      if (alive && process.platform === "win32") {
+        const result = spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, encoding: "utf8", timeout: 5000 });
+        assert.equal(result.status, 0, `合成 CLI 清理失败: ${result.error?.message ?? result.stderr}`);
+      } else if (alive) process.kill(pid, "SIGKILL");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      if (oldBin === undefined) delete process.env.CLAUDE_BIN; else process.env.CLAUDE_BIN = oldBin;
+    }
+    await removeTestTemp(root);
   }
 });

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CalendarTargets } from "./CalendarTargets";
 import { Link } from "react-router-dom";
 import { AlertTriangle, CalendarDays, RefreshCw, SearchX } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -26,6 +27,11 @@ function readGroups(): Set<EventGroup> {
   return new Set(picked);
 }
 
+function objectLink(e: CalendarEvent) {
+ if(!e.ref)return null;
+ const kind=({criterion:'criterion',review:'thesis',action:'action'} as Record<string,string>)[e.kind];
+ return kind?`/calendar?kind=${kind}&object=${encodeURIComponent(e.ref)}&due=${e.date}`:null;
+}
 function EventRow({ e }: { e: CalendarEvent }) {
   const meta = KIND_META[e.kind];
   return <li className="flex flex-col gap-1 rounded-xl border border-border/50 p-3 sm:flex-row sm:items-start sm:gap-3">
@@ -35,7 +41,7 @@ function EventRow({ e }: { e: CalendarEvent }) {
         {e.symbol && <span className="mr-1.5 font-medium">{e.name || e.symbol}<span className="ml-1 font-mono text-xs text-muted-foreground">{e.name ? e.symbol : ""}</span></span>}
         {/* 宏观的 name 是国家;标题本身以国家开头时(「美国10年期国债拍卖」)不再重复 */}
         {!e.symbol && e.kind === "macro" && e.name && !e.title.startsWith(e.name) && <span className="mr-1.5 text-xs text-muted-foreground">{e.name}</span>}
-        <span>{e.title}</span>
+        <span>{objectLink(e)?<Link className="text-primary underline" to={objectLink(e)!}>{e.title} · 查看原记录</Link>:e.title}</span>
         {e.estimated && <span className="ml-1.5 rounded border border-warning/40 px-1 text-[10px] text-warning">预估</span>}
       </p>
       {e.detail.length > 0 && <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{e.detail.join(" · ")}</p>}
@@ -47,24 +53,26 @@ function EventRow({ e }: { e: CalendarEvent }) {
 export function Calendar() {
   const [days, setDays] = useState<Days>(() => (DAY_OPTIONS.some((o) => o.key === storageGet("vr-calendar-days")) ? storageGet("vr-calendar-days") as Days : "30"));
   const [groups, setGroups] = useState<Set<EventGroup>>(readGroups);
-  const [data, setData] = useState<CalendarResult | null>(null);
+  const [received, setData] = useState<CalendarResult | null>(null);
+  const data=received?.window.days===Number(days)?received:null;
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const seq = useRef(0);
   const [verdicts, setVerdicts] = useState<VerdictResult | null>(null);
   const [vErr, setVErr] = useState("");
   const vSeq = useRef(0);
+  const [vLoading,setVLoading]=useState(true);
 
   const loadVerdicts = useCallback(async (refresh: boolean) => {
-    const my = ++vSeq.current;
+    const my = ++vSeq.current;setVLoading(true);
     try {
       const r = await backend.verdicts({ refresh });
       if (my === vSeq.current) { setVerdicts(r); setVErr(""); }
     } catch (e) {
       if (my === vSeq.current) setVErr(e instanceof ApiError || e instanceof Error ? e.message : String(e));
-    }
+    } finally {if(my===vSeq.current)setVLoading(false);}
   }, []);
-  useEffect(() => { void loadVerdicts(false); }, [loadVerdicts]);
+  useEffect(() => { void loadVerdicts(false); return()=>{++vSeq.current;}; }, [loadVerdicts]);
 
   const load = useCallback(async (refresh: boolean) => {
     const my = ++seq.current;
@@ -79,7 +87,15 @@ export function Calendar() {
       if (my === seq.current) setLoading(false);
     }
   }, [days]);
-  useEffect(() => { void load(false); }, [load]);
+  useEffect(() => { setError("");void load(false); return()=>{++seq.current;}; }, [load]);
+  // A pending verdict write may retain an older onChanged callback. Resolve
+  // its refresh against the latest rendered range, not the range at save time.
+  const currentLoad = useRef<typeof load | null>(load);
+  currentLoad.current = load;
+  useEffect(() => {
+    currentLoad.current = load;
+    return () => { currentLoad.current = null; };
+  }, []);
 
   const toggleGroup = (g: EventGroup) => setGroups((prev) => {
     const next = new Set(prev);
@@ -89,7 +105,11 @@ export function Calendar() {
   });
 
   // 判过 / 改回待判后两边都重取:时间轴里的裁决点和过期卡片也要跟着变(走缓存,很快)
-  const afterVerdict = useCallback(() => { void loadVerdicts(false); void load(false); }, [loadVerdicts, load]);
+  const afterVerdict = useCallback(() => {
+    if (!currentLoad.current) return;
+    void loadVerdicts(false);
+    void currentLoad.current(false);
+  }, [loadVerdicts]);
   // 到期没判的判据在下面的「到期的判据」里逐条标记,这里只留论点、待办和过了预约日的定期报告
   const overdueOther = useMemo(() => (data?.overdue ?? []).filter((e) => e.kind !== "criterion"), [data]);
 
@@ -114,7 +134,7 @@ export function Calendar() {
   const noSymbols = data && data.symbols.length === 0;
   return <div>
     <PageHeader title="事件日历"
-      subtitle="自选和持仓接下来的公司事件,加上你在台账里写的裁决点、复核日和待办,排成一条时间轴。只列来源给的日期,不打分、不给买卖建议。"
+      subtitle="公司事件 · 复核日 · 待办" description="自选和持仓接下来的公司事件,加上你在台账里写的裁决点、复核日和待办,排成一条时间轴。只列来源给的日期,不打分、不给买卖建议。"
       actions={<>
         <SegmentedToggle label="看多少天" value={days} options={[...DAY_OPTIONS]} onChange={(v) => { setDays(v); storageSet("vr-calendar-days", v); }} disabled={loading} />
         <button type="button" onClick={() => { void load(true); void loadVerdicts(true); }} disabled={loading} className={BTN}><RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />{loading ? "取数中…" : "重新取数"}</button>
@@ -132,10 +152,13 @@ export function Calendar() {
     {error && <p role="alert" className="mb-4 rounded-lg border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-xs text-destructive">{error}</p>}
     {!data && !error && <p role="status" className="text-sm text-muted-foreground">正在取数…第一次要逐只查,自选多时需要十几秒到半分钟。</p>}
 
+    <CalendarTargets revision={verdicts?.generated_at??''}/>
+    <div className="mb-5"><VerdictPanel data={verdicts} error={vErr} loading={vLoading} onRetry={()=>void loadVerdicts(true)} onChanged={afterVerdict}/></div>
+    {error&&data&&<p role="status">上次快照 {data.generated_at}，此范围尚未更新。</p>}
     {data && <div className="space-y-5">
       {noSymbols && <GlassCard><p className="text-sm text-muted-foreground">自选和持仓都是空的,只能显示台账里的日子{groups.has("macro") ? "和宏观日历" : ""}。可以先去 <Link to="/my-stocks?tab=watch" className="text-primary hover:underline">自选股</Link> 加几只。</p></GlassCard>}
 
-      <VerdictPanel data={verdicts} error={vErr} onChanged={afterVerdict} />
+
 
       {overdueOther.length > 0 && <GlassCard className="border-warning/40">
         <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold"><AlertTriangle className="h-4 w-4 text-warning" />已经过了日子、还没处理({overdueOther.length})</h2>
@@ -172,7 +195,7 @@ function EventInline({ e }: { e: CalendarEvent }) {
   return <>
     <span className={cn("mr-1.5 rounded border px-1 text-[10px]", KIND_META[e.kind].tone)}>{KIND_META[e.kind].label}</span>
     {e.symbol && <span className="mr-1 font-medium">{e.name || e.symbol}</span>}
-    <span>{e.title}</span>
+    <span>{objectLink(e)?<Link className="text-primary underline" to={objectLink(e)!}>{e.title} · 查看原记录</Link>:e.title}</span>
     {e.detail[0] && <span className="ml-1.5 text-xs text-muted-foreground">{e.detail.join(" · ")}</span>}
     {e.fetched_at && <span className="ml-1.5 text-[11px] text-muted-foreground/70">{e.source} · {shortTime(e.fetched_at)} 取</span>}
   </>;

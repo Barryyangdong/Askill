@@ -140,8 +140,14 @@ test("研究页接上走势卡：走 K 线工具、要序列、切换时丢掉�
   const chart = readFileSync(new URL("../src/verticals/finance/components/ui/EChart.tsx", import.meta.url), "utf8");
   assert.match(page, /import \{ KlineCard \} from "\.\.\/components\/KlineCard"/);
   assert.match(page, /<KlineCard symbol=\{chartSymbol\} \/>/);
-  assert.match(card, /aShareCode \? \{ symbol, period, adjust, charts: true \} : \{ symbol, period, charts: true \}/);
-  assert.match(card, /backend\.runTool<unknown>\("kline", body, ctl\.signal\)/);
+  assert.match(card, /backend\.runTool<unknown>\("kline", body, ctl\.signal[,)]/);
   assert.match(card, /return \(\) => ctl\.abort\(\)/);
   assert.match(chart, /CandlestickChart, GridComponent/, "K 线图要按需注册，否则画出来是空白");
+});
+
+
+test("minute chart parser preserves intraday timestamps and rejects mixed daily labels",()=>{
+ const raw=toolResult(2);raw.result.period='m5';raw.result.ui_only.series.dates=['2026-11-16 10:00','2026-11-16 10:05'];
+ assert.equal(parseKline(raw).ok,true);
+ raw.result.ui_only.series.dates[1]='2026-11-16';assert.equal(parseKline(raw).ok,false);
 });

@@ -14,9 +14,9 @@
  * AI 从复盘里提炼的条件随五段式复盘一起移植。
  * run 只读;写条件走 act(整晚一起替换,没变的条目不重写,免得改理由也被当成事后改)。
  */
-import type { LedgerRecord } from "../../ledger.ts";
+import { withLock, type LedgerRecord } from "../../ledger.ts";
 import { localClock } from "../../notify.ts";
-import { ServiceError, fetchEndpoint, ledgerCheck, ledgerList, ledgerReplace, type ServiceContext } from "../../service.ts";
+import { ServiceError, fetchEndpoint, ledgerCheck, ledgerInsertMany, ledgerList, ledgerReplace, safePath, type ServiceContext } from "../../service.ts";
 import { klineBars } from "../abnormal.ts";
 import { calendarFromEnvelope } from "../session.ts";
 import { SCHEDULE_TZ, failedNote, pool } from "../schedule.ts";
@@ -369,12 +369,14 @@ export async function shortlineVerify(ctx: ServiceContext, query: Record<string,
  * 删掉的条件不留痕迹,会直接从战绩里消失(审计 2026-10-11 Opus 范围 2 第 2 条)。
  */
 export async function shortlineVerifyAct(ctx: ServiceContext, body: Record<string, unknown>, signal: AbortSignal, now = new Date()): Promise<{ date: string; items: Item[] }> {
-  if (body.action !== "save") throw new ServiceError("bad_request", "只支持 action=save");
+  const append = body.action === "append";
+  if (!append && body.action !== "save") throw new ServiceError("bad_request", "只支持 action=save（保存整晚）或 append（追加一项）");
   const date = typeof body.date === "string" ? body.date : "";
   if (!validDate(date)) throw new ServiceError("bad_request", "date 要写成 YYYY-MM-DD");
   const today = localClock(now, SCHEDULE_TZ).day;
   if (date > today) throw new ServiceError("bad_request", `${date} 还没到`);
   if (!Array.isArray(body.items)) throw new ServiceError("bad_request", "items 要是数组");
+  if (append && body.items.length !== 1) throw new ServiceError("bad_request", "每次加入一个研判条件");
   if (body.items.length > MAX_ITEMS) throw new ServiceError("bad_request", `最多 ${MAX_ITEMS} 条(一个读数一条),太多了反而没重点`);
   const seen = new Set<string>();
   const want = body.items.map((raw, i) => {
@@ -415,6 +417,18 @@ export async function shortlineVerifyAct(ctx: ServiceContext, body: Record<strin
   // 下一场开没开始说不准:日 K 没取到,或日 K 里还没有下一场、日历也没取到
   const unsure = !next && date < today && (bars.length === 0 || (isWeekday(today) && todayOpen === null));
 
+  if (append) {
+    return withLock(safePath(ctx, "verification-append-" + date), () => {
+      const item = want[0]!;
+      const all = ledgerList(ctx, LEDGER_KIND)[LEDGER_KIND] ?? [];
+      const sameMetric = all.filter(record => record.date === date && record.metric === item.metric);
+      if (sameMetric.some(record => record.direction !== item.direction)) {
+        throw new ServiceError("bad_request", "次日验证已有这个读数的其他方向，可在次日验证中核对。");
+      }
+      const added = sameMetric.length ? [] : ledgerInsertMany(ctx, { kind: LEDGER_KIND, records: [item] });
+      return { date, items: itemsByDate([...all,...added]).byDate.get(date) ?? [] };
+    });
+  }
   const existing = (ledgerList(ctx, LEDGER_KIND)[LEDGER_KIND] ?? []).filter((r) => r.date === date);
   const keepMetrics = new Set(want.map((w) => w.metric));
   const removes = existing.some((r) => !keepMetrics.has(String(r.metric)));

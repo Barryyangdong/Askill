@@ -122,12 +122,12 @@ test("远程访问口令：首次生成 0600 文件并沿用，换链接才变�
     assert.equal(first.source, "new");
     assert.match(first.token, /^[A-Za-z0-9_-]{43}$/);
     assert.equal(fs.readFileSync(file, "utf8").trim(), first.token);
-    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 
     fs.chmodSync(file, 0o644);
     const again = ensureAccessToken(root, env);
     assert.deepEqual(again, { token: first.token, source: "file" }, "机器重启链接不变");
-    assert.equal(fs.statSync(file).mode & 0o777, 0o600, "权限被放宽过也要收回");
+    if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o600, "权限被放宽过也要收回");
 
     const rotated = ensureAccessToken(root, env, true);
     assert.equal(rotated.source, "new");

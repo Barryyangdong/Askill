@@ -18,6 +18,9 @@ import type { AiMsg } from "./useAiChat";
 export interface AiMessagesProps {
   msgs: AiMsg[];
   loading: boolean;
+  progress?: string | null;
+  recoverableQuestion?: string | null;
+  onRecover?: (question: string) => void;
   err: string | null;
   info?: string | null;
   renderReply?: (reply: string) => ReactNode;
@@ -39,7 +42,7 @@ export interface AiMessagesProps {
 }
 
 export function AiMessages({
-  msgs, loading, err, info, renderReply, notice, suggestions = [], suggestionStyle = "pills", onPick, renderReplyActions, displayText, className,
+  msgs, loading, progress, recoverableQuestion, onRecover, err, info, renderReply, notice, suggestions = [], suggestionStyle = "pills", onPick, renderReplyActions, displayText, className,
 }: AiMessagesProps) {
   const show = displayText ?? ((t: string) => t);
   const ref = useRef<HTMLDivElement>(null);
@@ -72,13 +75,14 @@ export function AiMessages({
           </div>
         </div>
       ))}
-      {loading && <AiWaiting />}
+      {loading && <AiWaiting progress={progress} />}
       {info && <p role="status" className="rounded-lg border border-border bg-muted/20 p-2 text-xs text-muted-foreground">{info}</p>}
       {err && (
         <div role="alert" className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" /> {err}
         </div>
       )}
+      {!loading && recoverableQuestion && onRecover && <button type="button" className="rounded border border-border px-3 py-2 text-xs text-primary" onClick={() => onRecover(recoverableQuestion)}>恢复上一问到输入框</button>}
       {msgs.length === 0 && suggestions.length > 0 && (
         <div className={cn(
           "pt-1",
@@ -102,16 +106,21 @@ export function AiMessages({
 }
 
 /** Wall-clock waiting only: do not infer model activity or invent completion percentages. */
-export function AiWaiting() {
+export function AiWaiting({ progress }: { progress?: string | null } = {}) {
   const [seconds, setSeconds] = useState(0);
   useEffect(() => {
     const started = Date.now();
     const timer = window.setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
     return () => window.clearInterval(timer);
   }, []);
-  return <div className="text-xs text-muted-foreground">
-    <p className="flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" />等待回答<span aria-live="off"> · 已等待 {seconds} 秒</span></p>
-    {seconds >= 20 && <p role="status" className="mt-1">尚未收到回答。耗时取决于模型与工具调用，可停止等待后缩小问题范围。</p>}
+  return <WaitingStatus seconds={seconds} progress={progress} />;
+}
+
+export function WaitingStatus({ seconds, progress }: { seconds: number; progress?: string | null }) {
+  const elapsed = seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+  return <div className="rounded border border-border px-3 py-2 text-xs text-muted-foreground">
+    <p className="flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" />{progress || "请求已发送 · 等待结果"}<span aria-live="off"> · {elapsed}</span></p>
+    {seconds >= 20 && <p role="status" className="mt-1">{progress ? "执行状态来自本机服务。" : "结果尚未返回，暂时无法确认执行阶段。"}可用下方“停止”中止本轮等待。</p>}
   </div>;
 }
 
@@ -144,6 +153,7 @@ export function AiComposer({
       <div className="flex items-end gap-2">
         <textarea
           ref={ref}
+          aria-label="输入问题"
           onKeyDown={(e) => {
             // 🔴 中文输入法**选字期间**的 Enter 是"确认候选词"，不是"发送"。
             //    不挡的话，打到一半按回车会把没成词的拼音直接发出去并清空输入框 ——

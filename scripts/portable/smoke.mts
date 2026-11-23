@@ -6,7 +6,7 @@
  * - 用包里的启动脚本起服务（不开浏览器），经页面代理查 /api/health，版本要和包信息一致；后端用的 Python 和数据目录都要是包里的；
  *   首页和一个深链接都要由打包好的页面提供（不是开发服务器）。
  * - 再用包里的 Node 跑一次体检：Node、Python 与取数依赖、calc 自检、注册表都要通过（不联网）。
- * - 最后停掉，确认实际用的页面端口和 API 端口（brand.ts 的 API_PORT）都放开了（没留下孤儿进程）。
+ * - 最后确认启动器退出和已知端口放开；端口空闲不能证明所有后代进程退出。
  *
  * 用法：node scripts/portable/smoke.mts <解压后的包目录>   退出码 0 = 通过
  */
@@ -85,46 +85,60 @@ async function get(url: string): Promise<{ status: number; text: string }> {
 }
 
 function stop(child: ChildProcess): void {
-  if (child.exitCode !== null || child.pid === undefined) return;
-  if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-  else child.kill("SIGTERM");
+  if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return;
+  if (process.platform === "win32") {
+    const result = spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", timeout: 5000 });
+    if (result.error || result.status !== 0) throw new Error(`taskkill 失败（${result.error?.message ?? result.status}）`);
+  } else if (!child.kill("SIGTERM")) throw new Error("启动器终止请求失败");
+}
+
+async function closeBlocker(blocker: http.Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("占位服务关闭超时")), 5000);
+    try { blocker.close((err) => { clearTimeout(timer); if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") reject(err); else resolve(); }); }
+    catch (e) { clearTimeout(timer); reject(e); }
+  });
 }
 
 export async function smoke(pkgDir: string): Promise<void> {
   const info = JSON.parse(fs.readFileSync(path.join(pkgDir, "package-info.json"), "utf8")) as { version: string; target: Target };
   const L = layoutOf(info.target);
   for (const p of [DEFAULT_UI_PORT, API_PORT]) if (await portOpen(p)) throw new Error(`端口 ${p} 已被占用，先关掉占用它的程序再测`);
-  // 模拟「默认端口被别的程序占着」：一个只回 404 的服务占住默认页面端口，启动脚本应当换到后面第一个空闲端口
-  const blocker = http.createServer((_req, res) => { res.statusCode = 404; res.end("not vibe research"); });
-  await new Promise<void>((resolve, reject) => { blocker.once("error", reject); blocker.listen(DEFAULT_UI_PORT, "127.0.0.1", resolve); });
-  // 启动脚本会换到后面 20 个里第一个能用的；「能不能连上」和「能不能占用」不完全一回事，所以不猜具体是哪个，起来后挨个问
+  let blocker: http.Server | undefined;
+  let shims: string | undefined;
+  let child: ChildProcess | undefined;
+  let exit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+  let childError: Error | undefined;
+  const hasExited = () => exit !== undefined || child?.exitCode != null || child?.signalCode != null;
+  let primary: unknown;
+  const cleanupErrors: string[] = [];
   const candidates: number[] = [];
-  for (let p = DEFAULT_UI_PORT + 1; p <= DEFAULT_UI_PORT + 20; p++) if (p !== API_PORT && !(await portOpen(p))) candidates.push(p);
-  if (!candidates.length) { blocker.close(); throw new Error(`${DEFAULT_UI_PORT + 1}–${DEFAULT_UI_PORT + 20} 都被占用，没法测自动换端口`); }
   let uiPort = 0;
   let UI = "";
-  let PORTS = [API_PORT];
-
-  const shims = fs.mkdtempSync(path.join(os.tmpdir(), "vr-smoke-shims-"));
-  writeShims(shims, process.platform);
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  // Windows 的环境变量名不分大小写,拷出来可能同时有 Path 和 PATH:先全删再写一个
-  for (const k of Object.keys(env)) if (/^path$/i.test(k)) delete env[k];
-  env[process.platform === "win32" ? "Path" : "PATH"] = cleanPath(process.platform, shims, process.env.SystemRoot);
-  for (const k of ["VRA_DATA_ROOT", "VRA_PYTHON", "VRA_REMOTE", "VRA_LAN", "NODE_OPTIONS", "PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "PYTHONNOUSERSITE", "VIRTUAL_ENV"]) delete env[k];
-
-  const child = process.platform === "win32"
-    ? spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(pkgDir, "scripts", "portable", "start-portable.ps1"), "-NoOpen"], { cwd: pkgDir, env, stdio: "inherit" })
-    : spawn("/bin/sh", [path.join(pkgDir, "scripts", "portable", "start-portable.sh"), "--no-open"], { cwd: pkgDir, env, stdio: "inherit" });
-  let exited: number | null = null;
-  child.on("exit", (code) => { exited = code ?? -1; });
-
   try {
+    blocker = http.createServer((_req, res) => { res.statusCode = 404; res.end("not vibe research"); });
+    await new Promise<void>((resolve, reject) => { blocker!.once("error", reject); blocker!.listen(DEFAULT_UI_PORT, "127.0.0.1", resolve); });
+    for (let p = DEFAULT_UI_PORT + 1; p <= DEFAULT_UI_PORT + 20; p++) if (p !== API_PORT && !(await portOpen(p))) candidates.push(p);
+    if (!candidates.length) throw new Error(`${DEFAULT_UI_PORT + 1}–${DEFAULT_UI_PORT + 20} 都被占用，没法测自动换端口`);
+    shims = fs.mkdtempSync(path.join(os.tmpdir(), "vr-smoke-shims-"));
+    writeShims(shims, process.platform);
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    for (const k of Object.keys(env)) if (/^(path|VRA_UI_PORT|VRA_API_PORT|VRA_DATA_ROOT|VRA_PYTHON|VRA_REMOTE|VRA_LAN|NODE_OPTIONS|PYTHONPATH|PYTHONHOME|PYTHONUSERBASE|PYTHONNOUSERSITE|VIRTUAL_ENV)$/i.test(k)) delete env[k];
+    env[process.platform === "win32" ? "Path" : "PATH"] = cleanPath(process.platform, shims, process.env.SystemRoot);
+    child = process.platform === "win32"
+      ? spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(pkgDir, "scripts", "portable", "start-portable.ps1"), "-NoOpen"], { cwd: pkgDir, env, stdio: "inherit" })
+      : spawn("/bin/sh", [path.join(pkgDir, "scripts", "portable", "start-portable.sh"), "--no-open"], { cwd: pkgDir, env, stdio: "inherit" });
+    child.on("error", (e) => { childError ??= e; });
+    child.on("exit", (code, signal) => { exit = { code, signal }; });
     // 1. 起来：经页面代理查后端（首次启动要初始化数据目录，给足时间）
     const deadline = Date.now() + 180_000;
     let health: { ok?: boolean; version?: string } | null = null;
     while (Date.now() < deadline && !health) {
-      if (exited !== null) throw new Error(`启动脚本提前退出（退出码 ${exited}），见上面的输出`);
+      if (childError) throw childError;
+      if (exit) {
+        const reason = exit.signal ? `信号 ${exit.signal}` : `退出码 ${exit.code}`;
+        throw new Error(`启动脚本提前退出（${reason}），见上面的输出`);
+      }
       for (const p of candidates) {
         try {
           const r = await get(`http://127.0.0.1:${p}/api/health`);
@@ -133,7 +147,7 @@ export async function smoke(pkgDir: string): Promise<void> {
       }
       if (!health) await sleep(1000);
     }
-    if (uiPort) { UI = `http://127.0.0.1:${uiPort}`; PORTS = [uiPort, API_PORT]; }
+    if (uiPort) UI = `http://127.0.0.1:${uiPort}`;
     if (!health?.ok) throw new Error(`180 秒内没在 ${candidates[0]}–${candidates[candidates.length - 1]} 里等到 /api/health 返回正常（${DEFAULT_UI_PORT} 被占时应自动换到后面的端口）`);
     if (health.version !== info.version) throw new Error(`后端报的版本是 ${health.version}，包信息是 ${info.version}`);
     console.log(`[smoke] ${DEFAULT_UI_PORT} 被占时自动换到了 ${uiPort}；后端正常，版本 ${health.version}`);
@@ -156,30 +170,50 @@ export async function smoke(pkgDir: string): Promise<void> {
     const doc = spawnSync(path.join(pkgDir, L.node), [path.join(pkgDir, "orchestrator", "src", "doctor.ts"), "--json", "--python", path.join(pkgDir, L.python)],
       { cwd: pkgDir, env: { ...env, PYTHONNOUSERSITE: "1" }, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 300_000 });
     let report: { checks?: { id: string; status: string; detail?: string }[] };
-    try { report = JSON.parse(doc.stdout); } catch { throw new Error(`体检没有给出结果（退出码 ${doc.status}）：${doc.stderr.slice(0, 2000)}`); }
+    try { report = JSON.parse(doc.stdout); } catch { throw new Error(`体检没有给出结果（退出码 ${doc.status}）：${(doc.stderr ?? "").slice(0, 2000)}`); }
     const bad = failedChecks(report);
     if (bad.length) throw new Error(`体检没过：\n  ${bad.join("\n  ")}`);
     console.log(`[smoke] 体检通过：${REQUIRED_CHECKS.join("、")}`);
-  } finally {
-    stop(child);
-    const until = Date.now() + 20_000;
-    while (exited === null && Date.now() < until) await sleep(250);
-    fs.rmSync(shims, { recursive: true, force: true });
-    blocker.closeAllConnections();
-    await new Promise((resolve) => blocker.close(resolve));
+    if (childError) throw childError;
+    if (hasExited()) throw new Error("启动器在清理前已经退出，无法确认进程树状态");
+  } catch (e) { primary = e; }
+  finally {
+    const record = (label: string, e: unknown) => cleanupErrors.push(`${label}：${e instanceof Error ? e.message : String(e)}`);
+    if (child && !hasExited() && !(childError && child.pid === undefined)) {
+      try { stop(child); } catch (e) { record("停止启动器", e); }
+      try {
+        const until = Date.now() + 20_000;
+        while (!hasExited() && Date.now() < until) await sleep(250);
+        if (!hasExited()) throw new Error("启动器退出未确认");
+      } catch (e) { record("等待启动器", e); }
+    }
+    if (shims) { try { fs.rmSync(shims, { recursive: true, force: true }); } catch (e) { record(`删除临时目录 ${shims}`, e); } }
+    if (blocker) {
+      try { blocker.closeAllConnections(); } catch (e) { record("关闭占位连接", e); }
+      try { await closeBlocker(blocker); } catch (e) { record("关闭占位服务", e); }
+    }
+    if (child) {
+      try {
+        const ports = [API_PORT, ...(uiPort ? [uiPort] : candidates)];
+        const until = Date.now() + 15_000;
+        let open = ports;
+        do {
+          open = [];
+          for (const p of ports) if (await portOpen(p)) open.push(p);
+          if (!open.length) break;
+          await sleep(500);
+        } while (Date.now() < until);
+        if (open.length) throw new Error(`端口 ${open.join("、")} 仍被占用（归属未知）`);
+      } catch (e) { record("端口核验", e); }
+      if (!uiPort) record("端口核验", "未确定实际页面端口，无法确认其释放");
+    }
+    if (childError && childError !== primary) record("启动器错误", childError);
   }
-
-  // 4. 停干净：两个端口都要放开
-  const until = Date.now() + 15_000;
-  let open: number[] = PORTS;
-  while (Date.now() < until) {
-    open = [];
-    for (const p of PORTS) if (await portOpen(p)) open.push(p);
-    if (!open.length) break;
-    await sleep(500);
+  if (primary || cleanupErrors.length) {
+    const first = primary instanceof Error ? primary.message : primary ? String(primary) : "清理失败";
+    throw new Error(first + (cleanupErrors.length ? `\n清理问题：${cleanupErrors.join("；")}` : ""));
   }
-  if (open.length) throw new Error(`停掉以后端口 ${open.join("、")} 还开着（有进程没退出）`);
-  console.log("[smoke] 已停止，端口都已放开");
+  console.log("[smoke] 启动器已退出，已知端口已放开");
 }
 
 if (isMain(import.meta.url)) {

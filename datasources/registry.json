@@ -332,6 +332,81 @@
       "cache_max_age_sec": 900
     },
     {
+      "id": "cn_review_board_metrics",
+      "title": "打板指标收盘汇总",
+      "layer": "8 打板",
+      "market": ["CN"],
+      "source": "eastmoney",
+      "compliance": "cn-public",
+      "module": "review_board_metrics",
+      "function": "board_metrics",
+      "symbol_kind": "none",
+      "mapper_module": "review_board_metrics",
+      "mapper": "board_metrics_map",
+      "args": {"day": null, "prev": null, "earlier": null},
+      "enabled": true,
+      "endpoint_label": "东财涨停、炸板、昨日涨停池与通达信收盘日包",
+      "cache_partial": true,
+      "cache_max_age_sec": 1800,
+      "stages": {}
+    },
+    {
+      "id": "cn_review_industry_members",
+      "title": "复盘日沪深 A 股证监会行业成分",
+      "market": ["CN"],
+      "layer": "3 信号",
+      "source": "baostock",
+      "compliance": "cn-public",
+      "module": "review_industry_members",
+      "function": "industry_members",
+      "symbol_kind": "none",
+      "mapper_module": "review_industry_members",
+      "mapper": "industry_members_map",
+      "args": {"day": null},
+      "enabled": true,
+      "endpoint_label": "证券宝证监会行业分类",
+      "notes": "按指定日期查询历史行业归属，剔除发布日期晚于所选日的记录。",
+      "stages": {}
+    },
+    {
+      "id": "cn_review_index_minutes",
+      "title": "上证指数分时点位与成交额",
+      "layer": "1 行情",
+      "market": ["CN"],
+      "source": "tencent",
+      "compliance": "cn-public",
+      "module": "review_intraday",
+      "function": "index_minutes",
+      "symbol_kind": "none",
+      "mapper_module": "review_intraday",
+      "mapper": "index_minutes_map",
+      "args": {"date": null},
+      "enabled": true,
+      "endpoint_label": "腾讯上证指数五日分时",
+      "notes": "仅返回所选交易日的分钟点位与累计成交额差分。",
+      "stages": {}
+    },
+    {
+      "id": "cn_review_industry_close",
+      "title": "申万一级行业收盘资金净额高低各八",
+      "layer": "3 信号",
+      "market": ["CN"],
+      "source": "yyqyx",
+      "compliance": "cn-public",
+      "module": "review_industry",
+      "function": "industry_close",
+      "symbol_kind": "none",
+      "mapper_module": "review_industry",
+      "mapper": "industry_close_map",
+      "args": {"date": null},
+      "enabled": true,
+      "cache_max_age_sec": 86400,
+      "endpoint_label": "大波浪数据·按交易日的收盘资金统计",
+      "notes": "按申万一级汇总有数据成分股的大单和超大单净额，来源为大波浪收盘后二次统计，只收录净额最高与最低各八个行业。",
+      "stages": {},
+      "libs": ["lxml"]
+    },
+    {
       "id": "sina_board_flow",
       "title": "板块资金流·新浪(行业 / 概念,当日;东财板块资金流的备源)",
       "layer": "3 信号",
@@ -361,6 +436,26 @@
       ],
       "source": "eastmoney",
       "compliance": "cn-public",
+      "module": "review_dragon",
+      "symbol_kind": "none",
+      "symbol_param": "code",
+      "stages": {},
+      "enabled": true,
+      "id": "cn_review_dragon",
+      "title": "龙虎榜公开披露与席位明细",
+      "layer": "3 信号",
+      "function": "review_dragon",
+      "args": {"day": null},
+      "mapper_module": "review_dragon",
+      "mapper": "review_dragon_map",
+      "endpoint_label": "东财数据中心龙虎榜与营业部明细"
+    },
+    {
+      "market": [
+        "CN"
+      ],
+      "source": "eastmoney",
+      "compliance": "cn-public",
       "module": "eastmoney",
       "symbol_kind": "none",
       "symbol_param": "code",
@@ -370,7 +465,10 @@
       "title": "全市场龙虎榜",
       "layer": "3 信号",
       "function": "daily_dragon_tiger",
-      "args": { "trade_date": null, "min_net_buy": null },
+      "args": {
+        "trade_date": null,
+        "min_net_buy": null
+      },
       "mapper": "em_daily_dragon_tiger",
       "endpoint_label": "datacenter/RPT_DAILYBILLBOARD_DETAILSNEW 全市场"
     },
@@ -613,6 +711,42 @@
       "mapper": "em_limit_up_sentiment",
       "endpoint_label": "push2ex 四池组合",
       "cache_max_age_sec": 900
+    },
+    {
+      "id": "cn_review_abnormal",
+      "title": "复盘严重异常波动与监控",
+      "layer": "8 打板",
+      "market": ["CN"],
+      "source": "eastmoney",
+      "compliance": "cn-public",
+      "module": "review_abnormal",
+      "function": "review_abnormal",
+      "symbol_kind": "none",
+      "mapper_module": "review_abnormal",
+      "mapper": "review_abnormal_map",
+      "args": {"day": null},
+      "enabled": true,
+      "endpoint_label": "东财严重异动与重点监控、巨潮当日公告",
+      "stages": {}
+    },
+    {
+      "id": "cn_review_broken_pool",
+      "title": "复盘炸板池",
+      "layer": "8 打板",
+      "market": ["CN"],
+      "source": "eastmoney",
+      "compliance": "cn-public",
+      "module": "review_broken_pool",
+      "function": "broken_pool",
+      "symbol_kind": "none",
+      "mapper_module": "review_broken_pool",
+      "mapper": "broken_pool_map",
+      "args": {"day": null},
+      "enabled": true,
+      "cache_partial": true,
+      "cache_max_age_sec": 1800,
+      "endpoint_label": "东财收盘炸板池、同花顺封板率、腾讯同日收盘总市值",
+      "stages": {}
     },
     {
       "market": [
@@ -1035,6 +1169,7 @@
       "mapper": "cninfo_announcements_map",
       "endpoint_label": "cninfo.com.cn/hisAnnouncement/query",
       "args": {
+        "day": null,
         "page_size": 30
       }
     },
@@ -3627,6 +3762,24 @@
       "stages": {}
     },
     {
+      "id": "cn_market_breadth_history",
+      "title": "交易日沪深京 A 股收盘涨跌分布与交易所统计",
+      "layer": "10 情绪",
+      "market": ["SH", "SZ", "BJ"],
+      "source": "tdx",
+      "compliance": "cn-public",
+      "module": "market_breadth_history",
+      "function": "historical_breadth",
+      "symbol_kind": "none",
+      "mapper": "em_market_breadth_map",
+      "enabled": true,
+      "pass_out_dir": true,
+      "args": {"date": null},
+      "endpoint_label": "通达信交易日盘后包及已留存的东财收盘分布",
+      "notes": "按 date 取沪深京有成交、有昨收的 A 股，按涨跌幅分 21 档。当地已有日期核验通过的东财盘后 23 档时，分布保留东财原口径，各交易所家数和成交额仍从日包计算。",
+      "stages": {}
+    },
+    {
       "id": "em_market_breadth",
       "title": "全市场涨跌分布 + 沪深京三所涨跌家数与成交额(当日)",
       "layer": "10 情绪",
@@ -3643,6 +3796,7 @@
       "symbol_param": "code",
       "mapper": "em_market_breadth_map",
       "enabled": true,
+      "cache_partial": true,
       "cache_max_age_sec": 120,
       "endpoint_label": "push2ex 涨跌分布 + push2 ulist 指数行情(断连时成交额改用腾讯)",
       "notes": "只有当日(盘中是实时快照),上游不认日期。分布 23 档:涨停 / 涨超 9% 未涨停 / 每 1% 一档 / 平盘 / … / 跌停;分布合计与三所家数合计口径不同,不互相凑。",
@@ -3818,7 +3972,9 @@
       "function": "build_ladder",
       "mapper": "shortline_ladder_map",
       "endpoint_label": "push2ex 前一交易日涨停池 → previous_ladder",
-      "args": { "date": null },
+      "args": {
+        "date": null
+      },
       "notes": "计算型端点,移植自 Vibe AStock v2.0.0 vr/previous_ladder;date = 盯的那一场(行情日),不给 = 今天(非交易日用最近一个交易日)。不改用其他日期的名单;涨停池为空不当 0 只(东财只留约一个月)。约 1 次东财请求;样本日已收盘,结果不变、长期缓存。界面「盯盘」用它圈昨日梯队,行情和封板状态由界面另取"
     },
     {
@@ -3844,7 +4000,10 @@
       "function": "build_turnover_top",
       "mapper": "shortline_turnover_top_map",
       "endpoint_label": "通达信官网盘后包(全市场日线) → 按成交额排序",
-      "args": { "date": null, "top": 10 },
+      "args": {
+        "date": null,
+        "top": 10
+      },
       "notes": "计算型端点,替代 Vibe AStock v2.0.0 盯盘的「昨日成交前十」(VA 用东财列表接口当天收盘自己存快照,首日只能拿实时榜暂代)。date 缺省 = 最近一个盘后包已发布的交易日(当天 17 点后才有);只算沪深京 A 股号段(B 股、指数、基金、债券不算)。下载约 2.7MB、约 10 秒;已发布的日子结果不变、长期缓存。字段名与 em_turnover_rank 相同"
     },
     {
@@ -3867,7 +4026,9 @@
       "function": "build_bigcaps",
       "mapper": "shortline_bigcaps_map",
       "endpoint_label": "新浪 Market_Center.getHQNodeData hs_a 按 mktcap 降序翻页",
-      "args": { "min_cap_yi": 500 },
+      "args": {
+        "min_cap_yi": 500
+      },
       "cache_max_age_sec": 3600,
       "notes": "计算型端点,替代 Vibe AStock v2.0.0 盯盘的「500 亿大票」池(VA 用东财列表接口,09-22 起成片失败)。只出名单和总市值,价格涨跌由界面另取实时行情。每页 100 只,500 亿约 4 页、20 秒左右;盘中翻页期间排名在变,页边界附近个别票可能漏掉(重复已去掉)。缓存最多 1 小时"
     },
@@ -4012,6 +4173,7 @@
       "symbol_kind": "none",
       "symbol_param": "code",
       "mapper": "em_market_trend_map",
+      "cache_partial": true,
       "libs": [
         "requests",
         "pandas",
@@ -4478,6 +4640,79 @@
       },
       "cache_max_age_sec": 21600,
       "notes": "免 key 的 CSV 下载(不用要 key 的 API);只收单位核对过的 12 个系列(另有 GDP / M2SL / INDPRO / ICSA / T10Y2Y),版权受限的系列不收;默认取近 10 年;全序列存为提取 CSV,环比同比交给 calc"
+    },
+    {
+      "id": "cn_market_inventory",
+      "title": "沪深京 A 股名单分页（新浪）",
+      "layer": "1 行情",
+      "market": [
+        "CN"
+      ],
+      "source": "sina",
+      "compliance": "cn-public",
+      "module": "market_scan",
+      "function": "universe_page",
+      "mapper_module": "market_scan",
+      "mapper": "universe_map",
+      "symbol_kind": "none",
+      "args": {
+        "page": 1
+      },
+      "enabled": true,
+      "cache_max_age_sec": 3600,
+      "stages": {},
+      "notes": "代码稳定排序分页；逐页去重及总数核验，名单不包含实时价格。"
+    },
+    {
+      "id": "cn_market_quotes_backup",
+      "title": "新浪股票报价备源（逐股时间戳）",
+      "layer": "1 行情",
+      "market": [
+        "CN"
+      ],
+      "source": "sina",
+      "compliance": "cn-public",
+      "module": "market_scan",
+      "function": "quote_backup",
+      "mapper_module": "market_scan",
+      "mapper": "quote_backup_map",
+      "symbol_kind": "none",
+      "args": {
+        "codes": [
+          "sh600519"
+        ]
+      },
+      "enabled": true,
+      "cache_max_age_sec": 5,
+      "stages": {},
+      "notes": "最多100只；仅在主源缺失时补采；缺涨跌停价，不用于封板判断。"
+    },
+    {
+      "id": "cn_market_quotes",
+      "title": "全市场扫描批量报价（腾讯）",
+      "layer": "1 行情",
+      "market": [
+        "CN"
+      ],
+      "source": "tencent",
+      "compliance": "cn-public",
+      "module": "market_scan",
+      "function": "quotes_batch",
+      "mapper_module": "market_scan",
+      "mapper": "quotes_map",
+      "symbol_kind": "none",
+      "args": {
+        "codes": [
+          "sh600519"
+        ]
+      },
+      "arg_array_limits": {
+        "codes": 200
+      },
+      "enabled": true,
+      "cache_max_age_sec": 5,
+      "stages": {},
+      "notes": "仅该端点允许最多200只；严格市场前缀代码、保留源时间戳及逐行证据；不改变其他端点限制。"
     }
   ]
 }

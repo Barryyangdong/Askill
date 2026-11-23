@@ -6,7 +6,7 @@
  * 后台一段段写,切走页面不会打断;写完自动存一版,不覆盖旧版。
  */
 import { Fragment, useEffect, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { JourneyLink as Link } from "@/components/JourneyLink";
 import { AlertCircle, ClipboardCheck, FileSearch, Loader2, Sparkles, Square } from "lucide-react";
 import { backend } from "@/lib/backend";
 import { hasLlm } from "@/lib/llm";
@@ -102,7 +102,7 @@ export function AuditLine({ a, unknown }: { a?: ReviewAudit; unknown: string[] }
 function Evidence({ cited }: { cited: { id: string; line: string }[] }) {
   if (!cited.length) return null;
   return (
-    <details className="mt-2 text-[11px]">
+    <details open className="mt-2 text-[11px]">
       <summary className="inline-flex cursor-pointer items-center gap-1 text-primary"><FileSearch className="h-3.5 w-3.5" /> 查看依据({cited.length} 条)</summary>
       <ol className="mt-1.5 space-y-1 font-mono leading-relaxed text-muted-foreground">
         {cited.map((c, i) => <li key={c.id} className="break-all"><span className="text-primary">[{i + 1}]</span> {c.line}</li>)}
@@ -315,7 +315,7 @@ export function ReviewView({ r, onChanged, pick: pickProp, onPick }: { r: Review
         {needConfig && (
           <div className="mt-3 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-muted-foreground">
             <AlertCircle className="h-4 w-4 shrink-0 text-warning" />
-            还没有接入 AI。<Link to="/settings" className="text-primary">先接入 AI</Link>,之后一键出复盘。
+            还没有接入 AI。<Link context={{date:r.date}} to="/settings" className="text-primary">先接入 AI</Link>,之后一键出复盘。
           </div>
         )}
         {err && <p role="alert" className="mt-3 text-[12px] text-destructive">{err}</p>}

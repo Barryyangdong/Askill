@@ -10,6 +10,7 @@
  *    写则必须异步——写失败要让调用方看得见，不能默默"保存成功"。
  */
 import { backend, type LedgerRecord } from "./backend";
+import { recordSourceHref, recordSource, type RecordSource } from "./recordSource";
 
 export interface Note {
   id: string;
@@ -17,11 +18,17 @@ export interface Note {
   title: string;
   content: string; // markdown 正文
   ts: number;      // 保存时间戳(ms)
+  symbol?: string;
+  source?: RecordSource;
 }
 
 let cache: Note[] = [];
 /** 枚举键 → 中文名。**由后端随台账下发**（`Plugin.ledger.enumLabels`），前端不写死一份 */
 let enumLabels: Record<string, string> = {};
+let sourceSupported = false;
+let categories: string[] = [];
+export const canSaveNoteSource = () => sourceSupported;
+export const canSaveResearchNote = () => categories.includes("research");
 
 /**
  * 界面上的分类叫法 → 台账枚举键。
@@ -40,6 +47,7 @@ const KIND_TO_CATEGORY: Record<string, string> = {
   反思审计: "audit",
   回测: "backtest",
   研究对比: "compare",
+  研究报告: "research",
 };
 
 function toCategory(kind: string): string {
@@ -59,6 +67,8 @@ const toNote = (r: LedgerRecord): Note => {
     title: String(r.title ?? ""),
     content: String(r.body ?? ""),
     ts: Date.parse(r.created_at) || 0,
+    symbol: typeof r.symbol === "string" ? r.symbol : undefined,
+    source: recordSource(recordSourceHref(r.workspace_source)) ?? undefined,
   };
 };
 
@@ -75,6 +85,9 @@ export async function hydrateNotes(): Promise<void> {
   const led = await backend.ledger();
   if (mine !== seq) return;
   enumLabels = led.labels.enums ?? {};
+  sourceSupported = !!led.kinds.note?.properties?.workspace_source;
+  const category = led.kinds.note?.properties?.category as {enum?:unknown} | undefined;
+  categories = Array.isArray(category?.enum) ? category.enum.filter((v): v is string => typeof v === "string") : [];
   cache = (led.records.note ?? []).map(toNote).sort((a, b) => b.ts - a.ts);
 }
 
@@ -84,8 +97,9 @@ export function loadNotes(): Note[] {
 }
 
 /** 新记录置顶。返回更新后的完整列表。 */
-export async function addNote(kind: string, title: string, content: string): Promise<Note[]> {
-  const saved = await backend.ledgerSave("note", { category: toCategory(kind), title, body: content });
+export async function addNote(kind: string, title: string, content: string, source?: RecordSource): Promise<Note[]> {
+  const safeSource = recordSource(recordSourceHref(source));
+  const saved = await backend.ledgerSave("note", { category: toCategory(kind), title, body: content, ...(safeSource?.symbol ? { symbol: safeSource.symbol } : {}), ...(sourceSupported && safeSource ? { workspace_source: safeSource } : {}) });
   seq++;                       // 让在途的旧 hydrate 作废,别把这条新记录冲掉
   cache = [toNote(saved), ...cache];
   return [...cache];

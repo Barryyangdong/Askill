@@ -1,3 +1,4 @@
+import { NAV_SECTIONS } from "../src/verticals/finance/lib/nav.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -59,7 +60,7 @@ test("前端调用:GET /view/candidates,查询串原样带上", async () => {
   assert.deepEqual(urls, ["/api/view/candidates?universe=hs300&pb_max=1"]);
 });
 
-test("页面:不排名、不给建议、缺数据单独列出、条件只存在本机偏好里;导航和首页都有入口", () => {
+test("页面:不排名、不给建议、缺数据单独列出、条件只存在本机偏好里;模式导航有入口", () => {
   const src = read("pages/Candidates.tsx");
   assert.match(src, /只排除、不排名,不打分、不给买卖建议/);
   assert.match(src, /按代码排列,不排名/);
@@ -69,10 +70,9 @@ test("页面:不排名、不给建议、缺数据单独列出、条件只存在�
   assert.doesNotMatch(src, /localStorage|\.sort\(/);
   assert.doesNotMatch(src, /目标价|评级|买入|卖出|推荐|得分|排行/);
   assert.match(src, /to=\{`\/research\?symbol=\$\{encodeURIComponent\(r\.symbol\)\}`\}/);
-  // 10-09 Simon：候选池放研究工具最后一个
-  assert.match(read("lib/nav.ts"), /\{ to: "\/backtest", label: "回测", icon: "FlaskConical" \},\n    \{ to: "\/candidates", label: "候选池", icon: "ListFilter" \},\n  \] \}/);
+  assert.deepEqual(NAV_SECTIONS.filter(s => !s.pinned).map(s => s.label), ["盯盘", "复盘", "选手分析", "研究", "游资蒸馏", "我的"]);
+  assert.ok(NAV_SECTIONS.find(s => s.label === "研究")?.related?.some(p => p.to === "/candidates"));
   assert.match(src, /watch: \{ to: "\/my-stocks\?tab=watch", label: "自选股" \}, position: \{ to: "\/my-stocks\?tab=hold", label: "我的持仓" \}/);
-  assert.match(read("lib/homeFeatures.ts"), /to: "\/candidates", title: "候选池"/);
 });
 
 test("个股页读 ?symbol=:选股只换正在看的那只、显示走势,不自动开始研究", () => {
@@ -82,7 +82,7 @@ test("个股页读 ?symbol=:选股只换正在看的那只、显示走势,不自
   const from = src.indexOf("const choose = (raw: string) =>");
   const choose = src.slice(from, src.indexOf("\n  };", from));
   assert.match(choose, /normalizeMarketSymbol\(raw\)/);
-  assert.match(choose, /setQuery\(\{ symbol: c \}, false\)/);
+  assert.match(choose, /setQuery\(\{ symbol: c, run: null \}, false\)/);
   assert.doesNotMatch(choose, /start\(|startResearch/, "选股不开始研究");
   // start 这个名字只出现两次：定义一次、「开始」按钮里调用一次 —— 别处（effect、选股、打开报告）都不许碰它
   assert.deepEqual(src.match(/(?<![\w.$])start(?!\w)/g), ["start", "start"], "只有深度研究分页里的「开始」按钮会启动研究");

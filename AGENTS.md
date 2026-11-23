@@ -1,4 +1,6 @@
-# Vibe AStock — 给 Agent 的部署与开发指南
+# Askill（短线王）— 给 Agent 的部署与开发指南
+
+本仓库是 `Barryyangdong/Askill`，页面品牌为「短线王」，英文名称与新安装目录使用 `Askill`。下文保留的 Vibe AStock / Vibe Research 名称用于说明上游与历史实现，不是本仓库的部署目标。面向 WorkBuddy 用户优先执行 `skills/askill/SKILL.md` 及其标准部署流程；首次部署从本仓库 main 分支获取配套源码。
 
 你是来帮使用者部署、使用或改造本仓库的 Agent(Claude Code、Codex、WorkBuddy / CodeBuddy、Muse 一类个人云端 Agent……)。动手前先读完这一页。
 
@@ -30,8 +32,8 @@ v1.x 是另一套 Python 程序,v2.0.0 起换成现在的代码;老用户在「�
 环境:Node.js ≥ 22.18、Python ≥ 3.11(推荐 3.12)、git。
 
 ```bash
-git clone https://github.com/simonlin1212/vibe-astock.git
-cd vibe-astock
+git clone https://github.com/Barryyangdong/Askill.git Askill
+cd Askill
 scripts/setup     # Windows:scripts\setup-windows.cmd
 scripts/start     # Windows:scripts\start.cmd
 ```
@@ -48,10 +50,7 @@ scripts/start     # Windows:scripts\start.cmd
   仍显示「未安装」时:先打开 WorkBuddy 再点「重新检测」,或在「接入 AI」的 WorkBuddy 卡片里填它的安装文件夹,
   或在启动前设环境变量 `CODEBUDDY_BIN` / `CLAUDE_BIN` / `CODEX_BIN`(设了就只认它)。
 - 所有私有数据(配置、运行产物、对话、台账、上传资料)都在 `.local/`,已被 git 忽略。不要把它提交、打包或发给任何第三方。
-- 使用者不想装 Node / Python / git 时,让他到 Releases 下载免安装包(Windows x64 / Apple 芯片 / Intel Mac),解压后双击 `Start-VibeAStock`;
-  数据在包文件夹的 `.local/`,升级 = 新版本解压到新文件夹再把 `.local/` 整个复制过去。包由 `.github/workflows/portable.yml` 构建
-  (本机构建:`node scripts/portable/build.mts`;冒烟:`node scripts/portable/smoke.mts <解压出来的目录>`),
-  包里 Node / Python 的版本、下载地址和 SHA256 只写在 `scripts/portable/runtimes.json`,升级运行时只改这一个文件。
+- 当前公开交付以本仓库源码为准。上游 Vibe AStock 安装包运行历史版本。
 - 页面每天查一次 GitHub 最新正式版本(只带版本号;没查成隔一小时再试);设环境变量 `VRA_UPDATE_CHECK=0` 完全不联网。
 
 ## 3. 在你自己的云端电脑上部署(Muse 一类个人云端 Agent)
@@ -59,8 +58,8 @@ scripts/start     # Windows:scripts\start.cmd
 最简单的做法:在你自己的云端电脑上装好,用**远程模式**启动,把打印出来的链接发给使用者。不需要连回使用者的电脑,也不需要 SSH。
 
 ```bash
-git clone https://github.com/simonlin1212/vibe-astock.git
-cd vibe-astock
+git clone https://github.com/Barryyangdong/Askill.git Askill
+cd Askill
 scripts/setup
 scripts/start --remote --no-open --public-url https://<平台给页面端口(默认 5940)分配的公网地址>
 ```
@@ -107,6 +106,15 @@ scripts/start --remote --no-open --public-url https://<平台给页面端口(默
 
 ## 5. 改代码前
 
+### 当前全项目协作入口（2026-11-17）
+
+用户要求只通过主对话沟通，由主负责人持续分派和补派子任务。接续本轮改造先读
+本机已有的协作约定与任务板（如有），
+按其中的模型路由、文件归属、验收和接续规则执行。完成任务后主负责人检查待领取队列，
+主动分配依赖已满足的下一项，不要求用户手动切换子 Agent。不得把协作文档误称为后台执行器。
+共享工作树已有未提交成果，保留并增量修改。多个 Agent 可并行分析与实现，但全量测试集中调度，
+Node 测试使用 `--test-concurrency=1`，不同时启动前后端全量套件，以免本机资源耗尽。
+
 ```bash
 cd orchestrator && npm test && npm run typecheck
 cd ../desktop && npm test && npm run build
@@ -143,7 +151,7 @@ Python 用安装时建的虚拟环境；mypy 的安装与约定见 [`docs/develo
 - 短线读数、统计和对账都由程序计算,AI 只解读;AI 复盘 / 周报里的每个数字由程序分三级核对(和数据包一致 / 给出能复算的算式 / 没给来源),
   证据编号逐条核对。复盘数据包不得含复盘日之后的数据;每次生成存成新版本,不覆盖旧版本。
 - 自己的成交、持仓、成本、盈亏和交易日志只留在本机,**不进 AI**(沿用旧版规矩,和 Vibe Research 不同):
-  - 台账种类标 `hiddenFromAssistant: true` 的六种(清仓、交易流水、持有、交易标注、交易日志设置、模式卡),聊天助手的 `read_ledger`
+  - 台账种类标 `hiddenFromAssistant: true` 的七种(清仓、交易流水、持有、交易标注、交易日志设置、模式卡、计划执行复核),聊天助手的 `read_ledger`
     (也经 MCP 桥给本机 CLI)读不到;带金额 / 数量 / 成本字段的新种类必须标上(有测试守着)。
   - 页面上下文:交易日志各页不登记;持仓页只登记一段说明(`desktop/.../lib/brand.ts` 的 `PERSONAL_TRADES_TO_AI = false`);
     盯盘、候选池(范围是「我的持仓」时)、事件日历去掉只因持仓才出现的股票;AI 周报里的「我的本周交易」只在页面上本机计算,不进数据包。
@@ -163,12 +171,12 @@ Python 用安装时建的虚拟环境；mypy 的安装与约定见 [`docs/develo
 - 浏览器 API key 只保存在当前浏览器 `localStorage`,随请求交给本机后端;不得写入仓库、后端配置、运行账本、日志、文档或测试夹具。
 - provider 模板存在不等于已接通;接入探针通过也不等于所有业务已验收 —— 只有在实际业务页面跑通的通道才能在对应范围标为已验证。
   未接入时允许浏览栏目,不自动跳转设置。
-- 代码审计与发版前审计一律用 Opus 5,在干净上下文里做只读复审;先审一轮,具体发现修复后复验受影响范围。
+- 代码与发版检查不绑定模型厂商或型号。使用当前可用的工具进行只读复核，修复具体发现后复验受影响范围，并如实记录检查范围与限制；不因缺少指定模型阻塞交付。
 
 ### 6.4 公开口径
 
 - 本仓库没有单独的官网;产品介绍以 README 为准。
-- 本地工作台左下角显示品牌官网 `https://phoenixtree.ai/`(新标签页打开;折叠侧栏保留可访问图标),不扩展为其他推广入口。
+- 本地工作台左下角保留上游来源 `https://phoenixtree.ai/`（标为「上游项目」，新标签页打开；折叠侧栏保留可访问图标），不将其称为短线王官网，不扩展为其他推广入口。
 - 对外定位:可接入多种 Agent 大脑的本地 A 股短线复盘与跟踪工作台。必须区分「大脑」(本机订阅 Agent 或模型 API)与产品本身,
   不能把产品说成一次 API 问答的包装。
 - 不提供 Mac 原生客户端(`.app` / `.dmg`);桌面使用走源码 + 本地浏览器页面或免安装包。
@@ -189,7 +197,7 @@ Python 用安装时建的虚拟环境；mypy 的安装与约定见 [`docs/develo
 
 ### 6.6 对外内容
 
-- 品牌写法:公司 `Phoenix Tree AI`(有空格),产品 `Vibe AStock`、`Vibe Research`、`a-stock-data`。
+- 本项目品牌写法：页面「短线王」，英文 `Askill`。上游归属写法：公司 `Phoenix Tree AI`（有空格），产品 `Vibe AStock`、`Vibe Research`、`a-stock-data`；保留来源说明与许可证。
 - README 不放求职内容;A 股项目的公开材料不提知识星球等付费社群。
 - Star 数属于实时数据:写 README、封面或社交资料前必须重新查询 GitHub;可以展示稳定的整数档(如 `2,200+ Stars`),
   不得把旧快照写成当前精确值。

@@ -28,6 +28,31 @@ const REPO = path.resolve(HERE, "..", "..");
 /** 不碰磁盘:参数校验发生在触碰文件系统之前 */
 const fakeCtx: RunToolsContext = { runDir: path.join(HERE, "__no_such_run__"), repoRoot: HERE, python: "python3" };
 
+test("写阶段时即时拒绝越界文字，保留旧产物；修正后可在同轮重新提交", t => {
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "vra-write-gate-"));
+  t.after(() => fs.rmSync(runDir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(runDir, ".vibe"));
+  fs.writeFileSync(path.join(runDir, ".vibe", "hook-context.json"), JSON.stringify({stage: "profile", run_dir: runDir}));
+  const ctx = {runDir, repoRoot: REPO, python: "python3"};
+  const good = {stage: "profile", status: "incomplete", summary: "仅核对公开事实。", evidence_ids: [], calculation_ids: [],
+    gaps: [{operation: "fetch_quote", reason_code: "source_failed", detail: "来源未返回"}],
+    quote_decision: "unknown_unverified", quote_decision_reason: "缺少报价", moat_tag: "待补"};
+  callRunTool(ctx, "write_stage", {stage_output: good});
+  const file = path.join(runDir, "stages", "profile.json");
+  const before = fs.readFileSync(file, "utf8");
+  for (const summary of ["不涉及建仓与减仓", "建议建仓", "建议建 倉"]) {
+    assert.throws(() => callRunTool(ctx, "write_stage", {stage_output: {...good, summary}}),
+      (e: unknown) => e instanceof RunToolsError && e.code === "stage_output_blocked" && !e.message.includes("建仓"));
+    assert.equal(fs.readFileSync(file, "utf8"), before);
+  }
+  callRunTool(ctx, "write_stage", {stage_output: {...good, summary: "已核对，缺少来源，保留缺口。"}});
+  assert.match(fs.readFileSync(file, "utf8"), /保留缺口/);
+  fs.writeFileSync(path.join(runDir, ".vibe", "hook-context.json"), JSON.stringify({stage: "report", run_dir: runDir}));
+  assert.throws(() => callRunTool(ctx, "write_report", {markdown: "# 报告\n建议建仓"}),
+    (e: unknown) => e instanceof RunToolsError && e.code === "report_output_blocked");
+  assert.equal(fs.existsSync(path.join(runDir, "report.md")), false);
+});
+
 test("MCP 入口不得自己写死工具名 —— 必须遍历 registry 生成", () => {
   const code = fs.readFileSync(MCP_ENTRY, "utf8");
   // 写死的注册长这样:registerTool("list_run_files", {...})。允许的只有 registerTool(def.name, ...)。

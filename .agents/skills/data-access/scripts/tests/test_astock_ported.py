@@ -19,6 +19,21 @@ REPO = SCRIPTS.parents[3]
 sys.path.insert(0, str(SCRIPTS))
 from common import TZ_SH  # noqa: E402
 from sources import _http, astock_defaults as D, astock_ported as P, mappers_astock as M, mappers_cn, mootdx_src  # noqa: E402
+from sources import cninfo
+
+
+def test_member_announcements_are_date_scoped(monkeypatch):
+    day = "2026-11-20"
+    item = {"secCode": "002148", "announcementTitle": "测试披露", "announcementTime": day}
+    def fake(_url, data, **kwargs):
+        assert data["seDate"] == f"{day}~{day}" and data["stock"].startswith("002148,")
+        return {"totalAnnouncement": 1, "announcements": [item]}
+    monkeypatch.setattr(cninfo, "cninfo_orgid", lambda _code: "test")
+    monkeypatch.setattr(cninfo, "http_post_json", fake)
+    assert cninfo.cninfo_announcements("002148", day=day)[0]["date"] == day
+    item["announcementTime"] = "2026-11-21"
+    with pytest.raises(RuntimeError, match="披露日期"):
+        cninfo.cninfo_announcements("002148", day=day)
 
 PORTED = SCRIPTS / "sources" / "astock_ported.py"
 
@@ -241,6 +256,16 @@ def test_tencent_minute_kline_is_unadjusted(tmp_path):
     res = _run(tmp_path, M.tencent_kline_map, frame, args={"period": "m1"})
     close = next(e for e in res["evidence"] if e["field"] == "kline_close_none")
     assert close["adjustment"] == "none" and close["as_of"] == "2026-09-30"
+
+
+def test_tencent_kline_dated_window_exposes_only_requested_ohlc(tmp_path):
+    frame = _kline("sz300308", "")
+    res = _run(tmp_path, M.tencent_kline_map, frame, args={"period": "day", "start": "2026-09-28", "end": "2026-09-29"})
+    bars = res["extra"]["close_series"]
+    assert [bar["date"] for bar in bars] == ["2026-09-28", "2026-09-29"]
+    assert set(bars[0]) == {"date", "open", "high", "low", "close"}
+    undated = _run(tmp_path, M.tencent_kline_map, frame, args={"period": "day"})
+    assert "close_series" not in undated["extra"]
 
 
 def test_tdx_package_volume_unit_only_stocks_are_shares(tmp_path):

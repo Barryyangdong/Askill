@@ -198,3 +198,23 @@ test("🔴 页面注入的上下文参数,改名后必须是该端点函数真�
   assert.ok(checked > 0, "一个吃上下文的块都没核到 —— 这条棘轮什么都没查");
   assert.deepEqual(problems, [], problems.join("\n"));
 });
+
+test("复盘首屏与展开明细共用完整市场报告的端点、备源和日期注入", () => {
+  const pages = currentPlugin().pageQueries!;
+  const complete = pages.review!;
+  const summary = pages.review_summary!;
+  const indicators = pages.review_indicators!;
+  const funds = pages.review_funds!;
+  assert.deepEqual(summary.blocks.map(block => block.id).sort(), ["breadth", "sentiment", "trend", "zt_pool"]);
+  const progressive = ["review_limits", "review_breadth", "review_trend"].map(name => pages[name]!);
+  assert.deepEqual(progressive.map(page => page.blocks.map(block => block.id)), [["sentiment", "zt_pool"], ["breadth"], ["trend"]]);
+  assert.deepEqual(progressive.flatMap(page => page.blocks), summary.blocks);
+  assert.ok(progressive.every(page => page.needsContext));
+  assert.deepEqual(funds.blocks.map(block => block.id).sort(), ["board_flow", "dragon", "turnover"]);
+  const all = [summary, indicators, funds].flatMap(page => {
+    assert.equal(page.needsContext, true);
+    page.blocks.forEach(block => assert.deepEqual(block, complete.blocks.find(b => b.id === block.id)));
+    return page.blocks.map(block => block.id);
+  });
+  assert.deepEqual(all.sort(), complete.blocks.map(block => block.id).sort());
+});

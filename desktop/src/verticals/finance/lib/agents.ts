@@ -1,21 +1,13 @@
-/**
- * 多 agent 能力(多空辩论 + 反思审计)—— **接我们的底座**。
- *
- * 上游走它自己后端的 NDJSON 流,并把用户的 key 一起发过去。
- * 我们的底座:辩论是 `POST /debate` 开场 + 逐阶段 `POST /debate/:id/advance`,
- * 密钥留在后端。**对外的 handler 事件与上游保持一致**,所以 `Debate.tsx` / `Notes.tsx`
- * 一行不用改。
- *
- * 🔴 我们的辩论有一条上游没有的性质:**资料包在开场那一刻现拉,五个角色共用同一份**
- *    —— 谁也不能靠编数字赢。资料包为空(取数全挂)时**直接拒开**,
- *    因为没有共同事实的"辩论"只是两段作文,而它看着像做过功课。
- */
+/** Real-time events for the local workflow; credentials stay in the request boundary. */
 import { ApiError, backend, type DebateNumberAudit, type DebateState } from "./backend.ts";
 import { newAnalysisSession } from "./analysisSession.ts";
 
-export type DebateStage = "bull" | "bear" | "bull_rebut" | "bear_rebut" | "referee";
+export type DebateStage = "bull" | "bear" | "bull_rebut" | "bear_rebut" | "bull_reply" | "bear_reply" | "referee";
 
 export interface DebateHandlers {
+  onState?: (state: DebateState) => void;
+  onPreview?: (stage: DebateStage, text: string) => void;
+  onActivity?: () => void;
   onStatus?: (message: string) => void;
   onDossierProgress?: (title: string, ok: boolean, loaded: number, total: number) => void;
   onDossierReady?: (sections: { title: string; tool: string }[], missing: string[]) => void;
@@ -25,12 +17,7 @@ export interface DebateHandlers {
   onError?: (message: string, stage?: DebateStage) => void;
 }
 
-/**
- * 跑一场多空辩论。
- * ⚠️ `rounds` 上游用来加轮次;我们的阶段由**后端契约**声明(`Plugin.debate.stages`),
- *    前端说了不算 —— 收下这个参数只为签名兼容,不假装它起作用。
- * ⚠️ 我们的后端不流式:每个阶段跑完一次性给全文,所以 `onDelta` 每阶段只吐一次。
- */
+/** Stage state, connection activity and screened paragraph previews share one connection. */
 export async function debateStream(
   code: string,
   /**
@@ -42,60 +29,53 @@ export async function debateStream(
   rounds: number,
   handlers: DebateHandlers = {},
   signal?: AbortSignal,
+  previous?: { text: string; at: string },
+  resumeId?: string,
 ): Promise<DebateState | undefined> {
-  // 每个事件只发一次 —— 我们是轮询式推进,不去重的话每轮都会把已完成的阶段重发一遍
   const emitted = new Set<string>();
-  const push = (st: DebateState) => {
-    for (const s of st.stages) {
-      if (s.status === "running" && !emitted.has(`start:${s.id}`)) {
-        emitted.add(`start:${s.id}`);
-        handlers.onStageStart?.(s.id as DebateStage, s.label);
-      }
-      if (s.status === "done" && !emitted.has(`done:${s.id}`)) {
-        emitted.add(`done:${s.id}`);
-        if (!emitted.has(`start:${s.id}`)) {
-          emitted.add(`start:${s.id}`);
-          handlers.onStageStart?.(s.id as DebateStage, s.label);
-        }
-        handlers.onDelta?.(s.id as DebateStage, s.text, s.audit);
-        handlers.onStageDone?.(s.id as DebateStage, s.label, s.text);
-      }
-      if (s.status === "failed" && !emitted.has(`fail:${s.id}`)) {
-        emitted.add(`fail:${s.id}`);
-        // 单个阶段挂掉不废整场,但要说清是哪一环没打上
-        handlers.onError?.(s.error ?? "这一环没打上", s.id as DebateStage);
-      }
-    }
-  };
-
   try {
     if (signal?.aborted) return undefined;
-    handlers.onStatus?.("正在现拉资料包(五个角色共用同一份)…");
+    handlers.onStatus?.("正在准备共同资料…");
+    const final = await backend.debateRun(code, String(rounds), event => {
+      if (signal?.aborted) return;
+      handlers.onActivity?.();
+      if (event.type === "dossier") {
+        const titles: Record<string, string> = { tx_quote: "实时行情", fetch_profile: "公司资料", fetch_financials: "财务数据", indicators_cn: "技术指标", fetch_announcements: "近期公告线索", cninfo_announcements: "近期公告", document_text: "公告正文", em_stock_news: "个股新闻", em_concept_blocks: "所属板块", em_market_breadth: "市场涨跌环境" };
+        handlers.onDossierProgress?.(titles[event.title] ?? event.title, event.ok, event.loaded, event.total);
+      } else if (event.type === "preview") {
+        handlers.onPreview?.(event.stage as DebateStage, event.text);
+      } else if (event.type === "state" || event.type === "done") {
+        const st = event.state;
+        if (!emitted.has("ready")) {
+          emitted.add("ready");
+          handlers.onDossierReady?.([{ title: `共同资料 ${st.evidence_count} 条`, tool: "取数层" }], st.gaps);
+        }
+        handlers.onState?.(st);
+        for (const stage of st.stages) {
+          if (stage.status === "running" && !emitted.has(`start:${stage.id}`)) {
+            emitted.add(`start:${stage.id}`);
+            handlers.onStageStart?.(stage.id as DebateStage, stage.label);
+          }
+          if (stage.status === "done" && !emitted.has(`done:${stage.id}`)) {
+            emitted.add(`done:${stage.id}`);
+            handlers.onDelta?.(stage.id as DebateStage, stage.text, stage.audit);
+            handlers.onStageDone?.(stage.id as DebateStage, stage.label, stage.text);
+          }
+          if (stage.status === "failed" && !emitted.has(`failed:${stage.id}`)) {
+            emitted.add(`failed:${stage.id}`);
+            handlers.onError?.(stage.error ?? "这个环节未完成", stage.id as DebateStage);
+          }
+        }
+        const active = st.stages.filter(s => s.status === "running").map(s => s.label);
+        handlers.onStatus?.(active.length ? `正在生成：${active.join("、")}` : st.done ? "各阶段已结束，正在整理归档…" : "准备下一阶段…");
+      }
+    }, signal, previous, resumeId);
     if (signal?.aborted) return undefined;
-    let st = await backend.debateStart(code, String(rounds), signal);
+    if (final.outcome === "failed") handlers.onError?.("本次未能完成，请查看各阶段状态。已完成内容保留。");
+    return final;
+  } catch (error) {
     if (signal?.aborted) return undefined;
-    handlers.onDossierReady?.([{ title: `资料包 ${st.evidence_count} 条证据`, tool: "取数层" }], st.gaps);
-    handlers.onStatus?.(st.gaps.length ? "资料包就绪(有缺口,已告知双方),辩论开始" : "资料包就绪,辩论开始");
-    push(st);
-
-    while (!st.done) {
-      if (signal?.aborted) return undefined;
-      st = await backend.debateAdvance(st.id, signal);
-      if (signal?.aborted) return undefined;
-      push(st);
-    }
-    // 🔴 全挂了要说全挂了 —— 只看 done 会把"五段全空"读成"辩论正常完成"
-    const shutdownFailure = st.stages.find(s => s.error?.startsWith("agent_shutdown_failed:"))?.error;
-    if (shutdownFailure) handlers.onError?.(shutdownFailure);
-    else if (st.outcome === "cancelled") handlers.onStatus?.("辩论已中止");
-    else if (st.outcome === "failed") handlers.onError?.(st.stages.some(s => s.status === "done")
-      ? "辩论未能完成，已完成部分保留；请检查阶段错误"
-      : "所有阶段都失败了:不是「没有分歧」,是根本没跑起来");
-    else handlers.onStatus?.(st.outcome === "completed_with_errors" ? "跑完了,但有环节没打上" : "辩论结束");
-    return st;
-  } catch (e) {
-    if (signal?.aborted) return undefined;
-    handlers.onError?.(e instanceof ApiError ? e.message : String(e));
+    handlers.onError?.(error instanceof Error ? error.message : String(error));
     return undefined;
   }
 }

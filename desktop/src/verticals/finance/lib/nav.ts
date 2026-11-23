@@ -1,20 +1,8 @@
-/**
- * 左侧导航的结构（只有数据，没有组件）：侧栏、顶栏标题、首页目录的分组和测试都读这一份。
- *
- * 最多两级。只有一个页面的一级栏目直接是链接；有几个页面的是一组：一级文字进第一个页面，旁边的三角展开二级。
- * 页面里自己的小分类（资讯来源、GPU 租金、持仓里的收益 / 流水 / 体检 / 回放）只在页面里切，不占侧栏。
- * 例外是产业研究：二级直接是各板块，每个配图标；点「产业研究」本身进全部板块一览（overview），不在二级里重复列（Simon 2026-10-09 定）。
- * 板块名单和图标在 `data/sectors.json`，这个文件不读 JSON —— 侧栏用 `withSectors()` 把名单拼进来，README 栏目表把各板块合成一行。
- *
- * 顺序按炒股的人每天的先后（Simon 2026-10-09 定）：先看自己的股票怎么样（首页），再复盘，再看产业资讯、做产业研究，
- * 最后才是研究工具；候选池放研究工具最后。
- * Vibe AStock 偏短线（Simon 2026-10-10 定）：复盘一组里情绪复盘排第一，点「复盘」直接进情绪复盘；
- * 首页和复盘之间加「盯盘」一组（实时动态 / 竞价与盘中），盘中先看这里；
- * 复盘后面接「交易日志」（一个页面，页内再分交易记录 / 风险与纪律 / 复查 / 模式卡）：复完盘对照自己的单子。
- */
+/** Askill navigation: daily workflow first; existing route URLs stay compatible. */
 export const NAV_ICONS = [
   "Home", "Swords", "Activity", "Flame", "Zap", "Gavel", "Radar", "Thermometer", "LayoutGrid", "CandlestickChart",
   "FlaskConical", "ListFilter", "Star", "Wallet", "CalendarDays", "Bell", "Library", "FileText", "NotebookPen", "Settings", "BookOpenCheck",
+  "Sparkles", "History", "ClipboardCheck", "UsersRound",
   // 各板块（sectors.json 的 icon 字段）
   "Bot", "Cpu", "MemoryStick", "Cable", "CircuitBoard", "Microchip", "BatteryFull", "Plane", "Car", "Pill",
   "UtilityPole", "Shield", "Atom", "Rocket", "Dna", "Pickaxe", "BrainCircuit", "Glasses", "BatteryCharging", "Database",
@@ -22,12 +10,13 @@ export const NAV_ICONS = [
 export type NavIcon = (typeof NAV_ICONS)[number];
 export const isNavIcon = (x: unknown): x is NavIcon => typeof x === "string" && (NAV_ICONS as readonly string[]).includes(x);
 
-export interface NavPage { to: string; label: string; icon: NavIcon }
+export interface NavPage { to: string; label: string; icon: NavIcon; activePaths?: readonly string[] }
 export interface NavSection {
   /** 一级栏目名；同时是展开状态的存储键的一部分 */
   label: string;
   icon: NavIcon;
   pages: NavPage[];
+  related?: NavPage[];
   /** 一级文字进的总览页，不在二级里列（产业研究：点它看全部板块一览，二级直接是各板块） */
   overview?: NavPage;
   /** 二级在 pages 之后接着列各板块（产业研究） */
@@ -36,38 +25,32 @@ export interface NavSection {
   pinned?: true;
 }
 
+const page=(to:string,label:string,icon:NavIcon):NavPage=>({to,label,icon});
 export const NAV_SECTIONS: NavSection[] = [
-  { label: "首页", icon: "Home", pages: [{ to: "/", label: "首页", icon: "Home" }] },
-  { label: "盯盘", icon: "Zap", pages: [
-    { to: "/watch", label: "实时动态", icon: "Zap" },
-    { to: "/watch/intraday", label: "竞价与盘中", icon: "Gavel" },
+  { label: '盯盘', icon: 'Zap', pages: [
+    page('/watch','市场动态','Activity'), page('/watch/intraday','竞价与盘中','Gavel'),
+    page('/workbench','个股行情','CandlestickChart'), page('/intel','市场资讯','Radar'),
+  ], related: [page('/','市场动态','Activity'), page('/watch/market','市场快照','Activity')] },
+  { label: '复盘', icon: 'Flame', pages: [
+    { ...page('/shortline','盘面','Flame'), activePaths: ['/daily-review'] },
+    page('/shortline/themes','题材','LayoutGrid'),
+    { ...page('/shortline/review','AI 解读','Sparkles'), activePaths: ['/shortline/market-report', '/shortline/weekreview'] },
+    { ...page('/shortline/weekly','历史与统计','History'), activePaths: ['/shortline/history', '/shortline/samples', '/shortline/structure'] },
+    page('/shortline/verify','次日验证','ClipboardCheck'),
   ] },
-  { label: "复盘", icon: "Flame", pages: [
-    { to: "/shortline", label: "情绪复盘", icon: "Flame" },
-    { to: "/daily-review", label: "每日复盘", icon: "Activity" },
+  { label: '选手分析', icon: 'UsersRound', pages: [page('/player-analysis','选手分析','UsersRound')] },
+  { label: '研究', icon: 'FlaskConical', pages: [
+    page('/research','个股研究','CandlestickChart'), page('/sectors','题材研究','LayoutGrid'),
+    page('/modes','模式研究','FlaskConical'), page('/backtest','历史验证','Activity'),
+    page('/observations','观察计划','ListFilter'), page('/my-reports','研报资料','FileText'),
+    page('/notes','研究记录','NotebookPen'),
+  ], related: [page('/debate','多空观点','Swords'), page('/signals','产业信号','Thermometer'), page('/candidates','候选筛选','ListFilter')] },
+  { label: '游资蒸馏', icon: 'BookOpenCheck', pages: [page('/distillation','游资研判','BookOpenCheck')] },
+  { label: '我的', icon: 'Star', pages: [
+    page('/my-stocks','自选与持仓','Star'), page('/journal','交易日志','Wallet'),
+    page('/calendar','事件日历','CalendarDays'), page('/companion','随身看板','LayoutGrid'),
   ] },
-  { label: "交易日志", icon: "BookOpenCheck", pages: [{ to: "/journal", label: "交易日志", icon: "BookOpenCheck" }] },
-  { label: "产业资讯", icon: "Radar", pages: [
-    { to: "/intel", label: "资讯雷达", icon: "Radar" },
-    { to: "/signals", label: "产业信号", icon: "Thermometer" },
-  ] },
-  { label: "产业研究", icon: "LayoutGrid", overview: { to: "/sectors", label: "产业研究", icon: "LayoutGrid" }, listsSectors: true, pages: [] },
-  { label: "研究工具", icon: "FlaskConical", pages: [
-    { to: "/research", label: "个股深挖", icon: "CandlestickChart" },
-    { to: "/debate", label: "多空辩论", icon: "Swords" },
-    { to: "/backtest", label: "回测", icon: "FlaskConical" },
-    { to: "/candidates", label: "候选池", icon: "ListFilter" },
-  ] },
-  { label: "我的股票", icon: "Star", pages: [
-    { to: "/my-stocks", label: "自选与持仓", icon: "Wallet" },
-    { to: "/calendar", label: "事件日历", icon: "CalendarDays" },
-    { to: "/inbox", label: "提醒", icon: "Bell" },
-  ] },
-  { label: "资料库", icon: "Library", pages: [
-    { to: "/my-reports", label: "我的研报", icon: "FileText" },
-    { to: "/notes", label: "研究记录", icon: "NotebookPen" },
-  ] },
-  { label: "接入 AI", icon: "Settings", pages: [{ to: "/settings", label: "接入 AI", icon: "Settings" }], pinned: true },
+  { label: '设置', icon: 'Settings', pages: [page('/settings','设置','Settings')], pinned: true },
 ];
 
 /** 有二级栏目的一级（展开 / 收起、收起侧栏时弹出二级） */
@@ -76,7 +59,7 @@ export const isGroup = (s: NavSection) => s.pages.length > 1 || !!s.listsSectors
 /** 一级文字点进去的页面：有总览页进总览，否则进第一个二级 */
 export const sectionHome = (s: NavSection) => (s.overview ?? s.pages[0]!).to;
 /** 一级栏目下所有能认出来的页面（总览页 + 二级） */
-export const sectionPages = (s: NavSection) => (s.overview ? [s.overview, ...s.pages] : s.pages);
+export const sectionPages = (s: NavSection) => [...(s.overview ? [s.overview, ...s.pages] : s.pages), ...(s.related??[])];
 
 /** 侧栏里一个板块：地址里的 key、名字、图标（sectors.json 里写的；不认识的名字用格子图标） */
 export interface SectorLink { key: string; label: string; icon?: string }
@@ -94,10 +77,15 @@ export function withSectors(sections: NavSection[], sectors: readonly SectorLink
  */
 export function navPageOf(pathname: string, sections: NavSection[] = NAV_SECTIONS): { section: NavSection; page: NavPage } | null {
   let best: { section: NavSection; page: NavPage } | null = null;
+  let bestLength = 0;
   for (const section of sections) {
     for (const page of sectionPages(section)) {
-      const hit = pathname === page.to || (page.to !== "/" && pathname.startsWith(`${page.to}/`));
-      if (hit && (!best || page.to.length > best.page.to.length)) best = { section, page };
+      for (const path of [page.to, ...(page.activePaths ?? [])]) {
+        if (path.length > bestLength && (pathname === path || (path !== "/" && pathname.startsWith(`${path}/`)))) {
+          best = { section, page };
+          bestLength = path.length;
+        }
+      }
     }
   }
   return best;

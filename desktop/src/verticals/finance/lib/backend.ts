@@ -273,7 +273,7 @@ async function ensureSelectedLocalAgentReady(llm: unknown, signal?: AbortSignal)
   throw new ApiError(message, 409, code);
 }
 
-export type ShortlineViewId = "shortline_history" | "shortline_verify" | "shortline_samples" | "shortline_structure" | "shortline_weekly" | "shortline_review" | "shortline_weekly_review";
+export type ShortlineViewId = "shortline_history" | "shortline_limit_trend" | "review_board_metrics" | "review_dragon" | "review_dragon_trend" | "review_sentiment_rhythm" | "shortline_verify" | "shortline_samples" | "shortline_structure" | "shortline_weekly" | "shortline_review" | "shortline_weekly_review";
 
 /** AI 复盘 / AI 周报开工:先确认选中的本地订阅能用,再带上 AI 配置发给后端 */
 async function startShortlineAi<T>(view: "shortline_review" | "shortline_weekly_review", date: string, signal?: AbortSignal): Promise<T> {
@@ -287,6 +287,12 @@ async function startShortlineAi<T>(view: "shortline_review" | "shortline_weekly_
 }
 
 export const backend = {
+  playerSync: <T>(body?:Record<string,unknown>, signal?:AbortSignal,attempt?:string) =>
+    call<T>("/view/player_sync"+(attempt?"?"+new URLSearchParams({attempt}):""),body?{method:"POST",body:JSON.stringify(body),signal}:{signal}),
+  playerAnalysis: <T>(query: URLSearchParams, signal?: AbortSignal) =>
+    call<T>(`/view/player_analysis?${query}`, { signal }),
+  playerAnalysisAction: <T>(body: Record<string, unknown>) =>
+    call<T>("/view/player_analysis", { method: "POST", body: JSON.stringify(body) }),
   importPositions: (files: { name: string; content_base64: string }[], signal?: AbortSignal) => {
     const runtime = requestRuntime();
     return call<ImportResult>("/import", { method: "POST", signal,
@@ -384,7 +390,7 @@ export const backend = {
     call<HeadCheck>("/audit/check-head", { method: "POST", body: JSON.stringify({ head }) }),
 
   /** 定时提醒:设置、任务、收件箱一次取全(机器人地址已打码) */
-  notify: () => call<NotifyOverview>("/notify"),
+  notify: (signal?: AbortSignal) => call<NotifyOverview>("/notify", { signal }),
   /** 写操作:settings / webhooks/add|update|remove / jobs/run / inbox/read|clear,都回新的全貌 */
   notifyAction: (action: string, body: Record<string, unknown>) =>
     call<NotifyOverview>(`/notify/${action}`, { method: "POST", body: JSON.stringify(body) }),
@@ -403,6 +409,8 @@ export const backend = {
   /** 候选池:查询串由 candidateQuery 拼好(范围、各指标区间、排除项、是否重新取) */
   candidates: (query: string) => call<CandidateResult>(`/view/candidates?${query}`),
   /** 判据回看:到期没判的(带写下以来的公告)、校准表、最近判过的 */
+  calendarReminder: (id: string) => call<{status:'ok'|'missing'|'unlinked';targets:{id:string;due:string}[];message:{title:string;lines:string[]}|null}>(`/view/calendar_reminder?message=${encodeURIComponent(id)}`),
+  calendarObjects: (kind: string, ids: string[]) => call<{records:LedgerRecord[]}>(`/view/calendar_objects?kind=${encodeURIComponent(kind)}&ids=${encodeURIComponent(ids.join(','))}`),
   verdicts: (opts: { refresh?: boolean } = {}) => call<VerdictResult>(`/view/verdicts${opts.refresh ? "?refresh=1" : ""}`),
   /** 异动接近度:后端读台账里的自选,按交易所规则推算;refresh=true 不用缓存 */
   abnormal: (opts: { refresh?: boolean } = {}) => call<AbnormalResult>(`/view/abnormal${opts.refresh ? "?refresh=1" : ""}`),
@@ -435,8 +443,8 @@ export const backend = {
    * 盯盘 · 实时动态:页面开着时每隔几秒问一次,后台取行情、判断异动(几个窗口共用一份,不会重复报)。
    * 下一次隔多久听后端回的 `poll_ms`。类型见 shortline/watchTypes.ts。
    */
-  shortlineWatchPoll: <T>(signal?: AbortSignal) =>
-    call<T>("/view/shortline_watch", { method: "POST", signal, body: JSON.stringify({ action: "poll" }) }),
+  shortlineWatchPoll: <T>(signal?: AbortSignal, snapshot = false) =>
+    call<T>("/view/shortline_watch", { method: "POST", signal, body: JSON.stringify({ action: "poll", ...(snapshot ? { snapshot: true } : {}) }) }),
   /** 盯盘 · 竞价与盘中路径:某天的时点快照、09:25 竞价、昨晚验证条件的盘中读数(不给日期 = 今天) */
   shortlineIntraday: <T>(date: string | null, signal?: AbortSignal) =>
     call<T>(`/view/shortline_intraday${date ? `?date=${encodeURIComponent(date)}` : ""}`, { signal }),
@@ -450,7 +458,7 @@ export const backend = {
    * 类型在 `journal.ts`;后端见 orchestrator/src/finance/journal/。
    */
   journal: (signal?: AbortSignal) => call<JournalView>("/view/journal", { signal }),
-  journalAct: (body: { action: "tag" | "manual" | "record" | "delete_tag" | "settings" | "mode_save" | "mode_delete" } & Record<string, unknown>) =>
+  journalAct: (body: { action: "tag" | "manual" | "record" | "record_status" | "record_cancel" | "delete_tag" | "settings" | "mode_save" | "mode_delete" } & Record<string, unknown>) =>
     call<{ result: unknown; view: JournalView }>("/view/journal", { method: "POST", body: JSON.stringify(body) }),
   journalExtra: <T>(id: "journal_excursion" | "journal_attribution" | "journal_env", signal?: AbortSignal) => call<T>(`/view/${id}`, { signal }),
 
@@ -494,20 +502,33 @@ export const backend = {
    * 一轮对话。`llm` = 用户自己在「接入 AI」里配的那一份；不给则读取全局 AI 来源。
    * 🔴 key 随请求发给**本机**后端，用完即弃：不写配置文件、不进日志、不入账本。
    */
-  chat: async (message: string, session = "default", signal?: AbortSignal, llm?: unknown) => {
+  chat: async (message: string, session = "default", signal?: AbortSignal, llm?: unknown, onProgress?: (text: string) => void) => {
     // 🔴 **默认就带上用户那份**，不靠调用方记得传。
     //    上一版要求每个入口自己传 —— 结果三个入口里有两个（Agent 面板、agents.ts）漏了，
     //    表现是"用户在界面上选的模型没生效"，而对话照常成功、界面上看不出任何异常。
     const runtime = requestRuntime(llm);
     await ensureSelectedLocalAgentReady(runtime.llm, signal);
     signal?.throwIfAborted();
-    return await call<{ session: string; reply: string; redacted: number; duration_ms: number; tool_activity?: ToolReceipt[]; report_sources?: ReportSource[]; pending_research?: { id: string; symbol: string; company_name?: string; endpoints: string }[] }>("/chat", {
+    const progressId = crypto.randomUUID();
+    let polling = false;
+    let finished = false;
+    const poll = async () => {
+      if (polling || finished || signal?.aborted) return;
+      polling = true;
+      try {
+        const status = await call<{ phase: string; completed: number } | null>(`/chat/progress/${progressId}`, { signal });
+        if (!finished && !signal?.aborted && status) onProgress?.(status.phase === "tool" ? "正在执行受控工具" : status.phase === "waiting" ? `等待模型回复 · 工具已返回 ${status.completed} 次` : "正在接收结果");
+      } catch { /* Progress transport is optional; never retry the actual question. */ }
+      finally { polling = false; }
+    };
+    const timer = onProgress ? window.setInterval(() => void poll(), 1500) : undefined;
+    try { return await call<{ session: string; reply: string; redacted: number; duration_ms: number; tool_activity?: ToolReceipt[]; report_sources?: ReportSource[]; pending_research?: { id: string; symbol: string; company_name?: string; endpoints: string }[] }>("/chat", {
       method: "POST",
       // requestRuntime 已按 `!== undefined` 处理调用方覆盖，显式 null 会继续传给后端形状校验，
       // 不会被真值判断吃掉。AI 来源与执行方式必须在同一请求体里一起发送。
-      body: JSON.stringify({ session, message, executionMode: runtime.executionMode, llm: runtime.llm }),
+      body: JSON.stringify({ session, message, executionMode: runtime.executionMode, llm: runtime.llm, progress_id: progressId }),
       signal,
-    });
+    }); } finally { finished = true; if (timer !== undefined) window.clearInterval(timer); }
   },
 
   confirmChatResearch: (id: string, signal?: AbortSignal) => call<{ run_id: string }>("/chat/confirm-research", {
@@ -546,7 +567,7 @@ export const backend = {
    * ⚠️ 这类工具要先取数再算,**几十秒**很正常 —— 调用方要自己给足耐心与进度反馈。
    * 🔴 返回的 JSON 由工具自己定形状(比如"被拦住"与"出错了"分开),这里原样透传。
    */
-  runTool: async <T>(name: string, body: unknown, signal?: AbortSignal) => {
+  runTool: async <T>(name: string, body: unknown, signal?: AbortSignal, cachePolicy?: "prefer" | "fresh") => {
     // 没选好 AI（没配、本机配置读不懂、浏览器不让读存储）时按不调用 AI 的方式发：K 线、计算、体检这类确定性工具照常跑，
     // 要不要 AI 由服务端工具契约校验（Codex 审计 2026-10-09 C9：原来配置坏了连 K 线都打不开）。
     const ai = readAiRuntime().status;
@@ -555,16 +576,31 @@ export const backend = {
     try {
       return await call<T>(`/tool/${encodeURIComponent(name)}`, {
         method: "POST",
-        body: JSON.stringify({ input: body, executionMode: runtime.executionMode, llm: runtime.llm }),
+        body: JSON.stringify({ input: body, executionMode: runtime.executionMode, llm: runtime.llm, ...(cachePolicy ? { cachePolicy } : {}) }),
         signal,
       });
     } catch (e) {
+      // 旧服务在启动任何工具之前拒绝新增字段；仅匹配该明确契约错误，避免重复执行其他失败请求。
+      if (name === "kline" && body && typeof body === "object" && "charts" in body && body.charts === true && cachePolicy && e instanceof ApiError && e.status === 400 && e.code === "bad_tool_request" && e.message === "工具请求必须只包含 input、executionMode 和可选 llm") {
+        signal?.throwIfAborted();
+        return await call<T>(`/tool/${encodeURIComponent(name)}`, {
+          method: "POST", signal,
+          body: JSON.stringify({ input: body, executionMode: runtime.executionMode, llm: runtime.llm }),
+        });
+      }
       // 这个工具确实要 AI：报本机配置的具体原因（读不懂 / 读不了），而不是笼统的「请先接入」
       if (direct && ai !== "none" && e instanceof ApiError && e.code === "agent_required") requestRuntime();
       throw e;
     }
   },
   /** Agent 先补问，条件齐备后由后端调用同一个真实工具，并返回可归档报告。 */
+  guidedProgress: (name:string,session:string)=>call<{phase:string;started_at:string;updated_at:string}|null>(`/guided-progress/${encodeURIComponent(name)}/${encodeURIComponent(session)}`),
+  startGuidedJob: async(name:string,session:string,turn:string,message:string)=>{
+    const runtime=requestRuntime();
+    await ensureSelectedLocalAgentReady(runtime.llm);
+    return call<{id:string}>(`/guided-job/${encodeURIComponent(name)}`,{method:'POST',body:JSON.stringify({session,turn,message,...runtime})});
+  },
+  guidedJob: (id:string)=>call<Omit<BackgroundJob,"events"> & {events:{seq:number;event:{type:string;phase?:string;reply?:GuidedToolReply;saved?:boolean;value?:unknown}}[]}>(`/background-jobs/${encodeURIComponent(id)}`),
   guidedTool: async (name: string, session: string, message: string, signal?: AbortSignal, llm?: unknown) => {
     const runtime = requestRuntime(llm);
     await ensureSelectedLocalAgentReady(runtime.llm, signal);
@@ -573,6 +609,52 @@ export const backend = {
       body: JSON.stringify({ session, message, executionMode: runtime.executionMode, llm: runtime.llm }),
       signal,
     });
+  },
+  preference: (key:string) => call<{revision:number;value:unknown}>(`/preferences/${encodeURIComponent(key)}`),
+  savePreference: (key:string,value:unknown,revision:number) => call<{revision:number;value:unknown}>(`/preferences/${encodeURIComponent(key)}`, {method:"POST",body:JSON.stringify({value,revision})}),
+  preferenceBackup: () => call<unknown>("/preference-backup"),
+  restorePreferences: (bundle:unknown) => call<{restored:number}>("/preference-backup",{method:"POST",body:JSON.stringify(bundle)}),
+  sourceHealth: () => call<{endpoint:string;requests:number;success:number;failed:number;cached:number;consecutive_failures:number;last_ms:number;last_at:string;success_rate?:number|null;p50_ms?:number|null;p95_ms?:number|null;latency_samples?:number}[]>("/source-health"),
+  observationChecks: () => call<Record<string,{status:string;reason?:string;checked_at:string}>>("/view/observation_checks"),
+  planReview:()=>call<{criteria:LedgerRecord[];reviews:LedgerRecord[];trades:LedgerRecord[];counts:Record<string,number>}>("/view/plan_review"),
+  savePlanReview:(body:Record<string,unknown>)=>call<LedgerRecord>("/view/plan_review",{method:'POST',body:JSON.stringify(body)}),
+  modeStudio: () => call<import("./modeStudio.ts").ModeStore>("/view/mode_studio"),
+  patternLab: () => call<import('./marketPatterns.ts').PatternStore>('/view/pattern_lab'),
+  patternHistory: (pattern:string) => call<import('./marketPatterns.ts').PatternStore>('/view/pattern_lab',{method:'POST',body:JSON.stringify({action:'history',pattern})}),
+  patternObserve: (pattern:string) => call<import('./marketPatterns.ts').PatternStore>('/view/pattern_lab',{method:'POST',body:JSON.stringify({action:'observe',pattern})}),
+  marketScan: (q='') => call<import('./marketPatterns.ts').MarketScanView>(`/view/market_scan?q=${encodeURIComponent(q)}`),
+  marketScanRefresh: () => call<import('./marketPatterns.ts').MarketScanView>('/view/market_scan',{method:'POST',body:JSON.stringify({action:'refresh'})}),
+  modeAction: (body:Record<string,unknown>) => call<import("./modeStudio.ts").ModeStore>("/view/mode_studio",{method:"POST",body:JSON.stringify(body)}),
+  monitor: () => call<MonitorStatus>("/view/monitor"),
+  setMonitor: (enabled:boolean) => call<MonitorStatus>("/view/monitor",{method:"POST",body:JSON.stringify({enabled})}),
+  backgroundJobs: (signal?: AbortSignal) => call<BackgroundJob[]>("/background-jobs", { signal }),
+  backgroundJob: (id: string, after = 0, signal?: AbortSignal) => call<BackgroundJob>(`/background-jobs/${encodeURIComponent(id)}?after=${after}`, { signal }),
+  cancelBackgroundJob: (id: string) => call<{requested: boolean}>(`/background-jobs/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" }),
+  debateRun: async (symbol: string, depth: string, onEvent: (event: DebateEvent) => void, signal?: AbortSignal, previous?: {text: string; at: string}, resumeId?: string) => {
+    const runtime = resumeId ? undefined : requestRuntime();
+    const { id } = resumeId ? { id: resumeId } : await call<{id:string}>("/background-jobs", { method: "POST", signal,
+      body: JSON.stringify({ kind: "debate", symbol, depth, previous, ...runtime }) });
+    let after = 0;
+    let final: DebateState | undefined;
+    while (!signal?.aborted) {
+      const job = await backend.backgroundJob(id, after, signal);
+      for (const row of job.events ?? []) {
+        after = Math.max(after, row.seq);
+        if (row.event.type === "done") final = row.event.state;
+        onEvent(row.event);
+      }
+      if (!["running", "cancelling"].includes(job.status)) {
+        if (final) return final;
+        throw new Error(job.error || "任务未完成，已生成内容保留。");
+      }
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => { clearTimeout(timer); reject(new DOMException("Detached", "AbortError")); };
+        const timer = setTimeout(() => { signal?.removeEventListener("abort", abort); resolve(); }, 1000);
+        signal?.addEventListener("abort", abort, {once:true});
+        if (signal?.aborted) abort();
+      });
+    }
+    throw new DOMException("Detached", "AbortError");
   },
   debateStart: (symbol: string, depth?: string, signal?: AbortSignal) => {
     const runtime = requestRuntime();
@@ -739,6 +821,8 @@ export interface DebateNumberAudit {
   badMath: { raw: string; stated: number; recomputed: number; percent: boolean }[];
 }
 export interface DebateStage {
+  started_at?: string;
+  finished_at?: string;
   id: string;
   label: string;
   status: "pending" | "running" | "done" | "failed" | "cancelled";
@@ -756,6 +840,12 @@ export interface DebateState {
   done: boolean;
   outcome: "running" | "completed" | "completed_with_errors" | "failed" | "cancelled";
 }
+export type DebateEvent =
+  | { type: "state" | "done"; state: DebateState }
+  | { type: "dossier"; title: string; ok: boolean; loaded: number; total: number }
+  | { type: "preview"; stage: string; text: string }
+  | { type: "heartbeat" }
+  | { type: "error"; message: string };
 export interface ThermoObservation {
   run_id: string; run_date: string; as_of: string; fetched_at: string;
   record_key: string; field: string; value: number | string | null;
@@ -763,6 +853,7 @@ export interface ThermoObservation {
 }
 /** 一屏里的一块。**status 与 note 要跟数字一起渲染** —— 只给数字不给读法等于替上游打包票 */
 export interface PageBlock {
+  business_date?: string;
   id: string;
   title: string;
   /** 取数层写的读法护栏（"此源只给当日""是市场叙事不是核验过的因果"…），照抄不改写 */
@@ -1026,3 +1117,9 @@ export function notWired<T = never>(what: string): Promise<T> {
 export function throwNotWired(what: string): never {
   throw notWiredError(what);
 }
+
+export interface BackgroundJob { outcome?: "needs_input"|"complete"; id: string; key: string; title: string; status: string; created_at: string; updated_at: string; error?: string; seq: number; events?: {seq: number; event: DebateEvent}[] }
+
+export interface MonitorStatus {enabled:boolean;running:boolean;last_at:string|null;started_at:string;error:string|null;interval_ms:number;interruptions:number;gaps?:{from:string;to:string;reason:string}[]}
+
+export { call as callBackend, requestRuntime as selectedAiRuntime };

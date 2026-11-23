@@ -1,3 +1,4 @@
+import { FormActions, FormField, FormToolbar } from "@/components/ui/FormToolbar";
 import { useState, useEffect, useCallback, useRef, type CSSProperties, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Plus, ShieldCheck, RefreshCw, Loader2, Trash2, AlertCircle, Archive, ChevronDown } from "lucide-react";
@@ -252,7 +253,7 @@ export function Portfolio({ tabs }: { tabs?: ReactNode } = {}) {
     <div>
       <PageHeader
         title="我的持仓"
-        subtitle="记下每一笔买卖，持仓、成本和盈亏按流水算出来"
+        subtitle="持仓与交易流水" description="记下每一笔买卖，持仓、成本和盈亏按流水算出来"
         actions={
           <div className="flex items-center gap-2">
             <button onClick={() => setEntryOpen(!entryShown)} aria-expanded={entryShown} aria-controls="portfolio-entry"
@@ -431,39 +432,38 @@ export function Portfolio({ tabs }: { tabs?: ReactNode } = {}) {
             </button>
           ))}
         </div>
-        <div className="flex flex-wrap items-end gap-2">
-          <div>
-            <label className="mb-1 block text-xs text-muted-foreground">代码 / 名称 / 拼音</label>
+        <FormToolbar>
+          <FormField label="代码 / 名称 / 拼音">
             <SymbolSearch value={form.symbol} onChange={(v) => set({ symbol: v })} onPick={(m) => { if (!form.name.trim()) set({ name: m.name }); }}
               placeholder="600519 / 腾讯 / AAPL" ariaLabel="股票代码" className="w-56" />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs text-muted-foreground">日期</label>
+          </FormField>
+          <FormField label="日期">
             <div className="flex gap-1">
               <input aria-label="流水日期" value={form.date} onChange={e => set({ date: e.target.value })} placeholder="YYYY-MM-DD" maxLength={10} className={cn(input, "w-36")} />
               <input type="date" aria-label="用日历选择日期" title="用日历选择日期"
                 value={/^\d{4}-\d{2}-\d{2}$/.test(form.date) ? form.date : ""} onChange={e => set({ date: e.target.value })}
                 className="w-10 rounded-lg border border-border bg-black/20 p-2 text-transparent outline-none focus:border-primary/50" />
             </div>
-          </div>
+          </FormField>
           {fields.map((k) => {
             const [label, ph] = FIELD_LABEL[form.type][k]!;
             return (
-              <div key={k}>
-                <label className="mb-1 block text-xs text-muted-foreground">{label}</label>
+              <FormField key={k} label={label}>
                 <input aria-label={label} value={form[k]} onChange={(e) => set({ [k]: e.target.value } as Partial<TradeForm>)} placeholder={ph} className={cn(input, "w-32")}
                   style={hide && PRIVATE_FIELDS.has(k) ? SECRET_INPUT : undefined} autoComplete="off" />
-              </div>
+              </FormField>
             );
           })}
-          <label className="block text-xs text-muted-foreground">名称（选填）
-            <input aria-label="公司名称" value={form.name} onChange={e => set({ name: e.target.value })} maxLength={40} placeholder="便于查找" className={cn(input, "mt-1 block w-32")} />
-          </label>
-          <button onClick={addTrade} disabled={saving}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary shadow-glow hover:bg-primary/25 disabled:opacity-50">
-            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} 记录
-          </button>
-        </div>
+          <FormField label="名称（选填）">
+            <input aria-label="公司名称" value={form.name} onChange={e => set({ name: e.target.value })} maxLength={40} placeholder="便于查找" className={cn(input, "block w-32")} />
+          </FormField>
+          <FormActions>
+            <button onClick={addTrade} disabled={saving}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary shadow-glow hover:bg-primary/25 disabled:opacity-50">
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} 记录
+            </button>
+          </FormActions>
+        </FormToolbar>
         <label className="mt-3 block text-xs text-muted-foreground">备注（选填）
           <input aria-label="流水备注" value={form.note} onChange={e => set({ note: e.target.value })} maxLength={1000}
             placeholder="当时的判断、要留意什么…" className={cn(input, "mt-1 block w-full")} />

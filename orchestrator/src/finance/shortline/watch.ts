@@ -13,6 +13,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 
 import type { LedgerRecord } from "../../ledger.ts";
 import { ServiceError, fetchEndpoint, ledgerSnapshot, type FetchResult, type ServiceContext } from "../../service.ts";
@@ -218,10 +219,10 @@ async function loadLists(ctx: ServiceContext, cal: CalendarFacts | null, fetch: 
     }
   };
   if (!quoteDay) notes.push("交易日历没取到,昨日梯队和昨日成交额前十先不列");
-  const [lad, big] = await Promise.all([
-    quoteDay ? grab("昨日梯队", { endpoint: "cn_shortline_ladder", args: { date: quoteDay } }) : Promise.resolve(null),
-    grab("500 亿以上大票名单", { endpoint: "cn_shortline_bigcaps", args: { min_cap_yi: 500 } }),
-  ]);
+  const bigPromise = grab("500 亿以上大票名单", { endpoint: "cn_shortline_bigcaps", args: { min_cap_yi: 500 } });
+  const lad = await (
+    quoteDay ? grab("昨日梯队", { endpoint: "cn_shortline_ladder", args: { date: quoteDay } }) : Promise.resolve(null)
+  );
   let ladder: Lists["ladder"] = null;
   if (lad && Array.isArray(lad.stocks) && str(lad.quote_date) === quoteDay) {
     const stocks = lad.stocks.flatMap((x): LadderRow[] => {
@@ -232,7 +233,10 @@ async function loadLists(ctx: ServiceContext, cal: CalendarFacts | null, fetch: 
     ladder = { sample_date: str(lad.sample_date), quote_date: quoteDay!, highest: num(lad.highest) ?? Math.max(0, ...stocks.map((s) => s.boards)), stocks };
   } else if (lad) notes.push(`昨日梯队盯的场次(${str(lad.quote_date) || "未知"})和交易日历(${quoteDay})对不上,先不列`);
   const sampleDay = ladder?.sample_date ?? (cal?.is_today_trading_day ? cal.previous_trading_day : null);
-  const turn = sampleDay ? await grab("昨日成交额前十", { endpoint: "cn_shortline_turnover_top", args: { date: sampleDay, top: 10 } }) : null;
+  const [turn, big] = await Promise.all([
+    sampleDay ? grab("昨日成交额前十", { endpoint: "cn_shortline_turnover_top", args: { date: sampleDay, top: 10 } }) : Promise.resolve(null),
+    bigPromise,
+  ]);
   const turnover: Lists["turnover"] = turn && Array.isArray(turn.stocks)
     ? { date: str(turn.date), stocks: turn.stocks.flatMap((x) => { const s = x as Record<string, unknown>; const code = str(s.code); return A_SHARE.test(code) ? [{ code, name: str(s.name), rank: num(s.rank) ?? 0 }] : []; }) }
     : null;
@@ -289,6 +293,8 @@ function appendAlerts(dataRoot: string, day: string, alerts: Alert[]): string | 
 
 export interface WatchRow { code: string; name: string; price: number | null; pct: number | null; amount_yuan: number | null; quote_time: string | null; today: boolean }
 export interface WatchView {
+  updating?: boolean;
+  snapshot_at?: string;
   date: string; clock: string; phase: Phase; phase_label: string;
   /** 交易日历说今天开不开市(没取到 = null) */
   trading_day: boolean | null;
@@ -306,6 +312,7 @@ export interface WatchView {
 }
 
 interface State {
+  ledgerIdentity?: string;
   day: string; detect: DetectState; alerts: Alert[];
   quotes: Map<string, WQuote>;
   focusAt: number; bigAt: number; bigRefreshed: string | null;
@@ -330,6 +337,27 @@ function stateFor(ctx: ServiceContext, day: string): State {
 
 /** 测试用:清掉进程里的盯盘状态 */
 export function resetWatchState(): void { states.clear(); }
+
+function currentPersonal(ctx: ServiceContext) {
+  try {
+    const snap = ledgerSnapshot(ctx);
+    const identity = crypto.createHash("sha256").update(JSON.stringify(
+      ["watch", "position", "trade"].map((kind) => [snap.records[kind] ?? [], snap.issues[kind] ?? []]),
+    )).digest("hex");
+    return { identity, ...myStocks(snap.records, snap.issues), failed: false };
+  } catch {
+    return { identity: "unreadable", holdings: [], watch: [], costs: new Map<string, { shares: number; cost_total: number }>(), failed: true };
+  }
+}
+
+function currentAlerts(alerts: Alert[], personal: ReturnType<typeof currentPersonal>): Alert[] {
+  const held = new Set(personal.holdings.map((x) => x.code));
+  const watched = new Set(personal.watch.map((x) => x.code));
+  return alerts.flatMap((alert) => {
+    const sources = alert.sources.filter((source) => source !== "持仓" && source !== "自选" || (source === "持仓" ? held.has(alert.code) : watched.has(alert.code)));
+    return sources.length ? [{ ...alert, sources }] : [];
+  });
+}
 
 async function calendar(ctx: ServiceContext, st: State, day: string, nowMs: number, fetch: Fetch, signal: AbortSignal): Promise<CalendarFacts | null> {
   const fresh = st.cal.day === day && nowMs - st.cal.at < (st.cal.ok ? 30 * 60_000 : 60_000);
@@ -451,14 +479,41 @@ export async function shortlineWatchAct(ctx: ServiceContext, body: Record<string
   if (body.action !== "poll") throw new ServiceError("bad_request", "action 只能是 poll");
   const clock = deps.clock ?? (() => new Date());
   const now = clock();
-  const st = stateFor(ctx, clockOf(now).day);
-  if (st.inflight) return st.inflight;
-  if (st.last && now.getTime() - st.lastAt < POLL_MS - 500) return st.last;
+  const day = clockOf(now).day;
+  let st = stateFor(ctx, day);
+  // A recent view is reusable only for the current local list. Replacing the state
+  // also isolates any old in-flight completion from the new list's cache.
+  const personal = currentPersonal(ctx);
+  if (st.ledgerIdentity !== undefined && st.ledgerIdentity !== personal.identity) {
+    // Keep public lists and quotes but detach old in-flight work and mutable state.
+    const lists = st.lists ? { ...st.lists, holdings: personal.holdings, watch: personal.watch, costs: personal.costs,
+      notes: [...st.lists.notes.filter((n) => !n.startsWith("持仓和自选没读出来")), ...(personal.failed ? ["持仓和自选没读出来(台账有问题,去「我的股票」看看)"] : [])] } : null;
+    st = { ...st, lists, quotes: new Map(st.quotes), detect: {
+      frames: new Map([...st.detect.frames].map(([code, frames]) => [code, [...frames]])),
+      limit: new Map(st.detect.limit), cooldown: new Map(st.detect.cooldown),
+    }, alerts: [...st.alerts], focusAt: 0, inflight: null, last: null, lastAt: 0 };
+    states.set(ctx.dataRoot, st);
+  }
+  st.ledgerIdentity = personal.identity;
+  const age = now.getTime() - st.lastAt;
+  const useful = st.last && (st.last.ladder || st.last.turnover || st.last.bigcap || st.last.holdings.length || st.last.watchlist.length);
+  const snapshot = body.snapshot === true && useful && st.last && age >= 0 && age < LISTS_EVERY_MS
+    ? { ...st.last, updating: true, snapshot_at: new Date(st.lastAt).toISOString() } : null;
+  if (snapshot) { snapshot.alerts = currentAlerts(snapshot.alerts, personal); }
+  if (st.inflight) return snapshot ?? st.inflight;
+  if (st.last && age >= 0 && age < POLL_MS - 500) return st.last;
   // 在途请求和发起它的页面解耦:那个页面关了,别的窗口还在等同一份结果
   const p = pollOnce(ctx, st, new AbortController().signal, deps)
-    .then((v) => { st.last = v; st.lastAt = clock().getTime(); return v; })
+    .then(async (v) => {
+      // A ledger edit while I/O was pending must not return the old private list.
+      if (currentPersonal(ctx).identity !== personal.identity || clockOf(clock()).day !== day)
+        return shortlineWatchAct(ctx, { action: "poll" }, _signal, deps);
+      const filtered = { ...v, alerts: currentAlerts(v.alerts, personal) };
+      st.last = filtered; st.lastAt = clock().getTime(); return filtered;
+    })
     .finally(() => { st.inflight = null; });
   st.inflight = p;
+  if (snapshot) { void p.catch(() => {}); return snapshot; }
   return p;
 }
 

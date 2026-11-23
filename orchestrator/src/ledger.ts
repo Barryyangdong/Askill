@@ -49,6 +49,7 @@ interface LedgerFile {
   schema_version: number;
   kind: string;
   records: LedgerRecord[];
+  receipts?: Record<string, { digest: string; ids: string[] }>;
 }
 
 export class LedgerError extends Error {
@@ -306,7 +307,8 @@ function loadFile(file: string, kind: string): LedgerFile {
     if (seen.has(rec.id as string)) bad(`id 重复:${String(rec.id)}`);
     seen.add(rec.id as string);
   }
-  return { schema_version: Number(raw.schema_version) || 1, kind, records: raw.records };
+  if (raw.receipts !== undefined && (!raw.receipts || typeof raw.receipts !== "object" || Array.isArray(raw.receipts) || Object.entries(raw.receipts).some(([k, v]) => !/^[a-f0-9-]{36}$/.test(k) || !v || typeof v !== "object" || !/^[a-f0-9]{64}$/.test(v.digest) || !Array.isArray(v.ids) || v.ids.some((id) => typeof id !== "string")))) bad("幂等登记损坏");
+  return { schema_version: Number(raw.schema_version) || 1, kind, records: raw.records, ...(raw.receipts ? { receipts: raw.receipts } : {}) };
 }
 
 function saveFile(file: string, data: LedgerFile): void {
@@ -439,7 +441,26 @@ export function checkRecord(kind: string, input: Record<string, unknown>): strin
  * 🔴 同一批的 `created_at` 按传入顺序逐条加 1 毫秒:按录入先后排序的地方(同一天的几条谁先谁后)要能从记录本身还原,
  *    全写成同一个时刻的话,先后就只剩随机 id 决定了。
  */
-export function insertRecords(dataRoot: string, kind: string, inputs: readonly Record<string, unknown>[]): LedgerRecord[] {
+export function receiptOf(dataRoot: string, kind: string, key: string): { digest: string; ids: string[] } | undefined {
+  return loadFile(fileOf(dataRoot, kind), kind).receipts?.[key];
+}
+
+/** 在与批量插入相同的锁和文件中登记取消，迟到请求不能再写入。 */
+export function cancelReceipt(dataRoot: string, kind: string, key: string): "recorded" | "cancelled" {
+  const file = fileOf(dataRoot, kind);
+  return withLock(file, () => {
+    const data = loadFile(file, kind);
+    const prior = data.receipts?.[key];
+    if (prior) return prior.ids.length ? "recorded" : "cancelled";
+    data.receipts = { ...data.receipts, [key]: { digest: "0".repeat(64), ids: [] } };
+    saveVerified(file, kind, data, () => true);
+    const saved = loadFile(file, kind).receipts?.[key];
+    if (!saved || saved.digest !== "0".repeat(64) || saved.ids.length) throw new LedgerError("write_lost", "取消登记回读失败，请重试核对");
+    return "cancelled";
+  });
+}
+
+export function insertRecords(dataRoot: string, kind: string, inputs: readonly Record<string, unknown>[], receipt?: { key: string; digest: string }): LedgerRecord[] {
   const file = fileOf(dataRoot, kind);
   const fn = validatorFor(kind);
   const rests = inputs.map((input, i) => {
@@ -453,6 +474,11 @@ export function insertRecords(dataRoot: string, kind: string, inputs: readonly R
   if (!rests.length) return [];
   return withLock(file, () => {
     const data = loadFile(file, kind);
+    if (receipt && data.receipts?.[receipt.key]) {
+      if (!data.receipts[receipt.key]!.ids.length) throw new LedgerError("request_cancelled", "该请求已取消，不能再写入成交");
+      if (data.receipts[receipt.key]!.digest !== receipt.digest) throw new LedgerError("request_conflict", "请求标识已用于不同内容，请核对后开始新记录");
+      throw new LedgerError("partial", "该请求已处理，请核对流水和标注");
+    }
     const base = Date.now();
     const taken = new Set(data.records.map((r) => r.id));
     const added = rests.map((rest, i) => {
@@ -465,7 +491,9 @@ export function insertRecords(dataRoot: string, kind: string, inputs: readonly R
       return { ...rest, id: fresh, kind, created_at: at, updated_at: at } as LedgerRecord;
     });
     data.records.push(...added);
+    if (receipt) data.receipts = { ...data.receipts, [receipt.key]: { digest: receipt.digest, ids: added.map((r) => r.id) } };
     saveVerified(file, kind, data, (rs) => added.every((a) => sameRecord(rs.find((r) => r.id === a.id), a)));
+    if (receipt && loadFile(file, kind).receipts?.[receipt.key]?.digest !== receipt.digest) throw new LedgerError("write_lost", "幂等登记回读失败，请核对流水");
     return added;
   });
 }

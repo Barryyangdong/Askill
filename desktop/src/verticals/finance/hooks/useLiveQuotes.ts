@@ -51,49 +51,47 @@ export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesStat
   codesRef.current = codes;
 
   const failuresRef = useRef(0);
-  const inFlightRef = useRef(false);
-  const staleRef = useRef(false);          // 请求飞行途中自选变过 / 有请求被跳过
+  const generation = useRef({ list: codes.join(","), id: 0 });
+  const list = codes.join(",");
+  if (generation.current.list !== list) { generation.current = { list, id: generation.current.id + 1 }; failuresRef.current = 0; }
+  const inFlightRef = useRef<{id:number; pending:boolean} | null>(null);
   const fetchRef = useRef<(() => Promise<boolean>) | null>(null);
 
   const fetchOnce = useCallback(async (onlyCodes?: string[]): Promise<boolean> => {
+    const id = generation.current.id;
     const cs = onlyCodes ?? codesRef.current;
     if (!cs.length) {
-      if (!onlyCodes) { setQuotes({}); setSettled(""); }
+      if (!onlyCodes) { setQuotes({}); setSettled(""); setLoading(false); setError(null); }
       return true;
     }
-    if (inFlightRef.current) {
-      // 上一次还没回来，跳过这一拍；但要记下来，等它回来后补拉一次。
-      // 否则「首次请求在飞 → 用户此时粘贴新代码」会让新代码的行情永远缺失
-      // （默认不开轮询时没有下一拍来兜底，只能手动刷新）。
-      staleRef.current = true;
+    if (inFlightRef.current?.id === id) {
+      inFlightRef.current.pending = true;
       return true;
     }
-    inFlightRef.current = true;
+    const flight = {id, pending:false};
+    inFlightRef.current = flight;
     const requested = cs.join(",");
     setLoading(true);
     try {
       const data = await api.quote(requested, true);
-      // 自动轮询只拉开盘市场，必须与休市市场已有快照合并（这一轮问了却没返回的不留旧价）；首次 / 手动刷新才整体替换。
+      if (generation.current.id !== id) return true;
       setQuotes((prev) => mergePolledQuotes(prev, data, onlyCodes));
       setError(null);
       failuresRef.current = 0;
       return true;
     } catch {
+      if (generation.current.id !== id) return true;
       failuresRef.current += 1;
-      // 旧价不留着当现价：手动 / 首次取数失败马上撤价提示，自动轮询连续失败才撤（见 quoteFailure）
       const failed = quoteFailure(failuresRef.current, onlyCodes);
       if (failed) { setQuotes(failed.drop); setError(failed.error); }
+      else setError("行情更新失败，显示的是上次快照，正在重试…");
       return false;
     } finally {
-      inFlightRef.current = false;
-      setLoading(false);
-      if (!onlyCodes) setSettled(requested);
-      // 这一趟拉的是不是已经过期的名单？过期就立刻补一次（只补一次，不会滚雪球：
-      // 补拉时 staleRef 已复位，只有再次发生变动才会再补）。
-      const changed = !onlyCodes && codesRef.current.join(",") !== requested;
-      if (staleRef.current || changed) {
-        staleRef.current = false;
-        void fetchRef.current?.();
+      if (generation.current.id === id && inFlightRef.current === flight) {
+        inFlightRef.current = null;
+        setLoading(false);
+        if (!onlyCodes) setSettled(requested);
+        if (flight.pending) void fetchRef.current?.();
       }
     }
   }, []);
@@ -139,5 +137,6 @@ export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesStat
     };
   }, [enabled, fetchOnce]);
 
-  return { quotes, loading, updatedAt: quoteSnapshotTime(quotes), polling, error, settled, refresh };
+  const visibleQuotes = Object.fromEntries(codes.filter(code => quotes[code]).map(code => [code, quotes[code]!]));
+  return { quotes: visibleQuotes, loading, updatedAt: quoteSnapshotTime(visibleQuotes), polling, error, settled, refresh };
 }

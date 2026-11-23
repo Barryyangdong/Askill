@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import {createElement} from "react";
+import {withRenderer,textOf} from "./helpers/render.ts";
 
 import { normalizeMarketSymbol } from "../src/verticals/finance/lib/marketSymbol.ts";
 import {
@@ -133,15 +135,15 @@ test("输入代码的页面都接上了同一个搜索框", () => {
   assert.equal((debatePage.match(/<SymbolSearch/g) ?? []).length, 1);
   const debateBox = debatePage.slice(debatePage.indexOf("<SymbolSearch"), debatePage.indexOf("/>", debatePage.indexOf("<SymbolSearch")));
   assert.match(debateBox, /markets=\{\["CN"\]\}/);
-  assert.match(debateBox, /disabled=\{busy\}/, "辩论跑的途中不让换股票");
+  assert.match(debateBox, /disabled=\{busy \|\| resolving\}/, "辩论或名称确认过程中不让换股票");
   assert.doesNotMatch(debate.slice(debate.indexOf("export function Debate(")), /<SymbolSearch/);
   assert.match(debate, /const code = normalizeMarketSymbol\(symbol\) \?\? "";/, "sh600519 这类写法也能开始辩论");
   assert.match(debate, /if \(!\/\^\\d\{6\}\$\/\.test\(c\)\) \{ setError\(/, "开始前仍按 A 股 6 位代码把关");
-  assert.match(debate, /<button onClick=\{start\} disabled=\{!canStart\}/);
+
   assert.match(debate, /多空辩论目前只支持 A 股。\{code\} 是/);
   assert.match(debate, /setRunCode\(c\);/, "跑到一半换股票，显示的仍是开始时那只");
   assert.doesNotMatch(research, /<Debate\b/, "个股深挖不再内嵌辩论");
-  assert.match(research, /<Link to=\{`\/debate\?symbol=\$\{encodeURIComponent\(chartSymbol\)\}`\}/, "页头按钮带着这只去多空辩论");
+  assert.match(research, /<JourneyLink to=\{`\/debate\?symbol=\$\{encodeURIComponent\(chartSymbol\)\}`\}/, "页头按钮带着这只去多空辩论");
   assert.match(research, /if \(tabParam === "debate"\) \{[\s\S]*?q\.delete\("tab"\);[\s\S]*?<Navigate replace to=\{`\/debate/, "旧的 ?tab=debate 带着原参数跳到多空辩论页");
   assert.equal((portfolio.match(/<SymbolSearch/g) ?? []).length, 1, "买卖、分红、送转都在「记一笔」一处录");
   assert.match(portfolio, /onPick=\{\(m\) => \{ if \(!form\.name\.trim\(\)\) set\(\{ name: m\.name \}\); \}\}/);
@@ -194,4 +196,17 @@ test("候选只认当前输入：改了词还没搜回来时，回车不能选�
   const c = src("components/SymbolSearch.tsx");
   assert.match(c, /const matches = liveMatches\(result, value\);/, "回车和下拉用的必须是按词对号后的候选");
   assert.doesNotMatch(c, /setMatches\(/);
+});
+
+test("辩论入口根据市场允许或禁止开始", async()=>{
+ await withRenderer(async r=>{
+  const {MemoryRouter}=await r.load("react-router-dom");
+  const {AiPageProvider}=await r.load("/src/core/ai/pageContext.tsx");
+  const {Debate}=await r.load("/src/verticals/finance/pages/Debate.tsx");
+  const render=(symbol:string)=>r.html(()=>createElement(MemoryRouter,null,createElement(AiPageProvider,null,createElement(Debate,{symbol}))),{});
+  const cn=render("600519");const us=render("AAPL");
+  assert.match(cn,/<button(?![^>]*\sdisabled(?:=|\s|>))[^>]*>[\s\S]*?开始辩论<\/button>/);
+  assert.match(us,/<button[^>]*disabled[^>]*>[\s\S]*?开始辩论<\/button>/);
+  assert.match(textOf(us),/目前只支持 A 股/);
+ });
 });

@@ -61,10 +61,9 @@ test("近 5 天 · 题材轮动:题材 × 日期的只数和名次,状态写连�
     assert.match(textOf(r.html(ThemeRotationSection, { p: done({ ...rot, rotation: { available: false, reason: "2026-10-09 涨停原因没取到" } }) })), /题材轮动没算出来:2026-10-09 涨停原因没取到/);
     assert.equal(rotationSummary({ state: "loading" }), "题材轮动:还在取,先别据此下结论");
 
-    // 摆在热度表和龙头谱系中间
-    const w = textOf(r.html(WeeklyView, { r: FX.weekly, rotation: createElement(ThemeRotationSection, { p: done(rot) }) }));
-    const at = (x: string) => w.indexOf(x);
-    assert.ok(at("近 5 天情绪热度") < at("题材轮动") && at("题材轮动") < at("龙头谱系"), "热度表 → 题材轮动 → 龙头谱系");
+    const w = textOf(r.html(WeeklyView, { r: FX.weekly }));
+    assert.match(w, /近 5 天情绪热度.*龙头谱系/);
+    assert.doesNotMatch(w, /题材轮动 · 近 5 天哪些题材在前排/, "题材工作区独立承载轮动矩阵");
   });
 });
 
@@ -96,7 +95,9 @@ test("近 5 天：五个交易日、并列最高标、龙头谱系在高点；�
 test("情绪历史：分位与偏热、和前一天比只列真变化、连续取不到的日子并成一行", async () => {
   await withRenderer(async (r) => {
     const { HistoryView, historySummary, seriesLines, deltaText } = await r.load(`${DIR}/HistoryTab.tsx`);
-    const t = textOf(r.html(HistoryView, { r: FX.history }));
+    const { MemoryRouter } = await r.load("react-router-dom");
+    const showHistory = (props: any) => r.html(() => createElement(MemoryRouter, {initialEntries:['/shortline/history?date=2026-10-09']}, createElement(HistoryView, props)), {});
+    const t = textOf(showHistory({ r: FX.history }));
     assert.match(t, /涨停家数 69家 77% 历史中位 52家/);
     assert.match(t, /最高连板 9板 100% 偏热 历史中位 5板/);
     assert.match(t, /对比复盘日之前的 13 个交易日 · 1 项处在两头/);
@@ -118,7 +119,7 @@ test("情绪历史：分位与偏热、和前一天比只列真变化、连续�
     assert.equal(deltaText(-1.5, "pct", "%"), "-1.50 个百分点");
     assert.equal(deltaText(26, "count", "家"), "+26家");
 
-    const off = textOf(r.html(HistoryView, { r: { ...FX.history, context: { available: false, reason: "样本只有 3 天" }, diff: { available: false, reason: "前一交易日没取到" } } }));
+    const off = textOf(showHistory({ r: { ...FX.history, context: { available: false, reason: "样本只有 3 天" }, diff: { available: false, reason: "前一交易日没取到" } } }));
     assert.match(off, /这一项没算出来:样本只有 3 天/);
     assert.match(off, /这一项没算出来:前一交易日没取到/);
 

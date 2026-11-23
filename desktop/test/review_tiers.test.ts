@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { backend } from "../src/verticals/finance/lib/backend.ts";
 import { TIER_PROMPT_RULES, prevText, stockText, tiersSummary, type ReviewTiersResult, type TierGroup, type TierStock } from "../src/verticals/finance/lib/reviewTiers.ts";
+import { textOf, withRenderer } from "./helpers/render.ts";
 
 const read = (p: string) => readFileSync(new URL(`../src/verticals/finance/${p}`, import.meta.url), "utf8");
 const s = (symbol: string, name: string, boards: number | null = 1, tags: string[] = []): TierStock => ({ symbol, name, industry: "", boards, tags });
@@ -53,7 +54,7 @@ test("前端调用:GET /view/review_tiers?date=…,重新取带 refresh=1", asyn
 
 test("每日复盘页:按业务日取分档,只用那一天的;提示词带分档顺序和写法要求;卡片不用红绿、写明不是推荐", () => {
   const page = read("pages/DailyReview.tsx");
-  assert.match(page, /backend\.reviewTiers\(\{ date: day, refresh \}\)/);
+  assert.match(page, /readDailyTiers\(day, refresh\)/);
   assert.match(page, /tiersSummary\(bizDay && tiers\?\.date === bizDay \? tiers : null\)/, "别的日子的分档不进提示词");
   assert.match(page, /<ReviewTiersCard data=\{bizDay && tiers\?\.date === bizDay \? tiers : null\}/);
   assert.match(page, /TIER_PROMPT_RULES/);
@@ -64,5 +65,19 @@ test("每日复盘页:按业务日取分档,只用那一天的;提示词带分�
   assert.doesNotMatch(card, /text-danger|text-success|bg-danger|bg-success|text-red|text-green/);
   assert.match(card, /也不是推荐/);
   assert.match(card, /不是核验过的因果/);
-  assert.match(card, /\{topOf\(g\) && [\s\S]*?topText\(topOf\(g\)!\)[\s\S]*?ladderText\(g\)/, "每组显示最高板与梯队;连板数没取到时不显示");
+});
+
+test("分档卡片展示最高板、板数、题材与默认展开的单只明细", async () => {
+  await withRenderer(async r => {
+    const { ReviewTiersCard } = await r.load("/src/verticals/finance/components/ReviewTiersCard.tsx");
+    const known = g("元件", "today", [{ ...s("01", "甲", 4), first_seal: "09:30:00" }, s("02", "乙"), s("03", "丙")],
+      [2, 1], { tags: [{ tag: "算力", count: 2 }] });
+    const single = g("电力", "single", [s("04", "丁", 2, ["储能"])], [0, 1]);
+    const render = (groups: TierGroup[]) => textOf(r.html(ReviewTiersCard, {
+      data: res(groups), bizDay: "2026-10-08", loading: false, error: "", onRefresh: () => {},
+    }));
+    assert.match(render([known, single]), /最高板 甲 4 板 09:30 首封 梯队 4 板 · 1 只 首板 · 2 只/);
+    assert.match(render([known, single]), /同花顺题材 算力 ×2.*电力 丁 2 板 储能/);
+    assert.doesNotMatch(render([g("电力", "scattered", [s("05", "戊", null), s("06", "己", null)], [0, 0])]), /最高板 戊|梯队 板数不明/);
+  });
 });

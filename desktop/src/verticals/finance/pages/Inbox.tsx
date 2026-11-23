@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { reminderTarget } from "../lib/reminderTarget";
+import { Link, useLocation, useNavigationType } from "react-router-dom";
 import { Bell, BellOff, CheckCheck, Clock, Inbox as InboxIcon, Play, Plus, Send, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
@@ -86,7 +87,10 @@ function AddWebhook({ onAdd }: { onAdd: (b: { kind: WebhookKind; url: string; se
   </form>;
 }
 
+let returnMessage: {id:string;key:string} | null = null;
 export function Inbox() {
+  const location=useLocation();
+  const navigationType=useNavigationType();
   const [data, setData] = useState<NotifyOverview | null>(null);
   // 读取失败和操作失败分开记:操作失败后会自动重读一次,重读成功不能把操作失败的原因冲掉(第四轮审计 C7)
   const [loadError, setLoadError] = useState("");
@@ -95,24 +99,58 @@ export function Inbox() {
   const [busy, setBusy] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<Record<string, string>>({});
 
-  const load = useCallback(async () => {
-    try { setData(await backend.notify()); setLoadError(""); } catch (e) { setLoadError(errText(e)); }
+  const epoch = useRef(0);
+  const reading = useRef<number | null>(null);
+  const readAbort = useRef<AbortController | null>(null);
+  const mutating = useRef(false);
+  const mounted = useRef(false);
+  const restoredFocus = useRef(false);
+  const load = useCallback(async (replace = false) => {
+    // Background refreshes share the current read; an explicit retry can
+    // replace a stuck request. Writes and unmount also invalidate old reads.
+    if (mutating.current || (!replace && reading.current === epoch.current)) return;
+    const ticket = ++epoch.current;
+    readAbort.current?.abort();
+    const controller = new AbortController();
+    readAbort.current = controller;
+    reading.current = ticket;
+    const deadline = setTimeout(() => controller.abort(new Error("消息读取超时，请重试。")), 60_000);
+    try {
+      const result = await backend.notify(controller.signal);
+      if (mounted.current && ticket === epoch.current) {
+        setData(result);
+        setLoadError("");
+      }
+    } catch (e) {
+      if (mounted.current && ticket === epoch.current) setLoadError(errText(e));
+    } finally {
+      clearTimeout(deadline);
+      if (reading.current === ticket) reading.current = null;
+      if (readAbort.current === controller) readAbort.current = null;
+    }
   }, []);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { mounted.current=true;void load();const timer=setInterval(()=>void load(),15000);const refresh=()=>void load();window.addEventListener('focus',refresh);
+    return()=>{mounted.current=false;++epoch.current;readAbort.current?.abort();clearInterval(timer);window.removeEventListener('focus',refresh);}; }, [load]);
+  useEffect(()=>{if(!data||restoredFocus.current)return;const target=returnMessage;returnMessage=null;if(target&&navigationType==='POP'&&target.key===location.key){document.getElementById(`message-${target.id}`)?.focus({preventScroll:true});}restoredFocus.current=true;},[data,location.key,navigationType]);
 
   const act = async (key: string, action: string, body: Record<string, unknown>): Promise<boolean> => {
-    setBusy(key);
+    if(mutating.current)return false;
+    mutating.current=true;const ticket=++epoch.current;setBusy(key);
+    readAbort.current?.abort();
     try {
-      setData(await backend.notifyAction(action, body));
+      const result=await backend.notifyAction(action, body);
+      if(!mounted.current||ticket!==epoch.current)return true;
+      setData(result);
       setActError(""); setLoadError("");
       window.dispatchEvent(new Event(NOTIFY_CHANGED));
       return true;
     } catch (e) {
+      if(!mounted.current||ticket!==epoch.current)return false;
       setActError(errText(e));
       // 失败时也刷新一次,比如「立即运行」失败后任务状态已经更新(只更新数据,不清操作失败的原因)
-      void load();
+      mutating.current=false;void load();
       return false;
-    } finally { setBusy(null); }
+    } finally { mutating.current=false;if(mounted.current)setBusy(null); }
   };
 
   const test = async (channel: string) => {
@@ -138,7 +176,7 @@ export function Inbox() {
   const sched = data?.scheduler;
   return <div>
     <PageHeader title="提醒"
-      subtitle="交易日开盘前自动整理「盘前提醒」、收盘后整理「收盘摘要」和「自选变化」放进这里,也可以推到系统通知或飞书 / 企业微信 / 钉钉群。只列事实,不给买卖建议。"
+      subtitle="盘前提醒 · 收盘摘要 · 自选变化" description="交易日开盘前自动整理「盘前提醒」、收盘后整理「收盘摘要」和「自选变化」放进这里,也可以推到系统通知或飞书 / 企业微信 / 钉钉群。只列事实,不给买卖建议。"
       actions={inbox && inbox.total > 0 && <>
         <button type="button" onClick={() => void act("read", "inbox/read", { all: true })} disabled={!inbox.unread || busy !== null} className={BTN}><CheckCheck className="h-3.5 w-3.5" />全部标为已读</button>
         <button type="button" onClick={() => { if (confirm("清空收件箱?")) void act("clear", "inbox/clear", {}); }} disabled={busy !== null} className={cn(BTN, "hover:text-destructive")}><Trash2 className="h-3.5 w-3.5" />清空</button>
@@ -152,6 +190,8 @@ export function Inbox() {
       <p>推送里的链接是 {sched?.ui_base ?? "本机地址"},只在运行本程序的电脑上能打开。</p>
     </div>
 
+    <button type="button" className={BTN} disabled={busy!==null} onClick={()=>void load(true)}>刷新消息 / 重试读取</button>
+    {loadError && data && <p role="status">刷新失败，以下为上次读取的消息，尚未更新。</p>}
     {error && <p role="alert" className="mb-4 rounded-lg border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-xs text-destructive">{error}</p>}
     {!data && !error && <p role="status" className="text-sm text-muted-foreground">正在读取…</p>}
 
@@ -160,20 +200,21 @@ export function Inbox() {
         {inbox!.items.length === 0
           ? <p className="py-8 text-center text-sm text-muted-foreground">还没有消息。到点运行后会出现在这里;也可以在右边点「立即运行」先看一眼。</p>
           : <ul className="space-y-2">
-            {inbox!.items.map((x) => <li key={x.id} className={cn("rounded-xl border p-3", x.read ? "border-border/50" : "border-primary/40 bg-primary/[0.04]", x.kind === "notice" && "border-warning/40")}>
+            {inbox!.items.map((x) => { const target=reminderTarget(x);return <li key={x.id} id={`message-${x.id}`} tabIndex={-1} className={cn("rounded-xl border p-3", x.read ? "border-border/50" : "border-primary/40 bg-primary/[0.04]", x.kind === "notice" && "border-warning/40")}>
               <div className="flex flex-wrap items-center gap-2">
                 {!x.read && <span aria-label="未读" className="h-2 w-2 rounded-full bg-primary" />}
                 <span className="text-sm font-medium">{x.title}</span>
                 <span className="font-mono text-[11px] text-muted-foreground/70">{formatInboxTime(x.at)}</span>
                 <span className="ml-auto flex items-center gap-2">
-                  {x.link && <Link to={x.link} onClick={() => { if (!x.read) void act(`read:${x.id}`, "inbox/read", { ids: [x.id] }); }} className="text-xs text-primary hover:underline">打开</Link>}
+                  {target.link && <Link aria-label={`打开：${x.title}`} to={target.link} state={{ inboxReturn: { source: "inbox-message", key: location.key } }} onClick={() => { returnMessage={id:x.id,key:location.key}; if (!x.read) void act(`read:${x.id}`, "inbox/read", { ids: [x.id] }); }} className="text-xs text-primary hover:underline">打开</Link>}
                   {!x.read && <button type="button" onClick={() => void act(`read:${x.id}`, "inbox/read", { ids: [x.id] })} className="text-xs text-muted-foreground hover:text-foreground">标为已读</button>}
                 </span>
               </div>
+              {target.note && <p role="note" className="mt-2 text-xs text-warning">{target.note}</p>}
               {x.lines.length > 0 && <ul className="mt-2 space-y-0.5 text-xs leading-5 text-muted-foreground">
                 {x.lines.map((l, i) => <li key={i} className="tabular-nums">{l}</li>)}
               </ul>}
-            </li>)}
+            </li>;})}
           </ul>}
       </Section>
 

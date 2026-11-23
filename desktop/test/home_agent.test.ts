@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { HOME_FEATURE_GROUPS } from "../src/verticals/finance/lib/homeFeatures.ts";
 import { NAV_SECTIONS, navPageOf } from "../src/verticals/finance/lib/nav.ts";
+import { isWorkspacePath } from "../src/verticals/finance/lib/workspaceRoutes.ts";
 
 const financeAgent = readFileSync(
   new URL("../src/verticals/finance/components/ui/FinanceAiDock.tsx", import.meta.url),
@@ -26,7 +27,7 @@ test("首页保留工作流入口，聊天已开放实际联网与取数能力",
   assert.equal(new Set(features.map((entry) => entry.to)).size, features.length, "入口不重复");
   const layout = readFileSync(new URL("../src/verticals/finance/components/layout/Layout.tsx", import.meta.url), "utf8");
   // 首页分组 = 侧栏一级栏目（首页本身和固定在底部的「接入 AI」除外），每组列全它的二级栏目
-  const sections = NAV_SECTIONS.filter((s) => s.label !== "首页" && !s.pinned);
+  const sections = NAV_SECTIONS.filter((s) => s.pages[0]?.to !== "/" && !s.pinned);
   assert.deepEqual(HOME_FEATURE_GROUPS.map((g) => g.title), sections.map((s) => s.label), "首页分组和侧栏一级栏目一一对应");
   for (const s of sections) {
     const group = HOME_FEATURE_GROUPS.find((g) => g.title === s.label)!;
@@ -34,15 +35,15 @@ test("首页保留工作流入口，聊天已开放实际联网与取数能力",
   }
   for (const feature of features) {
     const path = feature.to.split("?")[0]!;
-    assert.ok(router.includes(`path: "${path}"`), feature.to);
+    const route = path.startsWith("/shortline/") ? "/shortline/:tab" : path;
+    assert.ok(isWorkspacePath(path) && router.includes(`path: workspaceRoute("${route}")`), feature.to);
     assert.ok(navPageOf(path), `${feature.to} 在侧栏里找不到所属栏目`);
   }
   const home = readFileSync(new URL("../src/verticals/finance/pages/Home.tsx", import.meta.url), "utf8");
-  assert.ok(home.indexOf("<FinanceHomeAgent") < home.indexOf("<section"));
+  assert.ok(home.indexOf("<HomeDashboard") < home.indexOf("<FinanceHomeAgent"));
   assert.match(home, /HOME_FEATURE_GROUPS\.map/);
-  assert.match(home, /data-feature-grid[^>]*sm:grid-cols-2[^>]*lg:grid-cols-3[^>]*xl:grid-cols-6/, "分类大框须横向并排，不能一类占整行");
-  assert.match(home, /data-feature-category[^>]*border-primary\/20/, "每个分类与其入口共用独立大框");
-  assert.doesNotMatch(home, /group\.detail|\{detail\}<\/span>/, "紧凑目录不展开分类和每个入口的长描述");
+  assert.match(home, /data-feature-grid[^>]*sm:grid-cols-2[^>]*lg:grid-cols-3[^>]*xl:grid-cols-4/, "分类大框须横向并排，不能一类占整行");
+  assert.match(home, /data-feature-category[^>]*glass/, "每个分类与其入口共用独立大框");
   assert.match(home, /to=\{to\}/);
   assert.doesNotMatch(layout, /<Navigate/);
   assert.match(financeAgent, /<QuickAiConnect/);

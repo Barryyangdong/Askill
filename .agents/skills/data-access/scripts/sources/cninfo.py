@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime
+from datetime import date, datetime
+from urllib.parse import urlencode, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from common import TZ_SH, UA, norm_ticker  # noqa: E402
@@ -34,15 +35,38 @@ def cninfo_orgid(code: str) -> str:
     return org
 
 
-def cninfo_announcements(code: str, page_size: int = 30) -> list[dict]:
+def cninfo_announcements(code: str, page_size: int = 30, day: str | None = None) -> list[dict]:
     """[{title, type, date, url}]"""
     digits, _ = norm_ticker(code, stock_only=True)
-    payload = {"stock": f"{digits},{cninfo_orgid(digits)}", "tabName": "fulltext", "pageSize": str(page_size), "pageNum": "1", "column": "", "category": "", "plate": "", "seDate": "",
+    if day and date.fromisoformat(day).isoformat() != day:
+        raise ValueError("公告日期须为 YYYY-MM-DD")
+    payload = {"stock": f"{digits},{cninfo_orgid(digits)}", "tabName": "fulltext", "pageSize": str(page_size), "pageNum": "1", "column": "", "category": "", "plate": "", "seDate": f"{day}~{day}" if day else "",
                "searchkey": "", "secid": "", "sortName": "", "sortType": "", "isHLtitle": "true"}
     headers = {"User-Agent": UA, "Content-Type": "application/x-www-form-urlencoded", "Referer": "https://www.cninfo.com.cn/new/disclosure", "Origin": "https://www.cninfo.com.cn"}
     d = http_post_json("https://www.cninfo.com.cn/new/hisAnnouncement/query", data=payload, headers=headers, timeout=15)
-    return [{"title": it.get("announcementTitle", ""), "type": it.get("announcementTypeName", ""), "date": _ts_to_date(it.get("announcementTime")),
-             "url": f"https://www.cninfo.com.cn/new/disclosure/detail?annoId={it.get('announcementId', '')}"} for it in d.get("announcements", []) or []]
+    if day and (not isinstance(d.get("totalAnnouncement"), int) or
+                (d["totalAnnouncement"] > 0 and not d.get("announcements"))):
+        raise RuntimeError("巨潮公告检索结果缺失")
+    items = d.get("announcements", []) or []
+    if day and any(str(it.get("secCode")) != digits or _ts_to_date(it.get("announcementTime")) != day for it in items):
+        raise RuntimeError("巨潮返回的股票或披露日期与请求不一致")
+    return [announcement_row(it, digits) for it in items]
+
+
+def announcement_row(it: dict, code: str) -> dict:
+    """Use the source attachment, not a guessed legacy detail route."""
+    attachment = str(it.get("adjunctUrl") or "").strip()
+    if attachment and not urlparse(attachment).scheme and not attachment.startswith("//"):
+        attachment = "https://static.cninfo.com.cn/" + attachment.lstrip("/")
+    parsed = urlparse(attachment)
+    pdf = attachment if parsed.scheme == "https" and parsed.hostname == "static.cninfo.com.cn" and parsed.path.lower().endswith(".pdf") else ""
+    date = _ts_to_date(it.get("announcementTime"))
+    detail = "https://www.cninfo.com.cn/new/disclosure/detail?" + urlencode({
+        "stockCode": code, "announcementId": it.get("announcementId", ""),
+        "orgId": it.get("orgId", ""), "announcementTime": date})
+    return {"title": it.get("announcementTitle", ""), "type": it.get("announcementTypeName", ""),
+            "date": date, "url": pdf or detail, "pdf": pdf, "id": str(it.get("announcementId") or "")}
+
 
 
 def cninfo_irm(code: str, page_size: int = 30, page_num: int = 1) -> list[dict]:

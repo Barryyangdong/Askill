@@ -100,13 +100,15 @@ test("分组:前一天池里没有的行业记 0,池没取到记 null;排序 档
   assert.deepEqual(same.map((x) => x.industry), ["半导体", "安防"]);
 });
 
-// ── 整条链路:假取数器(读仓库根目录的 cfg.json,每次调用记一行 calls.log) ──
-const FAKE = String.raw`import json,sys,os
+// ── 整条链路:假取数器。并发调用各写独立文件,不共享可被覆盖的追加偏移 ──
+const FAKE = String.raw`import json,sys,os,time
 a=sys.argv; ep=a[a.index('--endpoint')+1]; out=a[a.index('--out-dir')+1]
 sym=a[a.index('--symbol')+1] if '--symbol' in a else ''
 args=json.loads(a[a.index('--args')+1]) if '--args' in a else {}
 cfg=json.load(open('cfg.json'))
-open('calls.log','a').write(json.dumps({'ep':ep,'sym':sym,'args':args})+'\n')
+os.makedirs('calls',exist_ok=True)
+with open(os.path.join('calls','%020d-%d.json'%(time.time_ns(),os.getpid())),'w') as log:
+  json.dump({'ep':ep,'sym':sym,'args':args},log)
 os.makedirs(os.path.join(out,'raw'),exist_ok=True)
 n=os.getpid()  # 并发取数时文件名不能撞
 def done(env): print(json.dumps(env)); sys.exit(0)
@@ -152,7 +154,7 @@ function fakeCtx(): ServiceContext & { setCfg(c: Cfg): void; calls(): Call[] } {
   return {
     repoRoot: repo, dataRoot, python: PY, node: process.execPath,
     setCfg: (c) => fs.writeFileSync(path.join(repo, "cfg.json"), JSON.stringify(c)),
-    calls: () => { try { return fs.readFileSync(path.join(repo, "calls.log"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as Call); } catch { return []; } },
+    calls: () => { const dir = path.join(repo, "calls"); return fs.existsSync(dir) ? fs.readdirSync(dir).sort().map(name => JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) as Call) : []; },
   };
 }
 const run = (ctx: ServiceContext, query: Record<string, string>, now: string) => reviewTiers(ctx, query, new AbortController().signal, new Date(now));

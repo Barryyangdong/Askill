@@ -5,6 +5,34 @@
 import { useEffect, useRef, useState } from "react";
 import { backend, type ShortlineViewId } from "@/lib/backend";
 import { cleanReason } from "./api";
+import { createReviewCache, reviewTtl } from "./reviewCache";
+import type { HistoryResult, SamplesResult, WeeklyResult } from "./viewTypes";
+
+type Statistics = HistoryResult | SamplesResult | WeeklyResult;
+const statistics = createReviewCache<Statistics>();
+
+function hasReadings(view: Statistics) {
+  if ("series" in view) {
+    return view.series.some(row => row.status !== "missing" && Object.values(row.values).some(Number.isFinite));
+  }
+  if ("available" in view) {
+    return view.available && view.days_used > 0 && (view.seal_curve.some(bucket => bucket.sample > 0)
+      || view.strategies.some(strategy => strategy.overall.sample > 0));
+  }
+  return view.days.some(row => [row.limit_up, row.highest_board, row.broken_rate].some(Number.isFinite));
+}
+
+export function readShortlineView<T>(id: ShortlineViewId, day: string, days: number | undefined, refresh: boolean, signal: AbortSignal): Promise<T> {
+  const query = { date: day, days, refresh };
+  if (id !== "shortline_weekly" && id !== "shortline_history" && id !== "shortline_samples") {
+    return backend.shortlineView<T>(id, query, signal);
+  }
+  // Multiple mounts may share one market request. Unmounting one reader only suppresses its UI update.
+  return statistics.read(JSON.stringify([id, day, days]), refresh, () => backend.shortlineView<Statistics>(id, query), view => {
+    if (view.date !== day || !Array.isArray(view.gaps) || !hasReadings(view)) return 0;
+    return view.gaps.length ? 30_000 : reviewTtl(day);
+  }) as Promise<T>;
+}
 
 /** `stale`:静默重读没取到,`data` 是上一次取到的内容 */
 export type ViewState<T> = { state: "loading" } | { state: "done"; data: T; stale?: string } | { state: "failed"; why: string };
@@ -32,7 +60,7 @@ export function useShortlineView<T>(id: ShortlineViewId, day: string | null, day
     const ctl = new AbortController();
     if (!quiet) setSt({ state: "loading" });
     onBusy?.(true);
-    backend.shortlineView<T>(id, { date: day, days, refresh }, ctl.signal)
+    readShortlineView<T>(id, day, days, refresh, ctl.signal)
       .then((data) => { if (!ctl.signal.aborted) setSt({ state: "done", data }); })
       .catch((e: unknown) => {
         if (ctl.signal.aborted) return;

@@ -14,6 +14,7 @@
 import type { PageContextDef, PageQueryDef } from "../plugin.ts";
 import { calendarFromEnvelope, liveSession, realtimeMatchesReviewDay, resolveSession } from "./session.ts";
 import { SHORTLINE_PAGE_QUERIES } from "./shortline/pages.ts";
+import { closedReviewBlock } from "./review_business_day.ts";
 
 /** 主要指数 + 宽基 ETF(端点自带默认代码表,这里不重复写死) */
 const INDEX_BLOCK = { id: "indices", title: "大盘", note: "A股四大指数 + 美股道指纳指 + 港股恒生与恒生科技;红涨绿跌", endpoint: "tx_quotes_batch", required: true } as const;
@@ -35,6 +36,7 @@ const TURNOVER_FALLBACK = {
 } as const;
 
 export const FINANCE_PAGE_CONTEXT: PageContextDef = {
+  verifyBusinessDate: closedReviewBlock,
   endpoint: "fetch_trade_calendar",
   // 日历端点要一个主体,但只用来定位市场;给一个稳定的大盘股即可
   symbol: "300308",
@@ -70,6 +72,65 @@ export const FINANCE_PAGE_CONTEXT: PageContextDef = {
   },
 };
 
+const MARKET_REVIEW: PageQueryDef = {
+  title: "每日复盘",
+  intent: "市场处在什么状态:涨跌面与短线情绪、中长线趋势与量能、资金去了哪",
+  // 🔴 默认:盘中打开 → 上一个交易日(完整的一天);盘后 → 今天。由后端解析,不让前端按本地时间猜。
+  //    用户可在盘中切到 mode=live 看今天(进行中,收盘前还会变)。
+  needsContext: true,
+  blocks: [
+    // ── 短线:当天的涨停 / 跌停 / 接力 ──
+    { id: "sentiment", title: "情绪", note: "涨停 / 炸板 / 跌停三个计数", endpoint: "em_limit_up_sentiment", injectContext: true, injectAs: { date_compact: "date" } },
+    { id: "zt_pool", title: "涨停梯队", note: "按连板数排;说明栏是取数层原文(含首封时间)", endpoint: "em_zt_pool", injectContext: true, injectAs: { date_compact: "date" } },
+    // 昨天涨停的那批今天怎么走 = 打板接力赚不赚钱;晋级(连板)也从这里和今天的涨停池对出来
+    { id: "yzt", title: "昨日涨停今日表现", note: "上一个交易日涨停的股票在这一天的涨跌;平均值、红盘比例是按这份名单逐只算的", endpoint: "em_yzt_pool", injectContext: true, injectAs: { date_compact: "date" } },
+    { id: "reason", title: "强势股原因", note: "同花顺的题材归因:是市场叙事,不是核验过的因果", endpoint: "ths_hot_reason", injectContext: true, injectAs: { date: "date" } },
+    // ⚠️ 要的是**市场级日榜** `em_daily_dragon_tiger`(symbol_kind=none);
+    //    `em_dragon_tiger` 是**单只主体**的上榜记录,需要 symbol,放在这一页会永远缺 symbol 报错。
+    //    (我先前正是拿错了那个,把它当成"这一页不该有龙虎榜"给删了 —— 删错了。)
+    // ⚠️ 这个端点的参数叫 `trade_date`,不是 `date` —— 整包注入过去会 TypeError,
+    //    信封 failed、证据 0 条。(它就这么静默失败过一段时间。)
+    { id: "dragon", title: "龙虎榜", note: "按净买额排;同一只标的可能因多条上榜理由重复出现", endpoint: "em_daily_dragon_tiger", injectContext: true, injectAs: { date: "trade_date" } },
+    // ── 当天快照:下面三个源**只给当天**(不认日期)——
+    //    盘中看上一个交易日时,它们是今天的此刻,与本页业务日不是同一天。页面按 realtime_matches_review_day 标出来。
+    { id: "breadth", title: "涨跌分布", note: "全市场按涨跌幅分档的家数 + 沪深京三所的涨跌家数与成交额。⚠️ 只给当天:盘中是此刻的快照", endpoint: "em_market_breadth" },
+    { id: "board_flow", title: "板块资金流(行业)", note: "主力净额从大到小;全市场口径。⚠️ 此源只给当日:盘中看到的是今天的进行时", endpoint: "em_board_fund_flow", args: BOARD_FLOW_ARGS, fallback: BOARD_FLOW_FALLBACK },
+    { id: "turnover", title: "成交额榜", note: "全市场成交最活跃的 20 只;客观榜单,不含推荐。⚠️ 只给当天", endpoint: "em_turnover_rank", args: { top_n: 20 }, fallback: TURNOVER_FALLBACK },
+    // ── 中长线:趋势、量能、杠杆、估值(都是按固定公式算的事实,不下判断) ──
+    { id: "trend", title: "主要指数中长线", note: "8 条主要指数的 5 / 20 / 60 / 250 日涨跌、年初至今、均线、离一年高点多远 + 沪深两市成交额;按收盘价的固定算法,不是趋势判断", endpoint: "em_market_trend", args: { days: 300 },
+      // 截到本页业务日:盘中看上一个交易日时,不把今天没收完的那根算进「当日 / 5 日涨跌」
+      injectContext: true, injectAs: { date: "end" } },
+    { id: "margin", title: "两融余额", note: "全市场融资融券余额与融资净买入;T 日数据 T+1 才发布", endpoint: "em_market_margin", args: { days: 60 } },
+    { id: "valuation", title: "沪深300 估值", note: "中证指数官网指标文件:市盈率与股息率(总股本口径);不含市净率", endpoint: "index_valuation", symbol: "000300" },
+    { id: "bond", title: "国债收益率", note: "中债国债收益率曲线(%);和指数股息率放在一起看股债的相对回报", endpoint: "chinabond_yield_curve", args: { curve: "treasury" } },
+  ],
+};
+
+const CLOSED_MARKET_REVIEW: PageQueryDef = {
+  ...MARKET_REVIEW, modes: [], verifyBusinessDate: true,
+  blocks: MARKET_REVIEW.blocks.map(block => {
+    if (block.id === "breadth") return {
+      ...block, endpoint: "cn_market_breadth_history", injectContext: true, injectAs: { date: "date" },
+      note: "按复盘交易日读取收盘涨跌家数和涨跌分布。",
+    };
+    if (block.id === "turnover") return {
+      id: block.id, title: block.title, endpoint: "cn_shortline_turnover_top", args: {top: 20},
+      injectContext: true, injectAs: { date: "date" }, note: "沪深京 A 股按该交易日成交额排序。",
+    };
+    if (block.id === "board_flow") return {
+      id: block.id, title: block.title, endpoint: "cn_review_industry_close",
+      injectContext: true, injectAs: { date: "date" }, note: "按所选交易日读取行业资金榜，覆盖范围见来源说明。",
+      fallback: { endpoint: "em_board_fund_flow", args: { board_type: "industry", top_n: 496 },
+        note: "申万一级日榜暂未取得，展示同一交易日的东方财富行业板块收盘榜。" },
+    };
+    return block;
+  }),
+};
+
+function marketProjection(ids: string[]): PageQueryDef {
+  return { ...CLOSED_MARKET_REVIEW, blocks: CLOSED_MARKET_REVIEW.blocks.filter(block => ids.includes(block.id)) };
+}
+
 export const FINANCE_PAGE_QUERIES: Record<string, PageQueryDef> = {
   today: {
     title: "今日总览",
@@ -83,39 +144,14 @@ export const FINANCE_PAGE_QUERIES: Record<string, PageQueryDef> = {
     ],
   },
 
-  review: {
-    title: "每日复盘",
-    intent: "市场处在什么状态:涨跌面与短线情绪、中长线趋势与量能、资金去了哪",
-    // 🔴 默认:盘中打开 → 上一个交易日(完整的一天);盘后 → 今天。由后端解析,不让前端按本地时间猜。
-    //    用户可在盘中切到 mode=live 看今天(进行中,收盘前还会变)。
-    needsContext: true,
-    blocks: [
-      // ── 短线:当天的涨停 / 跌停 / 接力 ──
-      { id: "sentiment", title: "情绪", note: "涨停 / 炸板 / 跌停三个计数", endpoint: "em_limit_up_sentiment", injectContext: true, injectAs: { date_compact: "date" } },
-      { id: "zt_pool", title: "涨停梯队", note: "按连板数排;说明栏是取数层原文(含首封时间)", endpoint: "em_zt_pool", injectContext: true, injectAs: { date_compact: "date" } },
-      // 昨天涨停的那批今天怎么走 = 打板接力赚不赚钱;晋级(连板)也从这里和今天的涨停池对出来
-      { id: "yzt", title: "昨日涨停今日表现", note: "上一个交易日涨停的股票在这一天的涨跌;平均值、红盘比例是按这份名单逐只算的", endpoint: "em_yzt_pool", injectContext: true, injectAs: { date_compact: "date" } },
-      { id: "reason", title: "强势股原因", note: "同花顺的题材归因:是市场叙事,不是核验过的因果", endpoint: "ths_hot_reason", injectContext: true, injectAs: { date: "date" } },
-      // ⚠️ 要的是**市场级日榜** `em_daily_dragon_tiger`(symbol_kind=none);
-      //    `em_dragon_tiger` 是**单只主体**的上榜记录,需要 symbol,放在这一页会永远缺 symbol 报错。
-      //    (我先前正是拿错了那个,把它当成"这一页不该有龙虎榜"给删了 —— 删错了。)
-      // ⚠️ 这个端点的参数叫 `trade_date`,不是 `date` —— 整包注入过去会 TypeError,
-      //    信封 failed、证据 0 条。(它就这么静默失败过一段时间。)
-      { id: "dragon", title: "龙虎榜", note: "按净买额排;同一只标的可能因多条上榜理由重复出现", endpoint: "em_daily_dragon_tiger", injectContext: true, injectAs: { date: "trade_date" } },
-      // ── 当天快照:下面三个源**只给当天**(不认日期)——
-      //    盘中看上一个交易日时,它们是今天的此刻,与本页业务日不是同一天。页面按 realtime_matches_review_day 标出来。
-      { id: "breadth", title: "涨跌分布", note: "全市场按涨跌幅分档的家数 + 沪深京三所的涨跌家数与成交额。⚠️ 只给当天:盘中是此刻的快照", endpoint: "em_market_breadth" },
-      { id: "board_flow", title: "板块资金流(行业)", note: "主力净额从大到小;全市场口径。⚠️ 此源只给当日:盘中看到的是今天的进行时", endpoint: "em_board_fund_flow", args: BOARD_FLOW_ARGS, fallback: BOARD_FLOW_FALLBACK },
-      { id: "turnover", title: "成交额榜", note: "全市场成交最活跃的 20 只;客观榜单,不含推荐。⚠️ 只给当天", endpoint: "em_turnover_rank", args: { top_n: 20 }, fallback: TURNOVER_FALLBACK },
-      // ── 中长线:趋势、量能、杠杆、估值(都是按固定公式算的事实,不下判断) ──
-      { id: "trend", title: "主要指数中长线", note: "8 条主要指数的 5 / 20 / 60 / 250 日涨跌、年初至今、均线、离一年高点多远 + 沪深两市成交额;按收盘价的固定算法,不是趋势判断", endpoint: "em_market_trend", args: { days: 300 },
-        // 截到本页业务日:盘中看上一个交易日时,不把今天没收完的那根算进「当日 / 5 日涨跌」
-        injectContext: true, injectAs: { date: "end" } },
-      { id: "margin", title: "两融余额", note: "全市场融资融券余额与融资净买入;T 日数据 T+1 才发布", endpoint: "em_market_margin", args: { days: 60 } },
-      { id: "valuation", title: "沪深300 估值", note: "中证指数官网指标文件:市盈率与股息率(总股本口径);不含市净率", endpoint: "index_valuation", symbol: "000300" },
-      { id: "bond", title: "国债收益率", note: "中债国债收益率曲线(%);和指数股息率放在一起看股债的相对回报", endpoint: "chinabond_yield_curve", args: { curve: "treasury" } },
-    ],
-  },
+  market_snapshot: MARKET_REVIEW,
+  review: CLOSED_MARKET_REVIEW,
+  review_summary: marketProjection(["breadth", "trend", "sentiment", "zt_pool"]),
+  review_limits: marketProjection(["sentiment", "zt_pool"]),
+  review_breadth: marketProjection(["breadth"]),
+  review_trend: marketProjection(["trend"]),
+  review_indicators: marketProjection(["yzt", "reason", "margin", "valuation", "bond"]),
+  review_funds: marketProjection(["board_flow", "turnover", "dragon"]),
 
   signals: {
     title: "产业信号",

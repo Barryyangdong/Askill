@@ -7,11 +7,23 @@ import test from "node:test";
 
 import type { PageBlock, PageResult } from "../src/verticals/finance/lib/backend.ts";
 import {
-  breadthLabel, parseBoardFlow, parseBreadth, parseDragon, parseMargin, parseReview, parseShortTerm, parseTrend,
+  breadthLabel, exchangeHeadline, parseBoardFlow, parseBreadth, parseDragon, parseMargin, parseReview, parseShortTerm, parseTrend,
   parseTurnover, parseValuation, reviewLines, speculationLabel, staleNote,
 } from "../src/verticals/finance/lib/marketReview.ts";
 
 type Ev = { field: string; value: number | string | null; record_key?: string; period?: string; note?: string; unit?: string };
+test("概览使用三所日行情，分布样本独立；缺一家交易所不冒充三所合计", () => {
+  const rows = [["SH",156,2145],["SZ",141,2752],["BJ",16,339]].flatMap(([market, up, down]) =>
+    [{field:"market_up_count",value:up}, {field:"market_down_count",value:down}].map(row => ({
+      ...row, source:"tdx", record_key:`exchange|${market}`,
+    })));
+  const bucket = {field:"market_dist_count",value:282,record_key:"dist|1",source:"eastmoney"};
+  const breadth = parseBreadth(env([...rows,bucket]));
+  assert.equal(breadth?.up,282);
+  assert.equal(exchangeHeadline(breadth)?.up,313);
+  assert.equal(exchangeHeadline(breadth)?.down,5236);
+  assert.equal(exchangeHeadline(parseBreadth(env([...rows.slice(0,4),bucket]))),null);
+});
 const env = (evidence: Ev[], extra: Record<string, unknown> = {}, missing: unknown[] = []) =>
   ({ status: "ok", evidence: evidence.map((e) => ({ period: "2026-10-08", unit: "", ...e })), extra, missing }) as never;
 const block = (id: string, envelope: unknown, status: PageBlock["status"] = "ok"): PageBlock =>
@@ -225,6 +237,18 @@ test("板块资金:东财 / 新浪两种口径都认,按净额排;新浪带领�
   assert.equal(sina.source, "新浪");
   assert.equal(sina.rows[0]!.leader, "华北制药 10.04%");
   assert.equal(sina.rows[0]!.pct, 1.07);
+});
+
+test("历史资金展示公开收盘行业口径和通达信日包收盘价", () => {
+  const board = parseBoardFlow(env([{field: "board_net_sw_close", value: 123, record_key:"sw|801080", note:"电子"}]));
+  assert.equal(board?.source, "大波浪·申万一级");
+  assert.deepEqual(board?.rows, [{name:"电子", net:123, pct:null, leader:""}]);
+  const rank = parseTurnover(env([
+    {field:"turnover_rank", value:1, record_key:"stock|300308", note:"中际旭创(300308)；成交额第 1 名"},
+    {field:"close", value:408.4, record_key:"stock|300308"},
+  ]));
+  assert.equal(rank?.rows[0]?.price, 408.4);
+  assert.equal(rank?.rows[0]?.name, "中际旭创");
 });
 
 test("成交额榜:东财带行业、新浪不带也认;按名次排", () => {

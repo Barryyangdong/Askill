@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Check, Copy, Send } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -9,7 +9,10 @@ import sectorsData from "@/data/sectors.json";
 import { sectorSteps, sectorTabs, type SectorStep } from "@/lib/sectorPrompts";
 
 /** 一步提示词：复制到自己常用的 AI，或填进右上角「问 Agent」（不自动发送） */
-function StepCard({ step, onSend }: { step: SectorStep; onSend: ((text: string) => void) | null }) {
+export function StepCard({ step, onSend }: { step: SectorStep; onSend: ((text: string) => void) | null }) {
+  const identity = useRef(step.prompt);
+  identity.current = step.prompt;
+  useEffect(() => { identity.current = step.prompt; setCopied(null); return () => { identity.current = ""; }; }, [step.prompt]);
   const [copied, setCopied] = useState<"ok" | "fail" | null>(null);
   useEffect(() => {
     if (copied !== "ok") return;
@@ -17,11 +20,12 @@ function StepCard({ step, onSend }: { step: SectorStep; onSend: ((text: string) 
     return () => clearTimeout(t);
   }, [copied]);
   const copy = async () => {
+    const prompt = step.prompt;
     try {
       await navigator.clipboard.writeText(step.prompt);
-      setCopied("ok");
+      if (identity.current === prompt) setCopied("ok");
     } catch {
-      setCopied("fail");
+      if (identity.current === prompt) setCopied("fail");
     }
   };
   return (
@@ -113,7 +117,7 @@ export function SectorDetail() {
           这里只给研究方法，内容由 AI 当场查资料产出，每个数字都要它写明来源。
         </p>
         <div className="space-y-3">
-          {steps.map((s) => <StepCard key={s.n} step={s} onSend={send} />)}
+          {steps.map((s) => <StepCard key={`${sector.key}:${s.n}`} step={s} onSend={send} />)}
         </div>
       </section>
 

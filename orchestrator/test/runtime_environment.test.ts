@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
+import { removeTestTemp } from "./helpers/temp_cleanup.ts";
 import { fetchEnv } from "../src/config.ts";
 import { localSubscriptionEnv } from "../src/local_agent_runtime.ts";
 import { researchEnv, startResearch, type ServiceContext } from "../src/service.ts";
@@ -44,7 +45,7 @@ test("研究子进程:带空格的路径照样拉得起;v1 的 engine 字段明�
       assert.ok(argv.includes("--no-agent"));
       assert.equal(argv.includes("--execution-mode") || argv.includes("--engine"), false, "v2 不再有执行模式 / 引擎参数");
     }
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally { await removeTestTemp(dir); }
 });
 test("no-bytecode / no-user-site policy survives fetch, research and local-agent environment isolation", () => {
   const source = { PATH: process.env.PATH, PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1", UNRELATED_SECRET: "do-not-forward" };

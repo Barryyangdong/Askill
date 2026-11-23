@@ -35,6 +35,7 @@ from backtest.stdio_utf8 import force_utf8_stdio  # noqa: E402
 from backtest.loader import INDEX_BASIS, LoaderError, VibeLoader, price_basis  # noqa: E402
 from backtest.sensitivity import run_grid  # noqa: E402
 from backtest.cost_compare import compare as cost_compare  # noqa: E402
+from backtest.holdout import compare as holdout_compare, split_plans  # noqa: E402
 
 
 def _public_error(exc: Exception) -> str:
@@ -56,6 +57,12 @@ def _catalog() -> dict:
     from backtest.loader import INDEX_BENCHMARKS
     rsrs_warm = Rsrs().warmup_bars
     return {
+        "classic_pattern_execution": {
+            "status": "data_required",
+            "patterns": ["空间龙头", "首板次日", "弱转强"],
+            "note": "空间龙头/首板的保守撮合开发内核已实现，但尚未接入真实历史成交数据包及本工具；弱转强另需触发时点盘口。不得用 rule_combination、range_breakout 或样本次日涨跌替代并声称完成战法成交回测。",
+            "missing": ["下单前完整历史样本及可用时间", "历史未复权价格和实际涨跌停价", "开盘竞价成交量", "历史交易/除权状态与费用口径"],
+        },
         # The model assembles this JSON; option labels alone do not tell it that
         # a ticker must be passed as codes: ["AAPL"], not symbol/ticker/code.
         "input_schema": {
@@ -71,6 +78,7 @@ def _catalog() -> dict:
                 "params": {"type": "object", "description": "所选策略的参数，按 strategies 对应 params 填写；无参数用 {}。"},
                 "initial_cash": {"type": "number", "exclusiveMinimum": 0, "default": 1000000},
                 "allow_short": {"type": "boolean", "default": False},
+                "holdout_start": {"type": "string", "format": "date", "description": "可选留出验证起始日。固定本次参数分别运行此前/此后区间，每段都须满足原有最低样本和预热门槛；独立资金、不跨段持仓，不自动选优。"},
             },
         },
         "example_request": {
@@ -90,6 +98,12 @@ def _catalog() -> dict:
             for m in MARKETS.values()
         ],
         "strategies": [
+            {"key": "rule_combination", "label": "日线规则组合",
+             "params": {"capacity": {"default": 3, "label": "名额 1–20"}, "rules": {"label": "按优先级排列的 1–5 条规则", "default": [{"strategy": "range_breakout", "params": {"entry": 20, "exit": 10}}, {"strategy": "ma_cross", "params": {"fast": 20, "slow": 60}}]}},
+             "note": "rules 每项只能包含 strategy 与 params，strategy 仅支持 range_breakout、ma_cross、rsi_reversion，不支持嵌套。按规则顺序、同规则内代码顺序选样去重，最多 capacity 个，每个权重 1/capacity，空缺留现金；下一根开盘执行，保留市场和成本约束。固定用户标的样本，不是历史全市场筛选或龙头战法；不支持模式工作室当前估值/题材条件直接历史回测。"},
+            {"key": "range_breakout", "label": "区间突破",
+             "params": {"entry": {"default": 20, "label": "突破窗口"}, "exit": {"default": 10, "label": "退出窗口"}},
+             "note": "收盘高于此前 entry 根最高价时目标权重为 1，收盘低于此前 exit 根最低价时为 0；窗口不含当根，参数满足 2≤exit<entry≤250。多标的均分；信号由引擎后移一根，次根开盘尝试成交，仍受涨跌停/T+1/费用约束。不是龙头身份或连板战法。"},
             {"key": "buy_and_hold", "label": "买入持有", "params": {},
              "note": "恒定目标权重的历史对照；不代表未来表现。"},
             {"key": "ma_cross", "label": "均线交叉",
@@ -292,6 +306,9 @@ def main() -> None:
                 {"ok": False, "error": f"没有这个策略:{key}(可用:{', '.join(BUILTIN)})"},
                 ensure_ascii=False))
         strategy = BUILTIN[key](**(req.get("params") or {}))
+        split = req.get("holdout_start")
+        if split is not None:
+            split_plans(plan, split)
 
         # 🔴 引擎会往 stdout 打整份 metrics JSON —— 不接住的话,
         #    我们这份 JSON 前面会多出一坨,调用方 parse 直接失败。
@@ -305,6 +322,9 @@ def main() -> None:
                 # 同一份已缓存的数据上重跑邻近参数；只对两参数的内置策略做
                 grid = run_grid(plan, key, req.get("params") or {}, loader, Path(scratch) / "grid")
                 view = _result_view(result, charts=req.get("charts") is True, sensitivity=grid, costs=costs)
+                if split is not None:
+                    view["holdout"] = holdout_compare(plan, split, key, req.get("params") or {}, loader, Path(scratch)/"holdout")
+                    view["required_disclosures"].append(view["holdout"].get("note") or "留出验证未完整完成，不能声称通过样本外检验。")
         print(json.dumps({"ok": True, "result": view}, ensure_ascii=False))
 
     except BacktestNotValid as exc:

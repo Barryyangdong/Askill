@@ -34,7 +34,7 @@ function DueRow({ it, today, onSaved }: { it: VerdictItem; today: string; onSave
     } catch (e) { setErr(`没存上:${errText(e)}`); } finally { setBusy(false); }
   };
 
-  return <li className="rounded-xl border border-border/50 p-3">
+  return <li id={`criterion-${it.id}`} tabIndex={-1} className="rounded-xl border border-border/50 p-3">
     <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
       <span className="rounded-md border border-primary/50 px-1.5 py-0.5 text-[11px] leading-4 text-primary">{labels.label}</span>
       {who(it.symbol, it.name)}
@@ -76,12 +76,11 @@ function DueRow({ it, today, onSaved }: { it: VerdictItem; today: string; onSave
 }
 
 /** 到期的判据 + 校准表。数据由页面取,标记后调 onChanged 让页面重取 */
-export function VerdictPanel({ data, error, onChanged }: { data: VerdictResult | null; error: string; onChanged: () => void }) {
+export function VerdictPanel({ data, error, onChanged, loading=false, onRetry }: { data: VerdictResult | null; error: string; onChanged: () => void; loading?: boolean; onRetry?: () => void }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [err, setErr] = useState("");
 
-  if (error) return <GlassCard><p role="alert" className="text-xs text-destructive">判据回看没取到:{error}</p></GlassCard>;
-  if (!data) return null;
+  if (!data) return <GlassCard><p role={error?"alert":"status"}>{error?`判据回看没取到:${error}`:"正在读取判据…"}</p>{onRetry&&<button disabled={loading} onClick={onRetry}>重试判据</button>}</GlassCard>;
 
   const reopen = async (id: string, record: VerdictResult["judged"][number]["record"]) => {
     setBusyId(id); setErr("");
@@ -91,6 +90,11 @@ export function VerdictPanel({ data, error, onChanged }: { data: VerdictResult |
 
   const total = data.calibration.reduce((n, r) => n + r.met + r.broken + r.dropped + r.due_unjudged + r.upcoming + r.no_due, 0);
   return <>
+    <p role="status">判据快照 {data.generated_at}{loading?' · 正在核验，暂不可写':error?' · 未更新，暂不可写':''}</p>
+    {error&&<p role="alert">判据刷新失败：{error}</p>}
+    {onRetry&&<button disabled={loading} onClick={onRetry}>重新读取判据</button>}
+    {!data.due.length&&<p>没有到期待判的判据。</p>}
+    <fieldset disabled={!!error||loading}>
     {data.due.length > 0 && <GlassCard className="border-primary/30">
       <h2 className="mb-1 flex items-center gap-2 text-sm font-semibold"><ClipboardCheck className="h-4 w-4 text-primary" />到期的判据({data.due.length})</h2>
       <p className="mb-3 text-[11px] leading-5 text-muted-foreground">到了你写的日子。下面列出写下以来的公司公告,对照后自己标记;只记兑现与否,不算涨跌。</p>
@@ -127,5 +131,6 @@ export function VerdictPanel({ data, error, onChanged }: { data: VerdictResult |
       </div>}
       {err && <p role="alert" className="mt-2 text-xs text-destructive">{err}</p>}
     </GlassCard>
+    </fieldset>
   </>;
 }

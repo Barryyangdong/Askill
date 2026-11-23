@@ -254,7 +254,9 @@ test("研报目录里的符号链接不能把上传写到用户数据根之外",
   const root = tmp();
   const outside = tmp();
   fs.mkdirSync(path.join(root, "knowledge"), { recursive: true });
-  fs.symlinkSync(outside, path.join(root, "knowledge", "reports"));
+  // Windows directory junctions exercise the same reparse-point escape without requiring symlink privilege.
+  fs.symlinkSync(outside, path.join(root, "knowledge", "reports"), process.platform === "win32" ? "junction" : "dir");
+  assert.equal(fs.lstatSync(path.join(root, "knowledge", "reports")).isSymbolicLink(), true);
   await assert.rejects(
     addReport(root, { name: "300308.md", content: b64(Buffer.from("300308 x")) }),
     (e: unknown) => e instanceof ReportLibraryError && e.code === "report_path_symlink",

@@ -1,147 +1,60 @@
 <p align="center"><a href="README.md">简体中文</a> | <b>English</b></p>
 
-<h1 align="center">Vibe AStock</h1>
+# Askill · 短线王
 
-<p align="center">
-  <b>A short-term trading review and tracking workbench for China A-shares</b><br>
-  Watch · Sentiment review · AI review · Next-day checks · Trade journal · Company deep dive · Backtesting · 182 data endpoints
-</p>
+Askill is a local research workspace for China's A-share market. Follow an industry or theme during the session, review its limit-up stocks and market breadth after the close, then record what you want to check the next trading day. The interface is in Chinese.
+
+**Player Analysis** compares competition standings and disclosed trades across trading days. **Trader Distillation** lets you study a trader's methods against dated examples and counterexamples. You can connect WorkBuddy, Claude Code, Codex, or a compatible model API for research and interpretation.
+
+[Run from source](#quick-start) · [Screenshots](#screenshots) · [WorkBuddy setup](skills/askill/SKILL.md)
+
+The data layer exposes 193 data endpoints.
 
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
-  <a href="CHANGELOG.md"><img alt="Source v2.1.6" src="https://img.shields.io/badge/source-v2.1.6-F35D2B"></a>
+  <a href="CHANGELOG.md"><img alt="Upstream source baseline v2.1.6" src="https://img.shields.io/badge/source-v2.1.6-F35D2B"></a>
   <img alt="China A-shares, short-term" src="https://img.shields.io/badge/market-China%20A--shares-c92a2a">
-  <img alt="182 data endpoints" src="https://img.shields.io/badge/data-182%20endpoints-2f9e44">
+  <img alt="193 data endpoints" src="https://img.shields.io/badge/data-193%20endpoints-2f9e44">
   <img alt="AI: Claude Code, Codex, WorkBuddy, or a model API" src="https://img.shields.io/badge/AI-Claude%20Code%20%7C%20Codex%20%7C%20WorkBuddy%20%7C%20API-black">
 </p>
 
----
+## Screenshots
 
-<p align="center">
-  <a href="#screenshots">Screenshots</a> ·
-  <a href="#features">Features</a> ·
-  <a href="#data-and-markets">Data</a> ·
-  <a href="#supported-ai">Supported AI</a> ·
-  <a href="#quick-start">Quick start</a> ·
-  <a href="#upgrading-from-v1x">Upgrading</a> ·
-  <a href="#security-and-privacy">Privacy</a> ·
-  <a href="#development-and-tests">Development</a> ·
-  <a href="CHANGELOG.md">Changelog</a>
-</p>
+These screenshots show the workspace after the market closed on November 23, 2026.
 
-Vibe AStock is a short-term trading review and tracking workbench for China A-shares. During the session, **Watch** follows your holdings, your watchlist, and yesterday's limit-up ladder as they move; after the close, **Sentiment review** shows the day's sentiment readings, lets an AI write a review in five parts (sentiment, money, themes, the dragon-tiger list, leading names), and records the conditions you want to check tomorrow, which are scored automatically after the next close; each of your own trades goes into the **Trade journal**, matched to the sentiment and board position on the day you entered so you can look back at yourself. Quotes and statistics are computed by the app, the AI only interprets them, and the app checks where every number came from; your data and records stay on your own computer.
+### After the close
 
-From v2.0.0 it shares one foundation with [Vibe Research](https://github.com/simonlin1212/Vibe-Research): AI connections, company deep dive (A-shares, Hong Kong, US), backtesting, industry news, industry research, the report library, remote access, and portable packages all work the same way. If you used the old version (v1.x, the Python app), you can import your data; see [Upgrading from v1.x](#upgrading-from-v1x).
+![Market review with breadth, turnover and leading limit-up stocks](assets/askill/market-review.webp)
 
-- **10 primary sections**: Home, Watch, Review, Trade journal, Industry news, Industry research, Research tools, My stocks, Library, and Connect AI. The short-term sections come first: Watch holds Live moves and Auction & intraday, Review holds Sentiment review and Daily review, and Trade journal is a section of its own; Research tools holds Company deep dive, Bull/bear debate, Backtesting, and Candidate pool, and Industry research lists each sector directly.
-- **Watch**: live readings for your holdings, your watchlist, yesterday's ladder, large caps, and the top ten by turnover; a move of 1.5% or more within 3 minutes is logged as a surge or drop, and touching or leaving the limit-up price as sealed or opened; how yesterday's limit-up names did in the 09:25 auction, and the sentiment path across six snapshots through the day.
-- **Sentiment review**: the money-making effect, promotion rates, the board ladder, the streak premium, gaps in the ladder, the sentiment cycle, seal quality, the theme tree, first-board names, and theme rotation over the last 5 days; AI review and AI weekly review, next-day checks (write conditions the night before, scored automatically after the next close), limit-up sample statistics, and structural shifts.
-- **Trade journal**: each trade is matched automatically to that day's sentiment (strong / middling / weak) and where the stock stood, with win rates by sentiment, board, playbook, and whether it followed the plan; plus risk & discipline, review, and playbook cards. It stays on your machine and never goes to the AI.
-- **182 data endpoints** (35 layers), 14 of them built for short-term work: sentiment readings, six fact tables, the board ladder, the theme tree, theme rotation, first-board names, limit-up structure, intraday sentiment, yesterday's ladder, and more; the rest cover quotes, candles, tick trades, financial statements, consensus, filings, reports, fund flows, the dragon-tiger list, lock-up expiries, convertible bonds, futures and commodities, Hong Kong and US stocks, news, macro data, and more.
+### Theme review
+
+Follow themes across trading days and compare their price history with the explanations recorded for limit-up stocks.
+
+![Theme review workspace](assets/askill/themes.webp)
+
+### Closing overview on a phone
+
+<img src="assets/askill/market-mobile.webp" alt="Closing market overview on a phone" width="360">
+
+## Features
+
+- **193 data endpoints** (35 layers), 14 of them built for short-term work: sentiment readings, six fact tables, the board ladder, the theme tree, theme rotation, first-board names, limit-up structure, intraday sentiment, yesterday's ladder, and more; the rest cover quotes, candles, tick trades, financial statements, consensus, filings, reports, fund flows, the dragon-tiger list, lock-up expiries, convertible bonds, futures and commodities, Hong Kong and US stocks, news, macro data, and more.
 - **Six-stage company research (A-shares, Hong Kong, US)**: company profile → financials → earnings expectations → valuation → risk → report. Raw data keeps its source; derived figures keep their calculations.
 - **Bring your own AI**: a Claude Code, Codex, or WorkBuddy subscription, or any Chat Completions–compatible model API such as DeepSeek, Qwen, Kimi, or MiMo.
 - **Runs on Windows, macOS, and Linux**; it can also run on a macOS / Linux cloud computer and be opened remotely through a link with an access token.
 
 The product UI is in Chinese.
 
----
-
-## Screenshots
-
-![Sentiment review · Today](assets/screenshots/2026-10-10/shortline-today.png)
-
-Sentiment review · Today: whether yesterday's limit-up names made money today, how smoothly they were promoted, where the ladder breaks, and which board levels lost money.
+The sidebar has **6 primary sections**; settings, tasks and reminders are global controls.
 
 <table>
-<tr>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/shortline-ladder.png" alt="Board ladder"><br><b>Board ladder</b>: who is at each streak height, how many names one level down yesterday made it up, and whether the rest hit limit-down, broke the seal, or never reached limit-up today</td>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/shortline-rotation.png" alt="Theme rotation"><br><b>Theme rotation</b>: limit-up counts and ranks for each theme over the last 5 trading days, with streaks, returns after a gap, and first appearances marked; it describes the past and makes no forecast</td>
-</tr>
-<tr>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/watch-live.png" alt="Watch · Live moves"><br><b>Watch · Live moves</b>: live readings and intraday moves for holdings, the watchlist, and yesterday's ladder (captured on a weekend, so it shows the market closed)</td>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/watch-intraday.png" alt="Watch · Auction &amp; intraday"><br><b>Watch · Auction &amp; intraday</b>: how yesterday's limit-up names did in the auction, and the sentiment path across six snapshots</td>
-</tr>
-<tr>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/shortline-review.png" alt="AI review"><br><b>AI review</b>: five parts written separately and then summarized, every number checked by the app, suggested conditions added to next-day checks in one click</td>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/shortline-weekly.png" alt="AI weekly review"><br><b>AI weekly review</b>: the sentiment trend, theme rotation, and a look back at the checks; "My trades this week" is computed on your machine only</td>
-</tr>
-<tr>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/shortline-verify.png" alt="Next-day checks"><br><b>Next-day checks</b>: after the close, write directional conditions for the next trading day with their historical base rates; they are scored after the next close</td>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/shortline-samples.png" alt="Limit-up samples"><br><b>Limit-up samples</b>: how yesterday's limit-up names did the next day, grouped by seal time, playbook, and the entry day's sentiment</td>
-</tr>
-<tr>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/journal-records.png" alt="Trade journal · Trades (demo data)"><br><b>Trade journal · Trades (demo data)</b>: win rates by sentiment, board position, playbook, and whether the trade followed the plan</td>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/journal-review.png" alt="Trade journal · Review (demo data)"><br><b>Trade journal · Review (demo data)</b>: trades worth a second look, the best and worst each one got to, and whether a loss came from a wrong read or poor execution</td>
-</tr>
-</table>
-
-<details>
-<summary>Other sections (shared with Vibe Research)</summary>
-
-<table>
-<tr>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/home-dark.png" alt="Home"><br><b>Home</b>: indices, watchlist, holdings, and chat</td>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/home-light.png" alt="Home (light theme)"><br><b>Home (light theme)</b></td>
-</tr>
-<tr>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/daily-review.png" alt="Daily review"><br><b>Daily review</b>: breadth, turnover, limit-up streaks, margin balance, and where the main indices sit over the longer term</td>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/stock-overview.png" alt="Company deep dive · Overview"><br><b>Company deep dive · Overview</b>: candlestick chart with adjustable price adjustment, earnings preview and look-back, event look-back</td>
-</tr>
-<tr>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/research-report.png" alt="Six-stage research report"><br><b>Six-stage research report</b>: every number in the text carries an evidence or calculation ID; the evidence appendix on the right traces back to the raw data</td>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/sectors.png" alt="Industry research"><br><b>Industry research</b>: 20 sectors, each with a set of step-by-step research prompts</td>
-</tr>
-<tr>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/intel.png" alt="Intelligence radar"><br><b>Intelligence radar</b>: public sources across 12 industries, last 3 days</td>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/signals.png" alt="Industry signals"><br><b>Industry signals</b>: GPU rental rates over the past year and current spot prices</td>
-</tr>
-<tr>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/holdings.png" alt="Holdings (demo data)"><br><b>Holdings (demo data)</b>: positions, cost, and P&amp;L computed from the transaction log</td>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/calendar.png" alt="Event calendar"><br><b>Event calendar</b>: ex-dividend dates and scheduled earnings for your watchlist and holdings, plus the decision points you wrote</td>
-</tr>
-<tr>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/candidates.png" alt="Candidate pool"><br><b>Candidate pool</b>: checks index constituents one by one against your conditions; it filters out, it does not rank</td>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/connect-ai.png" alt="Connect AI"><br><b>Connect AI</b>: pick a subscription or model API on first launch</td>
-</tr>
-<tr>
-<td width="50%" valign="top"><img src="assets/screenshots/2026-10-10/settings-import.png" alt="Import from the old version"><br><b>Import from the old version</b>: preview first, then import, with an automatic backup beforehand</td>
-<td width="50%" valign="top"></td>
-</tr>
-</table>
-
-</details>
-
-Captured on October 10–11, 2026 from the development build (a weekend, market closed), in a separate demo workspace with no AI connected. The watchlist, holdings, and trade-journal trades are demo entries made for these screenshots (their notes say "示例数据", demo data, and prices fall between that day's real high and low), not real trades. The AI review and AI weekly review are versions actually written on October 10, 2026 with a Claude Code subscription for October 9, shown as is; Auction & intraday shows snapshots the old version saved during the September 23, 2026 session and that were then imported from it; the research report is one completed during development testing on October 8, 2026; everything else is public data the pages fetched at capture time. The screenshots only show the interface and are not investment advice. See [capture notes](assets/screenshots/2026-10-10/README.md).
-
-## Features
-
-The sidebar has 10 primary sections; those with several pages fold them into a second level (click the arrow next to a section to expand it; with the sidebar collapsed to icons, clicking an icon opens its pages beside it):
-
-<table>
-<thead>
-<tr><th nowrap>Section</th><th nowrap>Page</th><th>What it does</th></tr>
-</thead>
-<tbody>
-<tr><td nowrap>Home</td><td nowrap>—</td><td>China and global indices, your watchlist, and your holdings (market value, holdings P&amp;L, today's P&amp;L, prices refreshing on their own while markets are open) first; chat with AI below, and open features from the grouped directory</td></tr>
-<tr><td nowrap>Watch</td><td nowrap>Live moves</td><td>During the session: your holdings and watchlist (price, today's change, unrealized P&amp;L %), yesterday's limit-up ladder (how each name is doing today and whether it is sealed again), the top ten movers among stocks above 50 billion yuan in market cap, and yesterday's top ten by turnover; a move of 1.5% or more within 3 minutes is logged as a surge or drop, and touching or leaving the limit-up price as sealed or opened, with filters by size and scope. Refreshes on its own while the page is open and stops when you switch away</td></tr>
-<tr><td nowrap>Watch</td><td nowrap>Auction &amp; intraday</td><td>How yesterday's limit-up names opened in the 09:25 auction (median, share opening higher, by board level, the highest streak), the sentiment path across six snapshots (09:25 / 09:35 / 10:00 / 11:30 / 14:00 / 15:00: the median move of yesterday's limit-ups plus market-wide limit-ups, failed seals, and limit-downs at that moment), and last night's next-day checks against intraday readings. Snapshots are saved automatically at each time; a missed one cannot be filled in later</td></tr>
-<tr><td nowrap>Review</td><td nowrap>Sentiment review</td><td>How hot short-term sentiment is: the money-making effect, promotion rates, the board ladder, the streak premium, gaps in the ladder, how yesterday's strong names did today, seal quality, the theme tree, and first-board names; an AI review written in five parts (sentiment, money, themes, the dragon-tiger list, leading names) plus a summary, with every number and citation checked by the app, the cited evidence one click away, and suggested conditions you can add to next-day checks in one click; plus the last 5 days (theme heat, theme rotation, and the lineage of leading names), sentiment history, next-day checks (write conditions the night before, checked automatically after the next close), limit-up sample stats, and structural shifts</td></tr>
-<tr><td nowrap>Review</td><td nowrap>Daily review</td><td>Where the market stands at a glance: breadth, turnover, short-term sentiment (limit-ups / limit-downs / failed seals, how yesterday's limit-ups did today, promotion rates, limit-up streaks), where the indices sit over the longer term, margin balance, equity vs. bond yields, sector fund flows, and the Dragon-Tiger list; limit-up stocks grouped by industry and compared with the previous two trading days</td></tr>
-<tr><td nowrap>Trade journal</td><td nowrap>—</td><td>Log each of your A-share trades (trades with fills go into your holdings ledger, with P&amp;L worked out from the fills net of commission, stamp duty, and transfer fees; without fills you record just a P&amp;L %), matched automatically to that day's sentiment (strong / middling / weak) and where the stock stood (first board, streak, failed seal, never touched limit-up); see win rate and average per trade by sentiment, board, playbook, whether it followed the plan, and holding days. <strong>Risk &amp; discipline</strong> shows capital at risk from your planned stops, the equity curve, how your last 10 / 20 / 50 trades went, what unplanned trades cost, and breaches of your own rules; <strong>Review</strong> lists trades worth a second look, the best and worst each trade got to, and whether a losing day came from a wrong read or poor execution; <strong>Playbook cards</strong> write your setups down and split results by version. Stays on your machine and never goes to the AI</td></tr>
-<tr><td nowrap>Industry news</td><td nowrap>Intelligence radar</td><td>News, company filings, and event leads that warrant further checking</td></tr>
-<tr><td nowrap>Industry news</td><td nowrap>Industry signals</td><td>Supply-chain signals such as GPU rental rates, monthly industry data, raw materials, and hiring</td></tr>
-<tr><td nowrap>Industry research</td><td nowrap>20 sectors</td><td>The sidebar lists the 20 industry sectors directly (click Industry research itself for an overview of all of them). Each sector has its own page with a set of step-by-step research prompts: have the AI read the research reports first, then work through technology roadmaps, the supply chain, and the competitive landscape one page at a time; copy a prompt into your own AI or drop it into the chat in the upper-right corner. Your AI produces the sector content from what it finds; the product doesn't pre-fill it</td></tr>
-<tr><td nowrap>Research tools</td><td nowrap>Company deep dive</td><td>Pick one stock (A-share, Hong Kong, or US) and switch between two tabs: <strong>Overview</strong> shows the candlestick chart, an earnings preview and review, and event reviews (earnings pre-announcements, major-shareholder trades, buybacks, institutional visits, dragon-tiger list appearances, and lock-up expiries for A-shares; earnings releases for Hong Kong and US stocks); <strong>Deep research</strong> works through business, financials, earnings expectations, valuation, and risks to produce an evidence-backed report that can be turned into a share card</td></tr>
-<tr><td nowrap>Research tools</td><td nowrap>Bull/bear debate</td><td>A-shares only for now: compares supporting and opposing views to find missing assumptions, risks, and counterevidence</td></tr>
-<tr><td nowrap>Research tools</td><td nowrap>Backtesting</td><td>Describe an idea in chat and check a defined rule against historical data, compared with an index and charted</td></tr>
-<tr><td nowrap>Research tools</td><td nowrap>Candidate pool</td><td>Check your watchlist, holdings, or an index's constituents against conditions you set; each condition shows met, not met, or missing data; listed by code, not ranked</td></tr>
-<tr><td nowrap>My stocks</td><td nowrap>Watchlist and holdings</td><td>Two tabs. <strong>Watchlist</strong>: add companies in bulk by name, pinyin, or symbol, refresh quotes, and keep tracking them; A-shares show how far they are from the exchanges' abnormal-volatility thresholds, and stocks you hold are marked. <strong>Holdings</strong>: keep a transaction ledger, see positions, P&amp;L, and returns alongside quotes, run a portfolio checkup, and replay past drawdowns; this is not an order-entry tool. Click a stock name to open it in Company deep dive</td></tr>
-<tr><td nowrap>My stocks</td><td nowrap>Event calendar</td><td>Upcoming earnings, lock-up expiries, and ex-dividend dates for your watchlist and holdings, on one timeline with your ledger's verdict and review dates; every entry names its source</td></tr>
-<tr><td nowrap>My stocks</td><td nowrap>Reminders</td><td>Before each A-share trading day opens, a premarket reminder (overnight markets, filings and suspensions for streak names, today's IPOs); after the close, a close summary, watchlist changes, and criteria that have come due; all land in an inbox, optionally pushed to system notifications or Feishu / WeCom / DingTalk group bots</td></tr>
-<tr><td nowrap>Library</td><td nowrap>My reports</td><td>Import, read, and search your own documents; ask questions and check the source text</td></tr>
-<tr><td nowrap>Library</td><td nowrap>Research records</td><td>Revisit, search, and manage research, backtest, and debate reports by date</td></tr>
-<tr><td nowrap>Connect AI</td><td nowrap>—</td><td>Choose a subscription or model API; once tested, it is shared across the product; pinned to the bottom of the sidebar</td></tr>
-</tbody>
+<tr><th nowrap>Section</th><th nowrap>Related features</th></tr>
+<tr><td nowrap>Watch</td><td>Market activity, auction and intraday, stock quotes, market news</td></tr>
+<tr><td nowrap>Review</td><td>Market overview, themes, AI interpretation, history and statistics, next-day checks</td></tr>
+<tr><td nowrap>Player Analysis</td><td>Player analysis</td></tr>
+<tr><td nowrap>Research</td><td>Stock research, themes, patterns, historical validation, observation plans, reports and research records; related: bull/bear views, industry signals, candidate screening</td></tr>
+<tr><td nowrap>Trader Distillation</td><td>Trader study</td></tr>
+<tr><td nowrap>My</td><td>Watchlist and holdings, trade journal, calendar, companion</td></tr>
 </table>
 
 ### Watch
@@ -165,7 +78,7 @@ Watch has two pages. They refresh on their own while open, stop and say "paused"
 
 ### Sentiment review
 
-First under Review, with 8 tabs. The review date defaults to the most recent trading day that has closed; future dates and non-trading days are refused outright instead of producing "0 limit-ups".
+Review opens on the market overview and includes themes, AI interpretation, history and statistics, and next-day checks. The review date defaults to the most recent trading day that has closed; future dates and non-trading days are refused outright instead of producing "0 limit-ups".
 
 - **Today**: the money-making effect (median and mean move of yesterday's limit-up names today, share in the green, how many hit limit-up again), promotion rates (first to second board, second to third, three boards and up), the board ladder (who is at each streak height, how many names one level down yesterday made it up, and whether the ones that didn't hit limit-down, broke the seal, or never reached limit-up today), the streak premium, the ladder structure (which board level has a gap), how yesterday's strong names did (by what they were yesterday), the money-losing effect, seal quality (never broke, broke and resealed), the sentiment cycle, the theme tree (Tonghuashun limit-up reasons grouped into themes, with iWencai as a supplement), and first-board names. Each block has a "method" note you can open to see how it is computed.
 - **AI review**: five parts (sentiment, money, themes, the dragon-tiger list, leading names), each in a fresh conversation that sees only its own blocks of data, then a summary that suggests conditions for next-day checks, added in one click. Every number is checked by the app in three tiers: matches the data pack, shows a formula that recomputes correctly, or gives no source (a formula that does not recompute is flagged red); evidence IDs are checked one by one, and hovering "see evidence" shows the original row. Data after the review date never enters the data pack; each run is saved as a new version without overwriting older ones.
@@ -207,7 +120,7 @@ Every answer ends with "Sources this turn": which data was fetched (source, time
 
 Every number in a chat answer is checked for a source: it has to appear in your message, the current page, the data and web pages fetched, or earlier in the conversation, or be the result of a calculation written out in the answer. A number with no source is replaced by 「（略※）」 ("omitted"), the answer ends with a note saying how many were replaced, and the rest is shown as usual. Numbers that aren't data, such as dates, years, IDs, index names like CSI 300, and moving-average windows, aren't checked, and neither are example figures the answer labels as hypothetical (「假设」). The check confirms that a number appears in those sources, not that it is used correctly. Common-knowledge figures such as board-lot sizes or daily price limits are also replaced when nothing in the conversation backs them up.
 
-### Daily review
+### Market snapshot
 
 Daily review shows where the market stands as soon as you open it, and the Agent can write a review from what's on the page. During trading hours it shows today (numbers keep changing until the close); you can switch to the previous trading day for a complete day. From top to bottom:
 
@@ -326,7 +239,7 @@ Verdict criteria and falsifiers that are due and not yet judged sit at the top o
 
 ## Data and markets
 
-The data registry has **182 endpoints across 35 layers**, 14 of them built for short-term work (`cn_shortline_*`): the four sentiment readings, the sentiment cycle, daily readings, six fact tables, the board ladder, the theme tree, theme rotation over the last 5 days, first-board names, how yesterday's limit-up names did today, limit-up structure, intraday sentiment, yesterday's ladder, the top ten by turnover, and large caps. Closed days are cached for good; a day that has not closed is marked "partial" and not cached. The 7 SEC endpoints need an SEC contact filled in on the Connect AI page (or the `VRA_SEC_CONTACT` environment variable); without it they say what's missing. Other coverage includes quotes, candles, tick trades, financial statements, consensus, filings, reports, fund flows, positioning, Southbound flows, A/H premiums, company profiles, options, indices, futures and commodities, corporate events, convertible bonds, SEC / FINRA / CBOE, news, macro data, industry thermometers, hiring, restrictions, and data calendars. A-share data is synced to [a-stock-data](https://github.com/simonlin1212/a-stock-data) v3.10.1; US and Hong Kong data to [global-stock-data](https://github.com/simonlin1212/global-stock-data) v2.0.3.
+The data registry has **193 endpoints across 35 layers**, 14 of them built for short-term work (`cn_shortline_*`): the four sentiment readings, the sentiment cycle, daily readings, six fact tables, the board ladder, the theme tree, theme rotation over the last 5 days, first-board names, how yesterday's limit-up names did today, limit-up structure, intraday sentiment, yesterday's ladder, the top ten by turnover, and large caps. Closed days are cached for good; a day that has not closed is marked "partial" and not cached. The 7 SEC endpoints need an SEC contact filled in on the Connect AI page (or the `VRA_SEC_CONTACT` environment variable); without it they say what's missing. Other coverage includes quotes, candles, tick trades, financial statements, consensus, filings, reports, fund flows, positioning, Southbound flows, A/H premiums, company profiles, options, indices, futures and commodities, corporate events, convertible bonds, SEC / FINRA / CBOE, news, macro data, industry thermometers, hiring, restrictions, and data calendars. A-share data is synced to [a-stock-data](https://github.com/simonlin1212/a-stock-data) v3.10.1; US and Hong Kong data to [global-stock-data](https://github.com/simonlin1212/global-stock-data) v2.0.3.
 
 | | A-shares | US | Hong Kong |
 |---|---|---|---|
@@ -371,7 +284,7 @@ If the local status is unclear, run `scripts/doctor` (or `scripts\doctor.ps1` on
 <details>
 <summary>Connection details, tool permissions, and LAN access</summary>
 
-- Each research stage is a separate session with access only to five controlled Vibe AStock tools (list files, read files, deterministic calculation, write the stage output, write the report); every built-in tool of the subscription CLIs is disabled. The product runs the completion check, identically for all four AI sources.
+- Each research stage is a separate session with access only to five controlled Askill tools (list files, read files, deterministic calculation, write the stage output, write the report); every built-in tool of the subscription CLIs is disabled. The product runs the completion check, identically for all four AI sources.
 - Chat, research, debate, and backtesting in the interface all let the AI use the web and the product's tools. API callers can still send `executionMode: "direct"` for a single answer without tools; company research, bull/bear debate, and Agent-guided backtesting then fail with an error instead of silently degrading.
 - Each subscription accepts only its own subscription login (Codex accepts only a ChatGPT login; Claude accepts only a claude.ai subscription login). API-key environment variables from your shell are not passed to the CLI, so billing cannot silently switch. Research exposes only the controlled product tools; user settings and automatic memory remain off.
 - Exception: Codex reads your own global `$CODEX_HOME/AGENTS.md` (no flag can turn it off). The product sends its own instructions at a higher priority, but settings such as a name or tone in that file can still apply. The product does not load your `config.toml`.
@@ -412,8 +325,8 @@ See [model access and LAN boundaries](docs/model-access.md#5-自托管模型局�
 Windows (PowerShell or Command Prompt):
 
 ```bat
-git clone https://github.com/simonlin1212/vibe-astock.git vibe-astock
-cd vibe-astock
+git clone https://github.com/Barryyangdong/Askill.git Askill
+cd Askill
 scripts\setup-windows.cmd
 scripts\start.cmd
 ```
@@ -421,8 +334,8 @@ scripts\start.cmd
 macOS / Linux:
 
 ```bash
-git clone https://github.com/simonlin1212/vibe-astock.git vibe-astock
-cd vibe-astock
+git clone https://github.com/Barryyangdong/Askill.git Askill
+cd Askill
 scripts/setup
 scripts/start
 ```
@@ -430,7 +343,7 @@ scripts/start
 - Setup (`scripts/setup` or `scripts\setup-windows.cmd`) creates `.venv`, installs Node / Python dependencies, initializes the private data directory, and runs diagnostics.
 - Start (`scripts/start` or `scripts\start.cmd`) checks the installation and ports, starts the local API and the UI together, and opens [http://127.0.0.1:5940](http://127.0.0.1:5940) once both are healthy. No second terminal is needed; Ctrl+C stops both.
 - The ports differ from Vibe Research (5930), so both can run at once, and AI settings, chat history, and sign-in state are not shared between them. Environment variables keep Vibe Research's `VRA_` prefix: if you set `VRA_DATA_ROOT` system-wide, both products use the same data directory, so set it only in front of a single command.
-- Ports: the UI defaults to 5940 and the local API to 8770. If a default port is taken by another program or reserved by the system (on Windows, Hyper-V / WSL often reserve whole port ranges), start switches to a free port, says so in the terminal, and opens the actual address. If a Vibe AStock is already running, it tells you to open that one instead.
+- Ports: the UI defaults to 5940 and the local API to 8770. If a default port is taken by another program or reserved by the system (on Windows, Hyper-V / WSL often reserve whole port ranges), start switches to a free port, says so in the terminal, and opens the actual address. If a Askill is already running, it tells you to open that one instead.
   - After a switch, the model API settings and chat history under **Connect AI** need to be set up again at the new address: they live in the browser and are kept per address. The same port conflict always leads to the same replacement port, and once the default port is free again, a restart brings back the original address and settings.
   - To pin the ports: `scripts/start --port 6940 --api-port 9770` (Windows: `scripts\start.cmd -Port 6940 -ApiPort 9770`), or set `VRA_UI_PORT` / `VRA_API_PORT`. A port you choose yourself is never swapped: if it is unavailable, start stops with an error.
 - On macOS / Linux, use `scripts/start --no-open` to skip opening the browser automatically.
@@ -439,22 +352,9 @@ scripts/start
 
 Deployment, interface, and maintenance notes are in [AGENTS.md](AGENTS.md) (Chinese). `desktop/` contains the browser frontend, not a desktop client.
 
-### Portable packages (Windows / macOS)
+### Source distribution
 
-If you'd rather not install Node, Python, and Git, download the package for your computer from [Releases](https://github.com/simonlin1212/vibe-astock/releases). Node and Python are included:
-
-| Computer | Requires | Package |
-|---|---|---|
-| Windows (x64) | 64-bit Windows 10 or later | `VibeAStock-<version>-win-x64.zip` |
-| Apple silicon Mac | macOS 14 or later | `VibeAStock-<version>-mac-arm64.zip` |
-| Intel Mac | macOS 14 or later | `VibeAStock-<version>-mac-x64.zip` |
-
-1. Unzip it anywhere and double-click `Start-VibeAStock.cmd` (Windows) or `Start-VibeAStock.command` (macOS). A console / Terminal window opens and your browser goes to [http://127.0.0.1:5940](http://127.0.0.1:5940) (if 5940 is taken, another port is used; go by the address shown in the window); close that window to quit.
-2. The packages are not code-signed, so the first launch is blocked: on Windows, when SmartScreen says "Windows protected your PC", click "More info" → "Run anyway"; on macOS, if the developer cannot be verified, run `xattr -dr com.apple.quarantine <unzipped folder>` in Terminal and double-click again.
-3. Trades, reviews, research records, and settings are kept in the folder's `.local` (Finder hides folders whose names start with a dot; press Command+Shift+. to show them). To upgrade, unzip the new version into a new folder, copy the old folder's `.local` into it, and start from the new folder; delete the old folder once everything looks right.
-4. AI setup is the same as the source install: reuse the Claude Code / Codex / WorkBuddy already signed in on your computer, or enter a model API under "接入 AI" (Connect AI).
-
-Each package has a matching `.sha256` file for checking the download. The portable packages only open on this computer, with no LAN access; for LAN or cloud access, on Linux, or on older macOS, use the source install above.
+Use the **main** branch for this edition of Askill. Older Vibe AStock installers run the upstream product. The portable build scripts target Windows x64 and macOS 14 or later.
 
 ### Remote access (cloud computer)
 
@@ -478,29 +378,29 @@ Once started, the terminal prints a link carrying an access token (`https://…/
 
 The old v1.x was a Python app (data in `~/.duanxian-agents`, page on port 8910); the new version is a different program and cannot be upgraded in place:
 
-- Clone the repository again, or download a portable package, and install it as above. You do not need to delete the old folder or data directory; the new version does not touch them.
+- Clone this repository again and install it as above. You do not need to delete the old folder or data directory; the new version does not touch them.
 - The page address moves from `http://127.0.0.1:8910` to `http://127.0.0.1:5940` (the local API is on 8770).
 - Old data: at the bottom of the "接入 AI" (Connect AI) page, use "从旧版导入" (Import from the old version), preview first, then import. It brings in trades, journal settings (fee rates, rules, account size), playbook cards (with all versions), AI reviews, next-day check conditions, intraday snapshots, and company deep dives; before importing, the ledger files involved are backed up to `ledger/旧版导入备份-<date>/` in the data folder, and the old files are only read. What is not imported (hit-rate evaluations, limit-up pool archives, caches, backtest results, rejected reviews) is listed in the preview with counts and reasons. If you had set `ASTOCK_DATA_HOME` for the old version, the import looks there by default.
 - The import first rehearses against the new rules: trades that could not be computed, existing labels that would be replaced, and fills identical to ones already recorded (possible duplicates) are listed in the preview first; anything that breaks the new rules (unreadable files, symbolic links, files over 30 MB, selling more than held, bad symbols or prices, B-shares, and so on) is skipped with a reason. You can import again; anything already imported is skipped by its source.
 - Connect AI again: Claude Code, Codex, and WorkBuddy subscriptions use the official CLIs already signed in on your computer; the old product-specific Codex login is no longer used.
 - The old ways of starting (`scripts/manage.py`, `启动 Vibe AStock.command / .cmd`) and `VIBE_ALLOW_HOSTS` are no longer used; see above for LAN and remote access.
 
-### Use Vibe AStock from Claude Code / Codex / Cursor
+### Use Askill from Claude Code / Codex / Cursor
 
-Vibe AStock provides an MCP interface. Once connected, Claude Code, Codex, Cursor, and other MCP-capable tools can fetch data through Vibe AStock (short-term endpoints included), start research runs, and read reports and evidence. Runs started this way are the same ones you see in the web pages. MCP does not read your trade journal or holdings.
+Askill provides an MCP interface. Once connected, Claude Code, Codex, Cursor, and other MCP-capable tools can fetch data through Askill (short-term endpoints included), start research runs, and read reports and evidence. Runs started this way are the same ones you see in the web pages. MCP does not read your trade journal or holdings.
 
 Finish setup first, then run these from the repository folder (in Windows PowerShell, replace `"$(pwd)/orchestrator/src/mcp.ts"` with `"$PWD\orchestrator\src\mcp.ts"`).
 
 Claude Code (add `-s user` to make it available in every folder):
 
 ```bash
-claude mcp add vibe-astock -- node "$(pwd)/orchestrator/src/mcp.ts"
+claude mcp add Askill -- node "$(pwd)/orchestrator/src/mcp.ts"
 ```
 
 Codex:
 
 ```bash
-codex mcp add vibe-astock -- node "$(pwd)/orchestrator/src/mcp.ts"
+codex mcp add Askill -- node "$(pwd)/orchestrator/src/mcp.ts"
 ```
 
 Cursor: add the following to `~/.cursor/mcp.json` (or to `.cursor/mcp.json` inside one project) and replace the path with your repository location. If Cursor says it cannot find node, replace `"node"` with the full path printed by `which node`.
@@ -508,9 +408,9 @@ Cursor: add the following to `~/.cursor/mcp.json` (or to `.cursor/mcp.json` insi
 ```json
 {
   "mcpServers": {
-    "vibe-astock": {
+    "Askill": {
       "command": "node",
-      "args": ["/path/to/vibe-astock/orchestrator/src/mcp.ts"]
+      "args": ["/path/to/Askill/orchestrator/src/mcp.ts"]
     }
   }
 }
@@ -524,7 +424,7 @@ Things you can ask once it is connected:
 
 There are 8 tools: 7 read-only (endpoint list, fetch, run status, report, evidence, run list, knowledge file) and 1 that starts a research run (A-shares only for now). The server sends usage instructions when a client connects, and every error says whether retrying will help and what to do next.
 
-- Research runs use this computer's **backend default AI source**; the choice made on the "Connect AI" page does not count. Set `provider.profile` in `.local/config.json` (for example `cli-claude`), or pass an environment variable when adding the server, such as `claude mcp add vibe-astock -e VRA_PROVIDER=cli-claude -- node …` or `codex mcp add vibe-astock --env VRA_PROVIDER=cli-codex -- node …`. Research uses the selected AI's quota.
+- Research runs use this computer's **backend default AI source**; the choice made on the "Connect AI" page does not count. Set `provider.profile` in `.local/config.json` (for example `cli-claude`), or pass an environment variable when adding the server, such as `claude mcp add Askill -e VRA_PROVIDER=cli-claude -- node …` or `codex mcp add Askill --env VRA_PROVIDER=cli-codex -- node …`. Research uses the selected AI's quota.
 - Fetching data and reading reports and evidence need no AI.
 
 ## Security and privacy
@@ -549,18 +449,7 @@ There are 8 tools: 7 read-only (endpoint list, fetch, run status, report, eviden
 
 ## Current boundaries
 
-- Watch: v2.0.0 was developed and captured on October 10–11, 2026 (a weekend), so auto-refresh, intraday moves, whether yesterday's ladder is sealed, and the scheduled snapshots have not yet been tested during trading hours; the Auction & intraday screenshot in this README uses snapshots the old version saved during the September 23, 2026 session and that were then imported.
-- AI review and AI weekly review: on October 10, 2026 they were tested only with a Claude Code subscription (4 review versions, 3 weekly versions); Codex, WorkBuddy, and model APIs have not run these two features yet.
-- Importing from the old version: preview and import were tested on a copy of real old data; files written in other old formats are listed as skipped in the preview with a reason.
-- Delivered as source code and as Windows / macOS portable packages, both using a local browser UI. The portable packages are not code-signed; they are built on GitHub Actions at release time and uploaded only after their smoke test passes, and have not been validated on physical machines.
-- None of the built-in model API templates has been tested with a real key yet; templates are not marked tested without real compatibility-matrix runs. See the [CHANGELOG](CHANGELOG.md) for what was run with the three subscriptions.
-- Native Windows 11 support includes PowerShell setup/start scripts, Windows path and process handling, and the
-  controlled research toolchain. CI configuration includes `windows-latest`, `macos-latest`, and `ubuntu-latest`;
-  Windows runs selected cross-platform contract tests, not the entire backend suite. Physical Windows hardware and a Job Object guarantee for child-process cleanup after normal exit have not been validated.
-  Windows 10 has not been validated.
-- Hong Kong and US six-stage research is the same code as in Vibe Research: before the Vibe Research v2.1.0 release, one full research run each (Apple and Tencent) went through the hard tests with a Claude Code subscription. Under the current scoring the US run passes every check (142/142 report figures traced to their sources); the Hong Kong run misses one: three figures in its report genuinely cite no source. No other AI source has run Hong Kong or US research through the hard tests yet. When researching a past date for a Hong Kong company, Eastmoney overwrites older periods' announcement dates with later re-disclosure dates, so filtering by announcement date conservatively drops those periods and the trailing-four-quarter total may not be computable (it only uses less data; it never uses figures published after the research date). ADR-to-ordinary share ratios are not handled in this version.
-- Remote access supports macOS / Linux only.
-- Running from source requires local dependencies.
+Intraday snapshots require the service to be running. A missing quote, undisclosed competition holding or unavailable historical figure is shown as a gap. Remote access is supported on macOS and Linux.
 
 ## Development and tests
 
@@ -572,7 +461,7 @@ Home · watch · sentiment review · trade journal · daily review · industry n
         │
         ▼
 Research layer
-182 data endpoints · short-term readings and scoring · six-stage research workflow · calc · validator · report archive
+193 data endpoints · short-term readings and scoring · six-stage research workflow · calc · validator · report archive
         │
         ▼
 Local Agent Runtime and Model Provider
@@ -680,46 +569,9 @@ npm run build --prefix desktop
 .venv/bin/python -m pytest .agents/skills/data-access/scripts/tests -q
 ```
 
-Latest local acceptance checks (October 18, 2026, before the v2.1.2 release, on macOS):
+## Project history
 
-- orchestrator: all backend tests on Node 26, **1,443 tests: 1,433 passed, 8 Windows-specific tests skipped**; two timing-sensitive tests timed out while the machine was under heavy load, and their files passed in full when rerun on their own; type check passed.
-- desktop: **406/406**, type check and production build passed (the build only prints Vite's bundle-size notice); Python (calculation library 311, backtesting 583, data scripts 783): **1,677/1,677**; mypy passed on 115 files.
-- One independent read-only audit before release (Codex 6.1 Sol) found five issues, four of which were fixed; the fix patch then got its own review (Codex 6.1 Sol), which found three, two of which were fixed (the two left unfixed and the reasons are in the CHANGELOG). The Windows CI runner then showed that private files were not fully locked down; after that fix, one more review (Codex 6.1 Sol) found one issue, which was fixed. All of that was for v2.1.1; the two fixes in v2.1.2 (deny rules and file owner) were found by an audit (Codex 6.1 Sol) while the fixes were being ported back to Vibe Research, and a review of the fix patch found no new serious or moderate issues. Key fixes have a reverse check (undo the fix and the test must fail).
-- v2.1.1 and v2.1.2 both fix Windows problems, but no Windows hardware was available: the Windows-specific tests run only on GitHub's Windows runner (which runs as administrator), and the "fails when not run as administrator" fix relies on the PR author's report from real hardware; v2.1.2's removal of deny rules and resetting of the file owner were not tested without administrator rights.
-- In the previous release (v2.0.0), AI review and AI weekly review were run for real with a Claude Code subscription (written on October 10, 2026 for October 9: 4 review versions, 3 weekly versions; this release does not change them and they were not rerun), and the app's number checks and evidence-ID checks took effect; Import from the old version was tested on a copy of real old data (the original was not touched).
-- Premarket reminder was run once by hand on real data (October 11, 2026) but has not yet run at 09:05 on a trading day; this round did not re-run every external data endpoint; Watch has not yet been tested during a trading session (see "Current boundaries").
-
-Project rule: test each completed component; for significant changes, run one independent review, verify every
-finding, fix valid issues, and re-verify the affected scope. A component is not described as complete and is not
-committed or pushed before that loop closes.
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md). v2.0.0 moved onto the Vibe Research foundation; for the foundation's own history, see the [Vibe Research CHANGELOG](https://github.com/simonlin1212/Vibe-Research/blob/main/CHANGELOG.md).
-
-<details>
-<summary>Compare with the previous release, v1.1.3</summary>
-
-The baseline is the [v1.1.3 release](https://github.com/simonlin1212/vibe-astock/releases/tag/v1.1.3). All changes are listed in the [CHANGELOG](CHANGELOG.md).
-
-<table>
-<thead>
-<tr><th nowrap>Area</th><th>v1.1.3</th><th>v2.0.0</th></tr>
-</thead>
-<tbody>
-<tr><td nowrap>Program</td><td>Python backend + React web page, with a bundled OpenAI Codex Harness as the Agent foundation</td><td>Moved onto the Vibe Research v2.1.0 foundation (Node + React, with Python only for calculations and data fetching); the Codex Harness is no longer bundled</td></tr>
-<tr><td nowrap>Page address</td><td><code>http://127.0.0.1:8910</code></td><td><code>http://127.0.0.1:5940</code> (local API on 8770), separate from Vibe Research</td></tr>
-<tr><td nowrap>Data folder</td><td><code>~/.duanxian-agents</code>, <code>~/.vibe-astock-agent</code>, and browser storage</td><td><code>.local/</code> in the repository (in the unzipped folder for portable packages); bring old data over with "Import from the old version"</td></tr>
-<tr><td nowrap>Watch</td><td>Market data, live moves, yesterday's ladder, intraday checks</td><td>Live moves (holdings, watchlist, yesterday's ladder, large caps, turnover, intraday moves) + Auction &amp; intraday (auction strength, the sentiment path across six snapshots), with snapshots saved automatically</td></tr>
-<tr><td nowrap>Review</td><td>Review reports, first-board analysis, 5-day heat, historical statistics</td><td>Sentiment review with 8 tabs (Today, AI review, AI weekly review, last 5 days, sentiment history, next-day checks, limit-up samples, structural shifts) + Daily review; the AI review is written in five parts, with every number checked by the app</td></tr>
-<tr><td nowrap>Trade journal</td><td>Under My stocks</td><td>A section of its own: matched automatically to the entry day's sentiment and board position, plus risk &amp; discipline, review, and playbook cards; never sent to the AI</td></tr>
-<tr><td nowrap>Other sections</td><td>Intelligence radar, company research and bull/bear debate, backtesting, holdings and watchlist, research records</td><td>Adds industry signals, industry research (20 sectors), six-stage company research (A-shares, Hong Kong, US), candidate pool, event calendar, scheduled reminders, and my reports</td></tr>
-<tr><td nowrap>Connect AI</td><td>Codex used a product-specific login; model APIs had to support the Responses API</td><td>Claude Code, Codex, and WorkBuddy subscriptions use the official CLIs signed in on your computer; model APIs use Chat Completions</td></tr>
-<tr><td nowrap>Installation</td><td>Source + <code>scripts/manage.py</code>, or double-click a start script</td><td>Source <code>scripts/setup</code> + <code>scripts/start</code>, plus Windows / macOS portable packages; can run on a cloud computer and be opened remotely</td></tr>
-</tbody>
-</table>
-
-</details>
+Askill builds on Simon Lin's [Vibe AStock](https://github.com/simonlin1212/vibe-astock) v2.1.6. The [changelog](CHANGELOG.md) records the upstream releases.
 
 ## Disclaimer
 
@@ -733,4 +585,4 @@ decisions, and compliance with each data source's terms.
 
 Apache-2.0; see [LICENSE](LICENSE). From v2.0.0 the foundation comes from [Vibe Research](https://github.com/simonlin1212/Vibe-Research) by the same author (MIT); its license notice is in [NOTICE](NOTICE).
 
-**Author:** Simon Lin · X [@linsizhen](https://x.com/linsizhen) · Email: [simonlin0423@gmail.com](mailto:simonlin0423@gmail.com)
+**Upstream author:** Simon Lin · X [@linsizhen](https://x.com/linsizhen) · Email: [simonlin0423@gmail.com](mailto:simonlin0423@gmail.com)

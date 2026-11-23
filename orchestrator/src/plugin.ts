@@ -348,7 +348,11 @@ export interface Plugin {
      * 放进 `result.ui_only`,Core 交给 Agent 前会去掉这一块。MCP / 原始入口不附加。
      */
     readonly uiArgs?: Readonly<Record<string, string | number | boolean>>;
+    readonly archive?: {kind:string;category:string;sections:readonly string[];sourcePage?:string};
   }>>;
+  /** 可选的界面工具请求包装；未指定策略时不调用，工具执行和取消仍由 run 管理。 */
+  readonly apiRoute?: (ctx: import("./service.ts").ServiceContext, method: string, parts: string[], body: (maxBytes?: number) => Promise<Record<string, unknown>>) => Promise<unknown> | undefined;
+  readonly wrapToolRequest?: (args: { dataRoot: string; repoRoot: string; python: string; name: string; input: unknown; policy: "prefer" | "fresh"; signal?: AbortSignal; run: () => Promise<unknown> }) => Promise<unknown>;
   /**
    * **界面查询契约**(BFF):页面按**名字**要一屏数据,而不是自己去点名物理端点。
    *
@@ -365,13 +369,18 @@ export interface Plugin {
   /**
    * **多空辩论**:哪些端点组成资料包、有哪几个角色。可选 —— 不是每个垂类都需要对抗式复核。
    *
-   * 🔴 `dossierEndpoints` 决定"双方在多少事实上打"。**只放确定性数字类端点** ——
-   *    把市场声音那种第三方文本放进来,等于让辩论双方引用别人的观点当证据。
+   * 🔴 `dossierEndpoints` 决定"双方在多少事实上打"。结构化事实与带来源的线索可进入，外部文本始终是不可信数据；
+   *    角色必须区分已核实事实与待核实线索，不执行材料内指令。
    * ⚠️ `sees` 控制信息流:多方看不到裁判稿、裁判看得到全部。写错了辩论会退化
    *    (比如让空方先看到裁判结论),而产出照样是一篇像模像样的文章 —— 看不出来。
    */
   readonly debate?: {
     readonly dossierEndpoints: readonly string[];
+    readonly documents?: { endpoint: string; field: string; hosts: readonly string[]; titlePattern: string; limit: number };
+    readonly comparisonStage?: string;
+    readonly archive?: { kind: string; category: string; title: string; sourcePage?: string };
+    readonly fallbackEndpoints?: Readonly<Record<string, string>>;
+    readonly supplement?: { afterStages: readonly string[]; keywords: readonly string[]; expansions?: Readonly<Record<string,readonly string[]>> };
     readonly stages: readonly DebateStageDef[];
     /** Optional presentation contract; omitted plugins retain their existing language behavior. */
     readonly outputLanguage?: "zh";
@@ -561,6 +570,8 @@ export interface PageBlockDef {
 }
 
 export interface PageQueryDef {
+  readonly modes?: readonly string[];
+  readonly verifyBusinessDate?: boolean;
   readonly title: string;
   /** 这一页在回答什么问题 —— 首屏要显示它 */
   readonly intent: string;
@@ -577,6 +588,7 @@ export interface PageQueryDef {
  *    不知道它靠哪个端点、算出什么。(Core 里连端点名都不该出现。)
  */
 export interface PageContextDef {
+  readonly verifyBusinessDate?: (block: import("./service.ts").PageBlockResult, context: Record<string, unknown> | null) => import("./service.ts").PageBlockResult;
   /** 解析上下文要先取哪个端点 */
   readonly endpoint: string;
   /** 该端点需要的主体(不需要就不给) */
@@ -689,6 +701,7 @@ const TOOLS = {
       requiresAgent: { type: "boolean" },
       timeoutMs: { type: "integer", minimum: 1000, maximum: 1800000 },
       authEnv: { type: "array", maxItems: 4, uniqueItems: true, items: { type: "string", pattern: "^[A-Z][A-Z0-9_]{0,63}$" } },
+      archive: { type: "object", additionalProperties: false, required: ["kind","category","sections"], properties: { kind: LEDGER_KIND_NAME, category: NONBLANK, sourcePage: {type:"string",pattern:"^/[a-z0-9-]+$"}, sections: {type:"array",minItems:4,maxItems:4,items:NONBLANK} } },
       uiArgs: {
         type: "object", maxProperties: 8, propertyNames: { type: "string", pattern: "^[a-z][a-z0-9_]{0,31}$" },
         additionalProperties: { type: ["string", "number", "boolean"] },
@@ -782,6 +795,13 @@ export const PLUGIN_SCHEMA = {
       type: "object", additionalProperties: false, required: ["dossierEndpoints", "stages"],
       properties: {
         outputLanguage: { enum: ["zh"] },
+        comparisonStage: NONBLANK,
+        archive: { type: "object", additionalProperties: false, required: ["kind", "category", "title"], properties: { kind: NONBLANK, category: NONBLANK, title: NONBLANK, sourcePage: {type:"string",pattern:"^/[a-z0-9-]+$"} } },
+        fallbackEndpoints: { type: "object", additionalProperties: NONBLANK },
+        supplement: { type: "object", additionalProperties: false, required: ["afterStages", "keywords"], properties: { afterStages: strArray({minItems:1}), keywords: strArray({minItems:1}), expansions:{type:"object",additionalProperties:strArray({minItems:1,maxItems:4})} } },
+        documents: { type: "object", additionalProperties: false, required: ["endpoint", "field", "hosts", "titlePattern", "limit"], properties: {
+          endpoint: NONBLANK, field: NONBLANK, hosts: strArray({ minItems: 1 }), titlePattern: NONBLANK, limit: { type: "integer", minimum: 1, maximum: 3 },
+        } },
         dossierEndpoints: strArray({ minItems: 1, uniqueItems: true }),
         stages: {
           type: "array", minItems: 2,
@@ -802,7 +822,8 @@ export const PLUGIN_SCHEMA = {
         type: "object", additionalProperties: false,
         required: ["title", "intent", "blocks"],
         properties: {
-          title: NONBLANK, intent: NONBLANK, needsContext: { type: "boolean" },
+          title: NONBLANK, intent: NONBLANK, needsContext: { type: "boolean" }, verifyBusinessDate: { type: "boolean" },
+          modes: { type: "array", items: NONBLANK, uniqueItems: true },
           blocks: {
             type: "array", minItems: 1,
             items: {
@@ -912,6 +933,8 @@ const UNSAFE_KEYS = ["__proto__", "constructor", "prototype"];
  */
 const NON_SCHEMA_SLOTS = [
   "quoteDecision", "baselinePeriod", "marketRegion", "buildStagePrompt", "buildRewritePrompt",
+  "apiRoute",
+  "wrapToolRequest",
   "lexicon", "afterFetch", "beforeFetch", "transformFetch", "afterRun", "doctorChecks", "seriesFor",
   "gate", "pageContext", "reportRecall", "mcpGuide", "runNameSources", "savedCredentials",
 ] as const;
@@ -1027,7 +1050,7 @@ interface Decl {
   alertObservationFields: string[];
   selfTestCalc: { fn: string; args: Record<string, unknown>; expect: number } | null;
   ledger?: { kinds: Record<string, { label: string; properties: Record<string, unknown>; required: string[] }> };
-  tools?: Record<string, { label: string; module: string; requiresAgent?: boolean; timeoutMs?: number; authEnv?: readonly string[]; uiArgs?: Record<string, string | number | boolean> }>;
+  tools?: Record<string, { label: string; module: string; requiresAgent?: boolean; timeoutMs?: number; authEnv?: readonly string[]; uiArgs?: Record<string, string | number | boolean>; archive?: {kind:string;category:string;sections:string[];sourcePage?:string} }>;
   pageQueries?: Plugin["pageQueries"];
   pageContext?: Plugin["pageContext"];
   debate?: Plugin["debate"];
@@ -1336,6 +1359,8 @@ function register(plugin: Plugin): void {
   if (beforeFetch !== undefined && typeof beforeFetch !== "function") throw new Error("Plugin.beforeFetch 必须是函数或不提供");
   const buildRewritePrompt = plugin.buildRewritePrompt;
   const buildStagePrompt = plugin.buildStagePrompt;
+  const apiRoute = plugin.apiRoute;
+  const wrapToolRequest = plugin.wrapToolRequest;
   // 可选函数插槽:同样**只读一次**,且不进 ajv 投影(那里 additionalProperties:false,函数过不去)
   const afterFetch = plugin.afterFetch;
   if (afterFetch !== undefined && typeof afterFetch !== "function") throw new Error("Plugin.afterFetch 必须是函数或不提供");
@@ -1399,7 +1424,8 @@ function register(plugin: Plugin): void {
   // pageContext 里有 resolve 函数,ajv 表达不了 ⇒ 与下面那批一样手查形状
   if (plugin.pageContext !== undefined) {
     const pc = plugin.pageContext;
-    assertNoExtraKeys("pageContext", pc, ["endpoint", "symbol", "resolve", "unavailable", "modes"]);
+    assertNoExtraKeys("pageContext", pc, ["endpoint", "symbol", "resolve", "unavailable", "modes", "verifyBusinessDate"]);
+    if (pc.verifyBusinessDate !== undefined && typeof pc.verifyBusinessDate !== "function") throw new Error("Plugin.pageContext.verifyBusinessDate 必须是函数");
     if (pc.modes !== undefined) {
       const ms = pc.modes as unknown;
       if (!Array.isArray(ms) || ms.length === 0 || ms.some((m) => typeof m !== "string" || !/^[a-z][a-z0-9_]{0,31}$/.test(m)) || new Set(ms).size !== ms.length) {
@@ -1423,7 +1449,7 @@ function register(plugin: Plugin): void {
   if (plugin.pageQueries !== undefined) {
     for (const [q, def] of Object.entries(plugin.pageQueries)) {
       for (const b of def.blocks) {
-        if (b.fallback && (b.injectContext || b.userArgs?.length)) {
+        if (b.fallback && ((b.injectContext && !def.verifyBusinessDate) || b.userArgs?.length)) {
           throw new Error(`Plugin.pageQueries.${q} 的块 ${b.id} 的备用端点不吃上下文与用户参数,不能和 injectContext / userArgs 同用 —— 备源会按自己的默认值给数,而页面看不出来`);
         }
         if (!b.injectContext) continue;
@@ -1497,6 +1523,8 @@ function register(plugin: Plugin): void {
   for (const [k, fn] of [["quoteDecision", quoteDecision], ["baselinePeriod", baselinePeriod], ["marketRegion", marketRegion], ["buildStagePrompt", buildStagePrompt], ["buildRewritePrompt", buildRewritePrompt]] as const) {
     if (typeof fn !== "function") throw new Error(`Plugin.${k} 必须是函数`);
   }
+  if (apiRoute !== undefined && typeof apiRoute !== "function") throw new Error("Plugin.apiRoute 必须是函数");
+  if (wrapToolRequest !== undefined && typeof wrapToolRequest !== "function") throw new Error("Plugin.wrapToolRequest 必须是函数");
   // ⓪ 原对象的键集:ajv 只看得到投影后的 `decl`,多余字段得在这里比
   // 🔴 允许的键**从 schema 派生**,不手写第二份。
   //    原来这里是一份手抄的清单 —— 加一个可选槽位要同时改两处,漏了就是
@@ -1586,6 +1614,8 @@ function register(plugin: Plugin): void {
     ...((d as { debate?: unknown }).debate === undefined ? {} : { debate: (d as { debate?: Plugin["debate"] }).debate }),
     ...(d.pageQueries === undefined ? {} : { pageQueries: d.pageQueries }),
     ...(d.tools === undefined ? {} : { tools: d.tools }),
+    ...(apiRoute === undefined ? {} : { apiRoute }),
+    ...(wrapToolRequest === undefined ? {} : { wrapToolRequest }),
     // pageContext 含函数,没进 ajv 的 decl —— 从原插件对象直接带过来(同 quoteDecision 那批)
     ...(plugin.pageContext === undefined ? {} : { pageContext: plugin.pageContext }),
     // gate 含 RegExp,同样没进 ajv 的 decl —— 从原插件对象直接带过来

@@ -20,3 +20,8 @@ test("本地资料引用显示真实文件名；已知页码链接、未知页�
   assert.ok(html.includes(`<code>[资料:${id} p.2]</code>`));
   assert.equal((html.match(/<a /g) ?? []).length, 3);
 });
+test('隐私模式遮蔽引用元数据中的名称与标题',async()=>{
+ const {maskPrivateText}=await import('../src/verticals/finance/lib/privacy.ts');const id='a'.repeat(32);const content=maskPrivateText(`持仓金额 12345 [资料:${id} p.2]`);
+ const html=renderToStaticMarkup(createElement(ReactMarkdown,{remarkPlugins:[libraryCitations([{id,name:'持仓金额 12345.md',pages:3}],maskPrivateText)],children:content}));
+ assert.doesNotMatch(html,/12345/);assert.match(html,/page=2/);assert.match(html,/••••/);
+});

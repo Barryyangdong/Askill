@@ -264,7 +264,7 @@ function GpuRentPanel() {
               <Loader2 className="h-3 w-3 animate-spin" /> 刷新中（下面是上次的存档）
             </span>
           )}
-          {loading && <span className="text-[11px]">正在取…（这一页还没有存档）</span>}
+          {loading && <span role="status" className="text-[11px]">正在取数据…</span>}
           {staleNote && <span className="text-[11px] text-warning">{staleNote}</span>}
         </span>
         <button onClick={refresh} disabled={refreshing}
@@ -286,7 +286,7 @@ function GpuRentPanel() {
         </div>
       )}
 
-      {!hasData && !err ? (
+      {!hasData && !err && !loading && !refreshing ? (
         <div className="rounded-lg border border-dashed border-border/70 p-8 text-center text-sm text-muted-foreground/70">
           还没有抓取数据，点上方<b className="text-foreground">「刷新」</b>拉取（约 30 秒）。
         </div>
@@ -406,7 +406,7 @@ export function Signals() {
 
   return (
     <div>
-      <PageHeader title="产业信号" subtitle="一句话产业信号：零鉴权公开数据直连，逐期添加小栏目" />
+      <PageHeader title="产业信号" subtitle="产业数据跟踪" description="一句话产业信号：零鉴权公开数据直连，逐期添加小栏目" />
 
       <div className="mb-4 flex flex-wrap gap-2">
         {TABS.map(({ key, label, icon: Icon }) => (

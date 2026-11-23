@@ -4,7 +4,7 @@
  * 旁边的「本周我的交易」从交易日志在本机算:🔴 只在页面上显示,不进 AI 资料包,也不登记成 AI 页面上下文。
  */
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { JourneyLink as Link } from "@/components/JourneyLink";
 import { AlertCircle, BookOpenCheck, Loader2, NotebookPen, Square } from "lucide-react";
 import { backend } from "@/lib/backend";
 import { hasLlm } from "@/lib/llm";
@@ -86,7 +86,7 @@ export function MyWeekCard({ view, from, to, hide }: { view: JournalView | null;
           {w.opened > 0 && <li className="text-muted-foreground">这一周新开 {w.opened} 笔(含还没卖完的)</li>}
         </ul>
       )}
-      <Link to="/journal" className="mt-2 inline-block text-[12px] text-primary">去交易日志看明细 →</Link>
+      <Link context={{date:to}} to="/journal" className="mt-2 inline-block text-[12px] text-primary">去交易日志看明细 →</Link>
     </div>
   );
 }
@@ -190,7 +190,7 @@ export function WeeklyReviewView({ r, onChanged, myWeek, pick: pickProp, onPick 
         {needConfig && (
           <div className="mt-3 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-muted-foreground">
             <AlertCircle className="h-4 w-4 shrink-0 text-warning" />
-            还没有接入 AI。<Link to="/settings" className="text-primary">先接入 AI</Link>,之后一键出周报。
+            还没有接入 AI。<Link context={{date:r.date}} to="/settings" className="text-primary">先接入 AI</Link>,之后一键出周报。
           </div>
         )}
         {err && <p role="alert" className="mt-3 text-[12px] text-destructive">{err}</p>}

@@ -3,7 +3,10 @@
  * 由 `../register_tasks.ts` 导入一次(提供 API 的入口才需要视图)。
  */
 import { registerView } from "../../views.ts";
-import { shortlineHistory } from "./history.ts";
+import { reviewBoardMetrics } from "./board_review.ts";
+import { shortlineHistory, shortlineLimitTrend } from "./history.ts";
+import { reviewDragon, reviewDragonTrend } from "./dragon_review.ts";
+import { reviewSentimentRhythm } from "./sentiment_rhythm.ts";
 import { shortlineIntraday, shortlineIntradayAct } from "./intraday.ts";
 import { shortlineReview, shortlineReviewAct } from "./review.ts";
 import { shortlineSamples } from "./samples.ts";
@@ -14,6 +17,11 @@ import { shortlineWeekly } from "./weekly.ts";
 import { shortlineWeeklyReview, shortlineWeeklyReviewAct } from "./weekly_review.ts";
 
 registerView({ id: "shortline_history", label: "情绪历史", run: shortlineHistory });
+registerView({ id: "review_board_metrics", label: "打板指标", run: reviewBoardMetrics });
+registerView({ id: "shortline_limit_trend", label: "收盘涨跌停趋势", run: shortlineLimitTrend });
+registerView({ id: "review_dragon", label: "龙虎榜收盘详榜", run: reviewDragon });
+registerView({ id: "review_dragon_trend", label: "龙虎榜收盘趋势", run: reviewDragonTrend });
+registerView({ id: "review_sentiment_rhythm", label: "收盘情绪节奏", run: reviewSentimentRhythm });
 registerView({ id: "shortline_verify", label: "明日验证", run: shortlineVerify, act: shortlineVerifyAct });
 registerView({ id: "shortline_samples", label: "涨停样本统计", run: shortlineSamples });
 registerView({ id: "shortline_structure", label: "结构变化", run: shortlineStructure });

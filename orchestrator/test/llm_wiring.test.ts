@@ -26,7 +26,7 @@ test("🔴 前提：这几个文件确实在 —— 改名 / 搬走时不许静�
 });
 
 test("🔴 传输层自己带上用户配置 —— 不靠每个调用方记得传", () => {
-  const src = read("backend.ts");
+  const src = read("backend.ts").replaceAll("\r\n", "\n");
   assert.ok(/import \{[^}]*readAiRuntime[^}]*\} from "\.\/llmStore(?:\.ts)?"/.test(src), "backend.ts 必须自己去读全局 AI 运行配置");
   // 读配置集中在 requestRuntime，chat 与标题翻译两条传输入口都必须调用它。
   // 只看整份文件会假绿：helper 留着、真正的请求入口绕开它照样能过。
@@ -38,7 +38,7 @@ test("🔴 传输层自己带上用户配置 —— 不靠每个调用方记得�
   assert.ok(/throw new ApiError/.test(helperBody), "坏了 / 读不到要报出来，不能静默回落");
   assert.ok(/"none"/.test(helperBody) && /"ai_not_configured"/.test(helperBody), "真没配也必须引导接入 AI，不能借后端默认值替用户选择");
 
-  const seg = /chat:\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{([\s\S]*?)\n  \},/.exec(src);
+  const seg = /chat:\s*(?:async\s*)?\([^\n]*\)\s*=>\s*\{([\s\S]*?)\n  \},/.exec(src);
   assert.ok(seg, "没解析到 backend.chat 的实现，断言等于没做");
   const body = seg[1]!;
   assert.ok(/requestRuntime\(llm\)/.test(body), "chat 必须走统一的用户配置读取入口");

@@ -156,10 +156,35 @@ test("真实取数进程传输：成功、启动失败、超时、输出超限�
     assert.equal((await runResearchProcess(process.execPath, ["-e", "console.error('ok')"], opts)).stderr.trim(), "ok");
     assert.equal((await runResearchProcess(path.join(root, "absent"), [], opts)).error?.code, "ENOENT");
     assert.equal((await runResearchProcess(process.execPath, ["-e", "setInterval(()=>{},100)"], { ...opts, timeout: 100 })).error?.code, "ETIMEDOUT");
-    assert.equal((await runResearchProcess(process.execPath, ["-e", "console.log('x'.repeat(10000))"], { ...opts, maxBuffer: 100 })).error?.code, "ENOBUFS");
+    // Keep the worker alive so the overflow case exercises stopping a running worker.
+    assert.equal((await runResearchProcess(process.execPath, ["-e", "console.log('x'.repeat(10000)); setInterval(()=>{},100)"], { ...opts, maxBuffer: 100 })).error?.code, "ENOBUFS");
     await assert.rejects(runResearchProcess(process.execPath, ["-e", "require('fs').writeFileSync('spawned','x')"], { ...opts, signal: AbortSignal.abort(new Error("pre-cancel")) }), /pre-cancel/);
     assert.equal(fs.existsSync(path.join(root, "spawned")), false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Windows 取消等待进程树退出后才确认", { skip: process.platform !== "win32" }, async () => {
+  const root = fresh();
+  const pidFile = path.join(root, "descendant.pid");
+  const ac = new AbortController();
+  const script = `const p=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},100)'],{stdio:'ignore'});require('fs').writeFileSync(${JSON.stringify(pidFile)},String(p.pid));setInterval(()=>{},100);`;
+  let pid = 0;
+  let running: ReturnType<typeof runResearchProcess> | undefined;
+  try {
+    running = runResearchProcess(process.execPath, ["-e", script], { cwd: root, env: {}, timeout: 20000, signal: ac.signal });
+    const rejected = assert.rejects(running, /stop-tree/);
+    void rejected.catch(() => {}); // An early setup failure still awaits worker cleanup below.
+    await waitUntil(() => fs.existsSync(pidFile));
+    pid = Number(fs.readFileSync(pidFile, "utf8"));
+    ac.abort(new Error("stop-tree"));
+    await rejected;
+    assert.throws(() => process.kill(pid, 0), "取消确认时后代必须已经退出");
+  } finally {
+    ac.abort(new Error("stop-tree"));
+    await running?.catch(() => {});
+    if (pid) { try { process.kill(pid, "SIGKILL"); } catch {} }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("真实跨进程请求停止取数进程树，并在停止后回写确认", { skip: process.platform === "win32" }, async () => {

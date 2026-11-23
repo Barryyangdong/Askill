@@ -76,7 +76,7 @@ test("收盘摘要:只列事实,上榜按只数去重,美股指数不混进 A �
   const m = closeDigestMessage(reviewPage(), indices, "2026-10-08");
   assert.equal(m.title, "收盘摘要 2026-10-08");
   assert.equal(m.dedupeKey, "close_digest:2026-10-08");
-  assert.equal(m.link, "/daily-review");
+  assert.equal(m.link, "/shortline?date=2026-10-08&reminder=close");
   assert.deepEqual(m.lines, [
     "复盘日 2026-10-08(今天已收盘,显示今天)",
     "指数 上证指数 -0.79% · 创业板指 +1.20%",

@@ -15,6 +15,7 @@ export interface KlineSeries {
   volume: Num[];
   change: Num[];
   ma: Record<string, Num[]>;
+  structure?: Record<string, Num[]>;
 }
 
 export interface KlineView {
@@ -27,6 +28,7 @@ export interface KlineView {
   adjustLabel: string;
   source: string;
   fetchedAt: string | null;
+  cached?: boolean;
   volumeUnit: string | null;
   bars: number;
   first: string;
@@ -51,7 +53,8 @@ export function parseKline(toolResult: unknown): KlineResult {
   const s = obj(r) && obj(r.ui_only) ? r.ui_only.series : null;
   if (!obj(r) || !obj(s) || !Array.isArray(s.dates)) return { ok: false, error: "K 线工具的返回里没有序列" };
   const n = s.dates.length;
-  if (!n || !s.dates.every((d) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d))) {
+  const datePattern = ["m5","m15","m60"].includes(String(r.period)) ? /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/ : /^\d{4}-\d{2}-\d{2}$/;
+  if (!n || !s.dates.every((d) => typeof d === "string" && datePattern.test(d))) {
     return { ok: false, error: "K 线日期格式不对" };
   }
   const cols = (["open", "high", "low", "close", "volume", "change"] as const).map((k) => [k, numArr(s[k], n)] as const);
@@ -59,6 +62,10 @@ export function parseKline(toolResult: unknown): KlineResult {
   if (bad.length) return { ok: false, error: `K 线序列长度或数值不对：${bad.join("、")}` };
   const col = Object.fromEntries(cols) as Record<(typeof cols)[number][0], Num[]>;
   const ma: Record<string, Num[]> = {};
+  const structure: Record<string, Num[]> = {};
+  if (obj(s.structure)) for (const key of ["range20", "volume5", "upper_wick", "lower_wick", "band_upper", "band_middle", "band_lower"]) {
+    const values = numArr(s.structure[key], n); if (values) structure[key] = values;
+  }
   if (obj(s.ma)) for (const [k, v] of Object.entries(s.ma)) { const a = numArr(v, n); if (a && /^\d+$/.test(k)) ma[k] = a; }
   return {
     ok: true,
@@ -72,12 +79,13 @@ export function parseKline(toolResult: unknown): KlineResult {
       adjustLabel: str(r.adjust_label) ?? "",
       source: str(r.source) ?? "",
       fetchedAt: str(r.fetched_at),
+      cached: toolResult.cached === true,
       volumeUnit: str(r.volume_unit),
       bars: n,
       first: s.dates[0] as string,
       last: s.dates[n - 1] as string,
       notes: Array.isArray(r.notes) ? r.notes.filter((x): x is string => typeof x === "string") : [],
-      series: { dates: s.dates as string[], ...col, ma },
+      series: { dates: s.dates as string[], ...col, ma, structure },
     },
   };
 }

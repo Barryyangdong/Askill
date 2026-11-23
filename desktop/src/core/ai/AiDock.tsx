@@ -187,6 +187,9 @@ export function AiDock({ send, configured, copy, renderReplyActions, renderReply
                 <AiMessages
                   msgs={chat.msgs}
                   loading={chat.loading}
+                    progress={chat.progress}
+                    recoverableQuestion={chat.recoverableQuestion}
+                    onRecover={question => { if (!text) setText(question); }}
                   err={chat.err}
                   info={chat.info}
                   renderReply={renderReply}

@@ -198,9 +198,88 @@ class Rsrs:
         return [text]
 
 
+class RangeBreakout:
+    """收盘突破此前区间，跌破短区间退出；引擎在下一根开盘执行。"""
+
+    def __init__(self, entry: int = 20, exit: int = 10) -> None:
+        if type(entry) is not int or type(exit) is not int or not 2 <= exit < entry <= 250:
+            raise ValueError("窗口需满足 2 ≤ 退出窗口 < 突破窗口 ≤ 250")
+        self.entry, self.exit = entry, exit
+        self.warmup_bars = entry
+        self.name = f"区间突破 {entry}/{exit}"
+
+    def generate(self, data_map: Dict[str, pd.DataFrame]) -> Dict[str, pd.Series]:
+        out = {}
+        n = len(data_map) or 1
+        for code, df in data_map.items():
+            upper = df.high.shift(1).rolling(self.entry, min_periods=self.entry).max()
+            lower = df.low.shift(1).rolling(self.exit, min_periods=self.exit).min()
+            holding = False
+            weights = []
+            for i in range(len(df)):
+                close = df.close.iloc[i]
+                if pd.isna(close) or pd.isna(upper.iloc[i]) or pd.isna(lower.iloc[i]):
+                    holding = False
+                elif holding and close < lower.iloc[i]:
+                    holding = False
+                elif not holding and close > upper.iloc[i]:
+                    holding = True
+                weights.append((1.0 / n) if holding else 0.0)
+            out[code] = pd.Series(weights, index=df.index)
+        return out
+
+
+class RuleCombination:
+    """固定规则顺序去重分配名额；只使用截至当前日的目标状态。"""
+
+    def __init__(self, rules: List[Dict[str, Any]], capacity: int = 3) -> None:
+        allowed = {"ma_cross": MaCross, "rsi_reversion": RsiReversion, "range_breakout": RangeBreakout}
+        if not isinstance(rules, list) or not 1 <= len(rules) <= 5:
+            raise ValueError("组合需要 1–5 条日线规则")
+        if type(capacity) is not int or not 1 <= capacity <= 20:
+            raise ValueError("组合名额需为 1–20 的整数")
+        self.rules = []
+        warmups = []
+        for rule in rules:
+            if not isinstance(rule, dict) or set(rule) - {"strategy", "params"} or rule.get("strategy") not in allowed:
+                raise ValueError("组合仅支持均线、RSI、区间突破规则，不支持嵌套")
+            params = rule.get("params", {})
+            if not isinstance(params, dict):
+                raise ValueError("规则参数必须为对象")
+            strategy = allowed[rule["strategy"]](**params)
+            self.rules.append(strategy)
+            warmups.append(getattr(strategy, "warmup_bars", getattr(strategy, "slow", getattr(strategy, "window", 0))))
+        self.capacity = capacity
+        self.warmup_bars = max(warmups)
+        self.name = "日线规则组合"
+
+    def generate(self, data_map: Dict[str, pd.DataFrame]) -> Dict[str, pd.Series]:
+        signals = [rule.generate(data_map) for rule in self.rules]
+        dates = sorted(set().union(*(set(df.index) for df in data_map.values())))
+        codes = sorted(data_map)
+        out = {code: pd.Series(0.0, index=df.index) for code, df in data_map.items()}
+        for day in dates:
+            chosen: set[str] = set()
+            for signal in signals:
+                for code in codes:
+                    weight = signal[code].get(day, 0)
+                    if code not in chosen and pd.notna(weight) and weight > 0 and len(chosen) < self.capacity:
+                        chosen.add(code)
+            for code in chosen:
+                out[code].loc[day] = 1.0 / self.capacity
+        return out
+
+    def result_notes(self, metrics: Dict[str, Any]) -> List[str]:
+        return [f"冻结顺序：{' → '.join(rule.name for rule in self.rules)}；同规则内按代码排序，跨规则去重。"
+                f"最多 {self.capacity} 个名额，每个目标权重 1/{self.capacity}，空缺留现金；每日重新分配，可能造成换手。"
+                "信号在下一根开盘尝试执行；目标名单不代表实际成交。标的是用户给定的固定样本，存在选样偏差，不是全市场历史选股，也不是龙头或首板战法。"]
+
+
 BUILTIN: Dict[str, Callable[..., Strategy]] = {
     "buy_and_hold": BuyAndHold,
     "ma_cross": MaCross,
     "rsi_reversion": RsiReversion,
     "rsrs": Rsrs,
+    "range_breakout": RangeBreakout,
+    "rule_combination": RuleCombination,
 }

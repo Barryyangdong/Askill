@@ -1,5 +1,7 @@
 import { Check, Cpu, Database, KeyRound, LoaderCircle, RefreshCw, ShieldCheck, Sparkles, Terminal, Trash2, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { WorkBuddySetup } from "@/components/WorkBuddySetup";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
@@ -13,6 +15,7 @@ import { useAiRuntime } from "@/hooks/useAiRuntime";
 import { UpdateSettingsCard } from "@/components/UpdateSettingsCard";
 import { SecContactCard } from "@/components/SecContactCard";
 import { VaImportCard } from "@/components/VaImportCard";
+import { PreferenceBackup } from "@/components/PreferenceBackup";
 import { API_PORT } from "@/lib/brand";
 
 /**
@@ -107,8 +110,8 @@ function WorkBuddyLocation({ status, onSave }: { status: LocalAgentStatus | unde
 
 /** 保存 / 清除 / 提示 —— 两档共用，分开写迟早只改一边 */
 function ActionRow(
-  { onSave, configured, onForget, msg, msgErr, busy }:
-  { onSave: () => void | Promise<void>; configured: boolean; onForget: () => void; msg: string; msgErr: string; busy: boolean },
+  { onSave, onCancel, configured, onForget, msg, msgErr, busy }:
+  { onSave: () => void | Promise<void>; onCancel: () => void; configured: boolean; onForget: () => void; msg: string; msgErr: string; busy: boolean },
 ) {
   return (
     <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -117,19 +120,22 @@ function ActionRow(
         {busy && <LoaderCircle className="h-4 w-4 animate-spin" />}
         {busy ? "正在实测连接…" : "测试并保存"}
       </button>
+      {busy && <button type="button" onClick={onCancel} className="rounded-lg px-3 py-2 text-sm text-muted-foreground hover:text-foreground">取消测试</button>}
       {configured && (
-        <button onClick={onForget}
+        <button onClick={onForget} disabled={busy}
           className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm text-muted-foreground hover:text-destructive">
           <Trash2 className="h-4 w-4" /> 清除
         </button>
       )}
-      {msg && <span className="text-xs text-primary">{msg}</span>}
-      {msgErr && <span className="text-xs text-destructive">{msgErr}</span>}
+      {msg && <span role="status" className="text-xs text-primary">{msg}</span>}
+      {msgErr && <span role="alert" className="text-xs text-destructive">{msgErr}</span>}
     </div>
   );
 }
 
 export function Settings() {
+  const [setupParams] = useSearchParams();
+  const setupWorkBuddy = setupParams.get("setup") === "workbuddy";
   const runtime = useAiRuntime();
   const [info, setInfo] = useState<ProductInfo | null>(null);
   const [agents, setAgents] = useState<LocalAgentStatus[]>([]);
@@ -141,7 +147,7 @@ export function Settings() {
   const [mode, setMode] = useState<"subscription" | "api">(existing && !existingIsCli ? "api" : "subscription");
   const existingCliId = existing && existingIsCli && SUBSCRIPTION_MODELS.some((x) => x.id === existing.model)
     ? existing.model : (SUBSCRIPTION_MODELS[0]?.id ?? "");
-  const [cliId, setCliId] = useState(existingCliId);
+  const [cliId, setCliId] = useState(setupWorkBuddy ? "codebuddy" : existingCliId);
   const first = API_MODELS[0]!;   // 清单是编译期常量,非空
   const [apiId, setApiId] = useState(apiPresetForSaved(existing));
   const [baseURL, setBaseURL] = useState(existing && !existingIsCli ? existing.baseURL : (PROVIDER_BASE[first.provider] ?? ""));
@@ -151,6 +157,9 @@ export function Settings() {
   const [msg, setMsg] = useState("");
   const [msgErr, setMsgErr] = useState("");
   const [testing, setTesting] = useState(false);
+  const testController = useRef<AbortController | null>(null);
+  useEffect(() => () => { const controller = testController.current; testController.current = null; controller?.abort(); }, []);
+  const cancelTest = () => { testController.current?.abort(); };
   const [rechecking, setRechecking] = useState(false);
   const refreshTail = useRef<Promise<void>>(Promise.resolve());
 
@@ -223,13 +232,15 @@ export function Settings() {
   const testAndSaveApi = async () => {
     const cfg = apiConfig();
     if (!cfg) return;
+    if (testController.current) return;
+    const controller = new AbortController(); testController.current = controller;
     setTesting(true); setMsg(""); setMsgErr("");
     try {
-      await testAndSaveAi(cfg, { read: () => localStorage.getItem(LLM_KEY), probe: backend.llmProbe, save: saveLlm });
+      await testAndSaveAi(cfg, { read: () => localStorage.getItem(LLM_KEY), probe: backend.llmProbe, save: saveLlm }, controller.signal);
       setConfigured(true); say("连接成功。AI 会按问题需要联网搜索、取数和计算。");
     } catch (e) {
-      oops(friendlyAgentError(e));
-    } finally { setTesting(false); }
+      if (testController.current === controller) { if (controller.signal.aborted) say("已取消连接测试，原配置保持不变。"); else oops(friendlyAgentError(e)); }
+    } finally { if (testController.current === controller) { testController.current = null; setTesting(false); } }
   };
 
   const testAndSaveCli = async () => {
@@ -237,12 +248,14 @@ export function Settings() {
     const detected = m ? agentOf(m.provider) : undefined;
     if (!m || !detected?.available) return oops(detected?.detail ?? (agentErr || "这台机器还没有检测到可用的本地 Agent"));
     const cfg = { provider: m.provider, baseURL: "", apiKey: "", model: m.id };
+    if (testController.current) return;
+    const controller = new AbortController(); testController.current = controller;
     setTesting(true); setMsg(""); setMsgErr("");
     try {
-      await testAndSaveAi(cfg, { read: () => localStorage.getItem(LLM_KEY), probe: backend.llmProbe, save: saveLlm });
+      await testAndSaveAi(cfg, { read: () => localStorage.getItem(LLM_KEY), probe: backend.llmProbe, save: saveLlm }, controller.signal);
       setConfigured(true); say(`「${m.name}」连接成功。AI 会按问题需要联网搜索、取数和计算。`);
-    } catch (e) { oops(friendlyAgentError(e)); }
-    finally { setTesting(false); }
+    } catch (e) { if (testController.current === controller) { if (controller.signal.aborted) say("已取消连接测试，原配置保持不变。"); else oops(friendlyAgentError(e)); } }
+    finally { if (testController.current === controller) { testController.current = null; setTesting(false); } }
   };
 
   /** 用户在终端里装好 / 登录好 CLI 之后回到这页:重新检测,不用刷新页面 */
@@ -305,9 +318,10 @@ export function Settings() {
 
   return (
     <div>
+      {setupWorkBuddy && <WorkBuddySetup onDone={() => setConfigured(true)} />}
       <PageHeader
         title="接入 AI"
-        subtitle="连接订阅或 API 后就能用：AI 会按问题需要联网搜索、取数和计算，也能跑六阶段研究、多空辩论和回测。"
+        subtitle="模型与连接" description="连接订阅或 API 后就能用：AI 会按问题需要联网搜索、取数和计算，也能跑六阶段研究、多空辩论和回测。"
       />
 
       {!configured && <GlassCard glow className="mb-5 border-primary/35 bg-primary/[0.06]">
@@ -326,7 +340,7 @@ export function Settings() {
       )}
 
       {/* 第一张卡只解决“AI 从哪里来”。 */}
-      <div className="mb-3 flex items-end justify-between gap-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-primary">AI Source</p>
           <h2 className="mt-1 text-lg font-bold">一、连接 AI</h2>
@@ -342,27 +356,27 @@ export function Settings() {
         </span>
       </div>
 
-      <div className="mb-4 grid gap-3 sm:grid-cols-2">
-        <button type="button" onClick={() => setMode("subscription")} aria-pressed={mode === "subscription"}
-          className={`glass p-5 text-left ${mode === "subscription" ? "ring-1 ring-primary/60" : "hover:border-primary/40"}`}>
+      <div className="mb-4 grid grid-cols-2 gap-2">
+        <button type="button" disabled={testing} onClick={() => setMode("subscription")} aria-pressed={mode === "subscription"}
+          className={`glass p-3 text-left ${mode === "subscription" ? "ring-1 ring-primary/60" : "hover:border-primary/40"}`}>
           <div className="flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-primary" />
             <h3 className="font-semibold">订阅接入</h3>
             {mode === "subscription" && <Check className="ml-auto h-4 w-4 text-primary" />}
           </div>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          <p className="mt-1 hidden text-xs leading-relaxed text-muted-foreground sm:block">
             自动检测本机已经安装并登录的 Agent，走对应订阅额度，<b className="text-foreground">免 API key</b>。
           </p>
         </button>
 
-        <button type="button" onClick={() => setMode("api")} aria-pressed={mode === "api"}
-          className={`glass p-5 text-left ${mode === "api" ? "ring-1 ring-primary/60" : "hover:border-primary/40"}`}>
+        <button type="button" disabled={testing} onClick={() => setMode("api")} aria-pressed={mode === "api"}
+          className={`glass p-3 text-left ${mode === "api" ? "ring-1 ring-primary/60" : "hover:border-primary/40"}`}>
           <div className="flex items-center gap-2">
             <KeyRound className="h-5 w-5 text-primary" />
             <h3 className="font-semibold">API 接入</h3>
             {mode === "api" && <Check className="ml-auto h-4 w-4 text-primary" />}
           </div>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          <p className="mt-1 hidden text-xs leading-relaxed text-muted-foreground sm:block">
             填自己的 key：DeepSeek / MiMo / 智谱 / Kimi / 通义 / OpenAI / 任意兼容端点。
           </p>
         </button>
@@ -377,7 +391,7 @@ export function Settings() {
               Qwen Code 当前需 API key / Coding Plan，DeepSeek CLI 也需 API key，放在右侧 API 接入。
             </p>
             <p className="rounded-lg border border-border/60 bg-muted/25 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-              已安装并登录 WorkBuddy 桌面版时会直接识别，不需要重复安装或登录 CLI；独立使用 CodeBuddy Code 的用户也可沿用现有 CLI 登录。
+              自动识别 WorkBuddy 内置 CLI；若版本不兼容，Skill 会配置官方 CodeBuddy CLI，必要时打开官方扫码授权。已有可用 CLI 登录可直接复用。
             </p>
             <p className="rounded-lg border border-warning/25 bg-warning/[0.05] px-3 py-2 text-xs leading-relaxed text-muted-foreground">
               三家都可运行对话、有界材料任务和六阶段个股研究；研究阶段只开放产品受控的数据工具（MCP）。
@@ -387,8 +401,8 @@ export function Settings() {
               {SUBSCRIPTION_MODELS.map((m) => {
                 const on = cliId === m.id;
                 const detected = agentOf(m.provider);
-                const disabled = !detected?.available;
-                const badge = detected?.status === "ready" ? "可用"
+                const disabled = testing || !detected?.available;
+                const badge = detected?.status === "ready" ? "已检测"
                   : detected?.status === "not_authenticated" ? "未登录"
                     : detected?.status === "not_installed" ? "未安装"
                       : detected?.status === "probe_failed" || agentErr ? "检测失败" : "检测中";
@@ -413,6 +427,8 @@ export function Settings() {
                 );
               })}
             </div>
+            <ActionRow onSave={testAndSaveCli} onCancel={cancelTest} configured={configured} onForget={forget} msg={msg} msgErr={msgErr} busy={testing} />
+            <details><summary className="cursor-pointer text-xs text-muted-foreground">安装与检测帮助</summary>
             {(() => {
               const codex = agentOf("cli-codex");
               if (codex?.status === "ready") return null;
@@ -446,21 +462,21 @@ export function Settings() {
                 </p>
               );
             })()}
-            <WorkBuddyLocation status={agentOf("cli-codebuddy")} onSave={saveCodeBuddyPath} />
+            <fieldset disabled={testing}><WorkBuddyLocation status={agentOf("cli-codebuddy")} onSave={saveCodeBuddyPath} /></fieldset>
             {SUBSCRIPTION_MODELS.some((m) => agentOf(m.provider)?.status !== "ready") && (
-              <button type="button" onClick={() => void recheck()} disabled={rechecking}
+              <button type="button" onClick={() => void recheck()} disabled={rechecking || testing}
                 className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline disabled:cursor-wait disabled:opacity-60">
                 <RefreshCw className={`h-3.5 w-3.5 ${rechecking ? "animate-spin" : ""}`} />
                 {rechecking ? "正在重新检测…" : "已在终端装好或登录？重新检测"}
               </button>
             )}
-            <ActionRow onSave={testAndSaveCli} configured={configured} onForget={forget} msg={msg} msgErr={msgErr} busy={testing} />
+            </details>
           </div>
         ) : (
           <div className="space-y-4 text-sm">
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">选择模型</label>
-              <select value={apiId} onChange={(e) => pickApi(e.target.value)} className={INPUT}>
+              <label htmlFor="ai-model" className="mb-1.5 block text-xs font-medium text-muted-foreground">选择模型</label>
+              <select id="ai-model" disabled={testing} value={apiId} onChange={(e) => pickApi(e.target.value)} className={INPUT}>
                 {API_MODELS.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.name}{tag(m.provider)} —— {m.description}
@@ -480,8 +496,8 @@ export function Settings() {
             </div>
 
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Base URL</label>
-              <input value={baseURL} onChange={(e) => { setBaseURL(e.target.value); setMsg(""); setMsgErr(""); }}
+              <label htmlFor="ai-base-url" className="mb-1.5 block text-xs font-medium text-muted-foreground">Base URL</label>
+              <input id="ai-base-url" disabled={testing} value={baseURL} onChange={(e) => { setBaseURL(e.target.value); setMsg(""); setMsgErr(""); }}
                 placeholder="https://api.deepseek.com" className={`${INPUT} font-mono text-xs`} />
               {/* 百炼系模板留了占位让用户替换 —— 没替换后端会拒，这里先说清楚 */}
               {/[{<][A-Za-z_]/.test(baseURL) && (
@@ -489,20 +505,20 @@ export function Settings() {
               )}
             </div>
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Model</label>
-              <input value={modelName} onChange={(e) => { setModelName(e.target.value); setMsg(""); setMsgErr(""); }}
+              <label htmlFor="ai-model-name" className="mb-1.5 block text-xs font-medium text-muted-foreground">Model</label>
+              <input id="ai-model-name" disabled={testing} value={modelName} onChange={(e) => { setModelName(e.target.value); setMsg(""); setMsgErr(""); }}
                 placeholder="模型名称" className={`${INPUT} font-mono text-xs`} />
             </div>
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">API Key</label>
-              <input type="password" value={apiKey} onChange={(e) => { setApiKey(e.target.value); setMsg(""); setMsgErr(""); }}
+              <label htmlFor="ai-api-key" className="mb-1.5 block text-xs font-medium text-muted-foreground">API Key</label>
+              <input id="ai-api-key" disabled={testing} type="password" value={apiKey} onChange={(e) => { setApiKey(e.target.value); setMsg(""); setMsgErr(""); }}
                 placeholder="sk-…" className={`${INPUT} font-mono text-xs`} />
               <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
                 为避免每次重填，key 会保存在当前浏览器的本机配置中；它不是系统钥匙串，也不承诺加密。
                 只建议在可信的个人电脑使用，共享电脑用完请点击“忘记配置”。key 不进入仓库、后端配置、日志或研究产物。
               </p>
             </div>
-            <ActionRow onSave={testAndSaveApi} configured={configured} onForget={forget} msg={msg} msgErr={msgErr} busy={testing} />
+            <ActionRow onSave={testAndSaveApi} onCancel={cancelTest} configured={configured} onForget={forget} msg={msg} msgErr={msgErr} busy={testing} />
           </div>
         )}
       </GlassCard>
@@ -637,6 +653,7 @@ export function Settings() {
       <div className="mb-4"><SecContactCard /></div>
       <div className="mb-4"><UpdateSettingsCard /></div>
       <div className="mb-4"><VaImportCard /></div>
+      <PreferenceBackup />
 
       <Disclaimer />
     </div>

@@ -159,7 +159,7 @@ test("首页合计按币种分开、不换汇相加；只算拿到现价的，�
 test("首页：指数在上、自选与持仓、再是对话；行情只在开盘时段快刷，隐私模式遮金额", () => {
   const home = read("pages/Home.tsx");
   assert.ok(home.indexOf("<HomeDashboard />") < home.indexOf("<FinanceHomeAgent />"), "先看自己的股票，再问问题");
-  assert.ok(home.indexOf("<FinanceHomeAgent />") < home.indexOf("data-feature-grid"));
+  assert.ok(home.indexOf("data-feature-grid") < home.indexOf("<FinanceHomeAgent />"));
   const dash = read("components/HomeDashboard.tsx");
   assert.ok(dash.indexOf("<MarketStrip") < dash.indexOf("<WatchCard") && dash.indexOf("<WatchCard") < dash.indexOf("<HoldingsCard"));
   assert.match(dash, /useLiveQuotes\(codes, true\)/);

@@ -14,14 +14,15 @@ import { AiComposer, AiMessages } from "../../../../core/ai/AiMessages";
 import { useAiChat } from "../../../../core/ai/useAiChat";
 import { backend } from "@/lib/backend";
 import { useAiRuntime } from "@/hooks/useAiRuntime";
+import { ObservationDraftButton } from "@/components/ui/ObservationDraftButton";
 import { SaveNoteButton } from "@/components/ui/SaveNoteButton";
 import { QuickAiConnect } from "@/components/ui/QuickAiConnect";
-import { ReportAnswer } from "../ReportAnswer";
+import { ChatAnswer } from "./ChatAnswer";
 import { usePrivacyMode } from "@/hooks/usePrivacyMode";
 import { maskPrivateText } from "@/lib/privacy";
 import { sourcesMarkdown } from "@/lib/chatSources";
 
-const renderReply = (reply: string) => <ReportAnswer content={reply} />;
+const renderReply = (reply: string) => <ChatAnswer content={reply} />;
 
 /** 隐私模式开着时，对话里自己的金额和股数显示成 ••••（发给 AI 的仍是原文） */
 function usePrivateDisplay() {
@@ -30,8 +31,8 @@ function usePrivateDisplay() {
 }
 
 /** 发一轮对话 —— 两个入口共用同一条通道 */
-async function sendTurn({ message, session, signal }: { message: string; session: string; signal: AbortSignal }) {
-  const r = await backend.chat(message, session, signal);
+async function sendTurn({ message, session, signal, onProgress }: { message: string; session: string; signal: AbortSignal; onProgress?: (text: string) => void }) {
+  const r = await backend.chat(message, session, signal, undefined, onProgress);
   const confirmations: string[] = [];
   for (const task of r.pending_research ?? []) {
     if (signal.aborted) break;
@@ -67,6 +68,7 @@ const setupLink = () => (
 const replyActions = (reply: string, question: string) => (
   <div className="mt-1.5">
     <SaveNoteButton kind="问 Agent" title={`问 Agent · ${question.slice(0, 24) || "对话"}`} content={reply} />
+    <ObservationDraftButton reply={reply} question={question} />
   </div>
 );
 
@@ -84,8 +86,8 @@ export function FinanceHomeAgent() {
   const chat = useAiChat("home-agent", sendTurn);
   const displayText = usePrivateDisplay();
   const [draft, setDraft] = useState("");
-  const [setupOpen, setSetupOpen] = useState(!configured);
-  useEffect(() => { setSetupOpen(!configured); }, [configured]);
+  const [setupOpen, setSetupOpen] = useState(false);
+  useEffect(() => { if (configured) setSetupOpen(false); }, [configured]);
 
   return (
     <section
@@ -120,6 +122,9 @@ export function FinanceHomeAgent() {
       <AiMessages
         msgs={chat.msgs}
         loading={chat.loading}
+        progress={chat.progress}
+        recoverableQuestion={chat.recoverableQuestion}
+        onRecover={question => setDraft(current => current || question)}
         err={chat.err}
         info={chat.info}
         renderReply={renderReply}

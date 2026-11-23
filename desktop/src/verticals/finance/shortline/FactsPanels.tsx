@@ -1,5 +1,5 @@
 /**
- * 盘面事实面板:昨日强势股反馈、亏钱效应、封板质量、题材事件树、行业结构与发酵节奏、关键事件、分涨跌幅制度。
+ * 盘面事实面板:昨日强势股反馈、亏钱效应、封板质量、题材事件树、行业结构与发酵节奏、关键事件、不同涨跌幅制度表现。
  * 移植自 Vibe AStock v2.0.0 的 MarketFactsPanel,口径说明原样保留。
  * 和 VA 的不同:外框用工作台的方框面板;题材状态的颜色改成强 = 红、弱 = 绿(和涨跌同一套);
  * 反馈矩阵的样本没取全时说出来。
@@ -8,21 +8,23 @@ import { useState, type ReactNode } from "react";
 import { AlertTriangle, ChevronDown, ChevronRight, Layers3, ListTree, Lock, Network, Rows3, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Caliber } from "./Caliber";
+import { ContextHelp } from "@/components/ui/ContextHelp";
 import { countColor, coverageNote, finite, hhmm, pctColor, plain, rate, ratioOf, safeArray, safeRecord, signed, strengthColor, tierOrder } from "./format";
 import type { BoardStat, ByBoard, EventLedger, FeedbackCell, FeedbackDetail, FeedbackMatrix, LedgerEvent, LossEffect, SealQuality, ThemeNode, ThemeRow, ThemeStructure, ThemeTree } from "./types";
 
-export function Section({ icon: Icon, title, hint, caliber, available, reason, children }: {
+export function Section({ icon: Icon, title, hint, caliber, available, reason, action, children }: {
   icon: LucideIcon; title: string; hint?: string; caliber?: string;
-  available?: boolean; reason?: string; children: ReactNode;
+  available?: boolean; reason?: string; action?: ReactNode; children: ReactNode;
 }) {
   return (
-    <div className="glass p-4">
-      <div className="mb-1 flex items-center gap-1.5">
+    <div className="glass market-panel p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
         <Icon className="h-4 w-4 text-primary" />
         <h3 className="text-sm font-semibold">{title}</h3>
         {caliber && <Caliber text={caliber} />}
+        {hint && <ContextHelp>{hint}</ContextHelp>}
+        {action}
       </div>
-      {hint && <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
       {available === false
         ? <p className="text-[13px] text-muted-foreground">这一项没算出来:{plain(reason) || "原因不明"}</p>
         : children}
@@ -40,7 +42,7 @@ export function Matrix({ fm }: { fm?: FeedbackMatrix }) {
   return (
     <Section
       icon={Rows3}
-      title="昨日强势股反馈"
+      title="昨日强势股分板位反馈"
       hint="昨天涨停 / 炸板的票,今天分别落到哪一档。均值只说冷热,这张表告诉你亏钱集中在哪个板位。"
       available={fm?.available}
       reason={fm?.reason}
@@ -78,11 +80,11 @@ export function Matrix({ fm }: { fm?: FeedbackMatrix }) {
           </table>
         </div>
       )}
-      {/* 明细默认折叠 —— 复盘先看矩阵,要追到具体哪只票再展开。按当天表现从差到好排 */}
+      {/* 明细默认展开。按当天表现从差到好排 */}
       {details.length > 0 && (
-        <details className="mt-3">
+        <details open className="mt-3">
           <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">
-            展开明细({details.length} 只,按当天表现从差到好)
+            个股明细({details.length} 只,按当天表现从差到好)
           </summary>
           <div className="mt-2 max-h-64 overflow-y-auto">
             <table className="w-full text-[11px] tabular-nums">
@@ -120,7 +122,7 @@ export function LossEffectSection({ le }: { le?: LossEffect }) {
   return (
     <Section
       icon={AlertTriangle}
-      title="亏钱效应 · 昨日涨停股今天吃了多少面"
+      title="昨日涨停股亏损分布"
       hint="⚠️ 这一栏只统计【昨日涨停的那批票】今天的表现,不是全市场。判退潮先看昨天的强势股今天有多疼 —— 炸板率只说明板没封住,说明不了封不住之后亏多少。"
       caliber={"样本 = 昨日涨停池全部个股,收盘对收盘。\n" +
         "「跌超5%/7%」按当天收盘涨跌幅算,不看盘中最低;**恰好跌 5.00% / 7.00% 都算进去**。\n" +
@@ -219,12 +221,13 @@ export const STATE_TONE: Record<string, string> = {
 };
 
 /** 题材事件树 —— 按涨停原因里的真实事件题材聚合,不是行业分类 */
-export function ThemeTreeView({ t }: { t?: ThemeTree }) {
+export function ThemeTreeView({ t, onOpenThemes }: { t?: ThemeTree; onOpenThemes?: (tag?: string) => void }) {
   const themes = safeArray<ThemeNode>(t?.themes);
   return (
     <Section
       icon={Network}
-      title="题材事件树"
+      title={onOpenThemes ? "当日题材" : "题材事件树"}
+      action={onOpenThemes && <button type="button" onClick={() => onOpenThemes()} className="ml-auto text-xs text-primary hover:underline">查看题材复盘</button>}
       hint={"按涨停原因题材聚合(公开涨停揭秘或问财,源站归因非公司确认),不是行业分类 —— 「兵装重组」「间接投资长鑫科技」"
         + "这类事件在行业分类里找不到。每行按复盘顺序摆:昨日反馈 → 几点首封 → 扩散几只 → 梯队多高 → 炸了几个。"}
       available={t?.available}
@@ -239,7 +242,8 @@ export function ThemeTreeView({ t }: { t?: ThemeTree }) {
             {themes.map((n) => (
               <div key={n.tag} className="border-b border-border/40 pb-2 last:border-0 last:pb-0">
                 <div className="flex flex-wrap items-center gap-2 text-[13px]">
-                  <span className="font-semibold">{n.tag}</span>
+                  {onOpenThemes ? <button type="button" className="font-semibold text-primary hover:underline" onClick={() => onOpenThemes(n.tag)}>{n.tag}</button>
+                    : <span className="font-semibold">{n.tag}</span>}
                   <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold", STATE_TONE[n.state] || "bg-muted text-muted-foreground")}>{n.state}</span>
                   <span className="tabular-nums text-muted-foreground">
                     涨停 <b className="text-foreground">{n.limit_up}</b>(首板{n.first_boards}/连板{n.consec_boards})· 最高 <b className="text-foreground">{n.highest}</b> 板
@@ -256,8 +260,8 @@ export function ThemeTreeView({ t }: { t?: ThemeTree }) {
                     </span>
                   )}
                   {safeArray<ThemeNode["members"][number]>(n.members).length > 0 && (
-                    <span className="truncate opacity-80">
-                      {safeArray<ThemeNode["members"][number]>(n.members).slice(0, 4).map((m) => `${m.name}${m.label ?? `${m.boards}板`}`).join("、")}
+                    <span className="break-words opacity-80">
+                      {safeArray<ThemeNode["members"][number]>(n.members).map((m) => `${m.name}${m.label ?? `${m.boards}板`}`).join("、")}
                     </span>
                   )}
                 </div>
@@ -283,12 +287,26 @@ export function Themes({ ts }: { ts?: ThemeStructure }) {
   return (
     <Section
       icon={Layers3}
-      title="行业结构 · 发酵节奏"
-      hint="⚠️ 这是「行业分类」视角(兜底)—— 真正的题材看题材事件树。行业≠题材:同一行业可能装着完全不同的炒作原因。这里的价值主要在「涨停时间分布」。"
+      title="首封时段与行业分布"
+      hint="按首次封板时间统计涨停股，并列出各行业最高板和最早首封。"
       available={ts?.available}
       reason={ts?.reason}
     >
-      <div className="mb-3 space-y-1">
+      {timeline.length > 0 && (
+        <div className="mb-3">
+          <div className="mb-1.5 text-[11px] font-semibold text-muted-foreground">涨停时间分布(按首次封板)</div>
+          <div className="flex items-end gap-1.5">
+            {timeline.map((x) => (
+              <div key={x.slot} className="flex-1 text-center">
+                <div className="mx-auto w-full rounded-t bg-primary/60" style={{ height: `${Math.max(3, ((finite(x.count) ?? 0) / maxSlot) * 44)}px` }} />
+                <div className="mt-1 text-[10px] tabular-nums text-foreground">{x.count}</div>
+                <div className="text-[9px] leading-tight text-muted-foreground">{x.slot}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="space-y-1 border-t border-border pt-2.5">
         {themes.map((t) => (
           <div key={t.sector} className="flex items-center gap-2 text-[12px] tabular-nums">
             <span className="w-20 shrink-0 truncate font-semibold" title={t.sector}>{t.sector}</span>
@@ -308,20 +326,6 @@ export function Themes({ ts }: { ts?: ThemeStructure }) {
           </div>
         ))}
       </div>
-      {timeline.length > 0 && (
-        <div className="border-t border-border pt-2.5">
-          <div className="mb-1.5 text-[11px] font-semibold text-muted-foreground">涨停时间分布(按首次封板)</div>
-          <div className="flex items-end gap-1.5">
-            {timeline.map((x) => (
-              <div key={x.slot} className="flex-1 text-center">
-                <div className="mx-auto w-full rounded-t bg-primary/60" style={{ height: `${Math.max(3, ((finite(x.count) ?? 0) / maxSlot) * 44)}px` }} />
-                <div className="mt-1 text-[10px] tabular-nums text-foreground">{x.count}</div>
-                <div className="text-[9px] leading-tight text-muted-foreground">{x.slot}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
       {ts?.concentration != null && (
         <p className="mt-2 text-[11px] text-muted-foreground">
           共 {ts.theme_count ?? "—"} 个方向,头部占全市场涨停 <b className="text-foreground">{rate(ts.concentration)}</b>
@@ -376,7 +380,7 @@ export function Ledger({ el }: { el?: EventLedger }) {
   return (
     <Section
       icon={ListTree}
-      title="关键事件账本"
+      title="关键盘面事件"
       hint="按公开盘面规则归集已发生的关键事件。只陈述事实,不排序打分、不给参与倾向。"
       caliber={"事件是按规则自动挑的:当天最高板、炸板≥2次又回封、各题材最早封板的那只、\n" +
         "昨日板位最高的断板股(最多 6 只)、跌得最狠的(最多 5 只)。\n" +
@@ -397,14 +401,14 @@ export function Ledger({ el }: { el?: EventLedger }) {
   );
 }
 
-/** 分涨跌幅制度:10cm / 20cm / 北交所 / ST 各自的涨停与晋级 */
+/** 不同涨跌幅制度表现:10cm / 20cm / 北交所 / ST 各自的涨停与晋级 */
 export function BoardSystemSection({ bb }: { bb?: ByBoard }) {
   const boards = safeRecord<BoardStat>(bb?.boards);
   const keys = Object.keys(boards).filter((k) => boards[k] && (boards[k]!.limit_up > 0 || (boards[k]!.prev_base ?? 0) > 0));
   const extinct = keys.filter((k) => boards[k]!.limit_up === 0 && (boards[k]!.prev_base ?? 0) > 0);
-  const [open, setOpen] = useState(extinct.length > 0);
+  const [open, setOpen] = useState(true);
   if (bb?.available === false) {
-    return <Section icon={Layers3} title="分涨跌幅制度" available={false} reason={bb.reason}>{null}</Section>;
+    return <Section icon={Layers3} title="不同涨跌幅制度表现" available={false} reason={bb.reason}>{null}</Section>;
   }
   if (!keys.length) return null;
 
@@ -412,7 +416,7 @@ export function BoardSystemSection({ bb }: { bb?: ByBoard }) {
     <div className="glass px-4 py-3">
       <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex w-full flex-wrap items-center gap-1.5 text-left">
         {open ? <ChevronDown className="h-4 w-4 text-primary" /> : <ChevronRight className="h-4 w-4 text-primary" />}
-        <span className="text-sm font-semibold">分涨跌幅制度</span>
+        <span className="text-sm font-semibold">不同涨跌幅制度表现</span>
         <span className="text-[11px] text-muted-foreground">有涨停的 {keys.length} 类 · 10cm / 20cm / 北交所 / ST 的晋级生态不同,混算对不上任何一种打法</span>
         {extinct.length > 0 && (
           <span className="ml-auto rounded bg-success/15 px-1.5 py-0.5 text-[10px] font-bold text-success">{extinct.join("、")} 当天零涨停</span>

@@ -1,0 +1,13 @@
+.theme-rotation-rail { gap: 0.3rem; }
+.theme-rotation-rail > div:first-child { gap: 0.25rem; }
+.theme-rotation-rail > div:first-child input,
+.theme-rotation-rail > div:first-child select { padding: 0.3rem 0.45rem; }
+.theme-rotation-rail [role="group"] button { padding: 0.2rem 0.5rem; }
+.theme-rotation-rail table { border-collapse: separate; border-spacing: 0; }
+.theme-rotation-rail tbody tr[data-topic] > th { white-space: nowrap; padding-top: 0; padding-bottom: 0; }
+.theme-rotation-rail tbody tr[data-topic] > th button { padding: 0.25rem 0; }
+.theme-rotation-rail tbody tr[data-topic] > td { padding: 0.12rem 0.2rem; }
+.theme-rotation-rail tbody tr[data-topic] > td button { min-height: 1.6rem; min-width: 2rem; }
+.theme-rotation-rail tbody tr[data-topic] > td button:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; z-index: 2; }
+.theme-rail-status { display: inline-block; margin-left: 0.35rem; font-size: 0.48rem; vertical-align: middle; }
+.theme-rotation-rail thead th[aria-current="date"] { box-shadow: inset 0 -2px hsl(var(--primary)); }

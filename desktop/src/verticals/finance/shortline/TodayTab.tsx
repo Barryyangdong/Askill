@@ -1,9 +1,3 @@
-/**
- * 情绪复盘 · 今日情绪。排法照 Vibe AStock 的看板:先看昨天涨停的今天赚不赚钱(四项读数),
- * 再看各个高度有谁、昨天那层接上了几只(连板天梯),钱亏在哪个板位、板封得结不结实,
- * 再看钱在哪些题材,最后是事件、分制度、周期和首板名单。
- * 只负责摆;取数在页面里(各块各自回来各自显示)。
- */
 import type { ReactNode } from "react";
 import { useAiPage } from "../../../core/ai/pageContext";
 import type { Panel } from "./api";
@@ -11,6 +5,7 @@ import { BoardLadderPanel } from "./BoardLadderPanel";
 import { ConsecPremiumCard, CycleCard, LadderCard, MoneyEffectCard, PromotionCard } from "./EmotionCards";
 import { BoardSystemSection, Ledger, LossEffectSection, Matrix, SealQualitySection, ThemeTreeView, Themes } from "./FactsPanels";
 import { FirstBoardPanel } from "./FirstBoardPanel";
+import { rate, signed } from "./format";
 import { todaySummary } from "./summary";
 import type { BoardLadderResult, ConsecPremium, CycleResult, EmotionResult, FactsResult, FirstBoardResult, LadderGap, MoneyEffect, Promotion, ThemesResult } from "./types";
 
@@ -41,11 +36,25 @@ export function Slot<T>({ p, title, children, minH = "min-h-[8rem]" }: { p: Pane
 
 const OFF = { available: false } as const;
 
-export function TodayTab({ day, panels }: { day: string | null; panels: TodayPanels }) {
+export type TodaySection = "emotion" | "cycle" | "relay" | "seal" | "themes" | "timing" | "risk";
+
+export function TodayTab({ day, panels, showDate = true, onOpenThemes, section }: {
+  day: string | null;
+  panels: TodayPanels;
+  showDate?: boolean;
+  onOpenThemes?: (tag?: string) => void;
+  section?: TodaySection;
+}) {
   const { emotion, facts, themes, firstboard, cycle, ladder } = panels;
   const e = emotion.state === "done" ? emotion.result : null;
 
-  useAiPage(day ? {
+  const first = firstboard.state === "done" ? firstboard.result : null;
+  const board = ladder.state === "done" ? ladder.result : null;
+  const firstInLadder = first?.available && board?.date === first.date && board.ladder.available
+    && board.ladder.levels?.some(level => level.boards === 1);
+  const show = (part: TodaySection) => !section || section === part;
+  const registerContext = show("emotion");
+  useAiPage(registerContext && day ? {
     key: `shortline:today:${day}`,
     title: `情绪复盘 ${day}`,
     context: todaySummary(day, panels),
@@ -55,71 +64,73 @@ export function TodayTab({ day, panels }: { day: string | null; panels: TodayPan
       "哪些题材在延续、哪些接力断档?证据够不够",
       "梯队断层说明了什么,还缺什么证据才能下判断",
     ],
-  } : null);
+  } : null, registerContext);
 
   return (
-    <div className="space-y-4">
-      {e && (
+    <div className="review-workbench space-y-4">
+      {show("emotion") && e && (
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[12px] text-muted-foreground">
-          <span>复盘日 <b className="text-foreground">{e.date}</b>{e.prev_date && <>,对比前一交易日 {e.prev_date}</>}</span>
+          <span>{(showDate || day !== e.date) && <>复盘日 <b className="text-foreground">{e.date}</b>{e.prev_date && "，"}</>}{e.prev_date && <>对比前一交易日 {e.prev_date}</>}</span>
           {e.promotion?.limit_up_count != null && (
             <span>涨停 <b className="text-danger">{e.promotion.limit_up_count}</b> 家(前一交易日 {e.promotion.prev_limit_up_count ?? "—"} 家)</span>
           )}
         </div>
       )}
-      {e?.settled === false && (
+      {show("emotion") && e?.settled === false && (
         <p role="status" className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-[12px] text-warning">
-          这一天还没收盘(或东财还没定稿):下面的数字收盘前还会变,也不会存成快照。
+          未结算 · 读数仍会变化 · 暂不保存快照
         </p>
       )}
 
-      {/* 1. 昨天涨停的今天赚不赚钱 */}
-      <Slot p={emotion} title="情绪四项" minH="min-h-[10rem]">
-        {(r) => (
-          <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
-            <MoneyEffectCard me={r.money_effect ?? (OFF as MoneyEffect)} />
-            <PromotionCard pr={r.promotion ?? (OFF as Promotion)} />
-            <ConsecPremiumCard cp={r.consec_premium ?? (OFF as ConsecPremium)} />
-            <LadderCard lg={r.ladder_gap ?? (OFF as LadderGap)} />
-          </div>
-        )}
-      </Slot>
+      {show("cycle") && <Slot p={cycle} title="涨停池周期位置">
+        {c => <CycleCard cy={c.cycle ?? OFF} />}
+      </Slot>}
 
-      {/* 2. 各个高度有谁、昨天那层接上了几只 */}
-      <Slot p={ladder} title="连板天梯">{(l) => <BoardLadderPanel r={l} />}</Slot>
-
-      {/* 3. 钱亏在哪个板位、板封得结不结实 */}
-      <Slot p={facts} title="盘面事实">
-        {(f) => (
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-            <Matrix fm={f.feedback} />
-            <div className="space-y-4">
-              <LossEffectSection le={f.loss_effect} />
-              <SealQualitySection sq={f.seal_quality} />
+      {show("emotion") && <>
+        <Slot p={emotion} title="昨日强势股今日表现">
+          {r => <>
+            {!section && <div className="grid grid-cols-2 gap-3 rounded border border-border p-3 text-xs sm:hidden" aria-label="同日情绪摘要">
+              <span>同日涨停 <b>{r.promotion?.limit_up_count ?? "—"} 家</b></span>
+              <span>整体晋级率 <b>{r.promotion?.available ? rate(r.promotion.overall?.rate) : "—"}</b></span>
+              <span>昨日涨停反馈中位数 <b>{r.money_effect?.available ? signed(r.money_effect.median) : "—"}</b></span>
+              <span>最高板 <b>{r.ladder_gap?.available && r.ladder_gap.highest != null ? `${r.ladder_gap.highest} 板` : "—"}</b></span>
+            </div>}
+            <div className="grid gap-3 md:grid-cols-2">
+              <MoneyEffectCard me={r.money_effect ?? (OFF as MoneyEffect)} />
+              <ConsecPremiumCard cp={r.consec_premium ?? (OFF as ConsecPremium)} />
             </div>
-          </div>
-        )}
-      </Slot>
+          </>}
+        </Slot>
+        <Slot p={facts} title="昨日强势股分板位反馈">{f => <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+          <Matrix fm={f.feedback} />
+          <LossEffectSection le={f.loss_effect} />
+        </div>}</Slot>
+      </>}
 
-      {/* 4. 钱在哪些题材 */}
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-        <Slot p={themes} title="题材事件树">{(t) => <ThemeTreeView t={t.tree} />}</Slot>
-        <div className="space-y-4">
-          <Slot p={cycle} title="情绪周期">{(c) => <CycleCard cy={c.cycle ?? OFF} />}</Slot>
-          {facts.state === "done" && facts.result && <Themes ts={facts.result.themes} />}
-        </div>
-      </div>
+      {show("relay") && <div id="review-ladder" className="scroll-mt-24 space-y-3">
+        {(!board?.ladder.available || !board.ladder.prev_available || !e) && <Slot p={emotion} title="晋级率与梯队结构">
+          {r => <div className="grid gap-3 md:grid-cols-2">
+            <PromotionCard pr={r.promotion ?? (OFF as Promotion)} />
+            <LadderCard lg={r.ladder_gap ?? (OFF as LadderGap)} />
+          </div>}
+        </Slot>}
+        <Slot p={ladder} title="连板天梯">{l =>
+          <BoardLadderPanel r={l} emotion={l.ladder.available && l.ladder.prev_available ? e : null} firstBoard={firstInLadder && first ? first : undefined} />
+        }</Slot>
+        {!firstInLadder &&
+          <Slot p={firstboard} title="首板明细">{fb => <FirstBoardPanel fb={fb} />}</Slot>}
+      </div>}
 
-      {/* 5. 事件与分制度 */}
-      {facts.state === "done" && facts.result && (
-        <div className="space-y-4">
-          <Ledger el={facts.result.events} />
-          <BoardSystemSection bb={facts.result.by_board} />
-        </div>
-      )}
+      {show("seal") && <Slot p={facts} title="封板质量与涨跌幅制度">{f => <>
+        <SealQualitySection sq={f.seal_quality} />
+        <BoardSystemSection bb={f.by_board} />
+      </>}</Slot>}
 
-      {/* 6. 首板名单 */}
-      <Slot p={firstboard} title="首板名单">{(fb) => <FirstBoardPanel fb={fb} />}</Slot>
+      {show("themes") && <Slot p={themes} title={onOpenThemes ? "当日题材" : "题材事件树"}>
+        {t => <ThemeTreeView t={t.tree} onOpenThemes={onOpenThemes} />}
+      </Slot>}
+      {show("timing") && <Slot p={facts} title="首封时段分布">{f => <Themes ts={f.themes} />}</Slot>}
+      {show("risk") && <Slot p={facts} title="关键盘面事件">{f => <Ledger el={f.events} />}</Slot>}
     </div>
   );
 }

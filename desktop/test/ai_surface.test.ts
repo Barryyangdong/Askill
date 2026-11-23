@@ -16,22 +16,12 @@ test("所有对话入口共用主题适配表面，普通数据卡不染色", ()
   assert.match(css, /\.ai-surface\s*\{/);
   assert.match(css, /\.ai-surface \.prose/);
   assert.match(css, /color-scheme: light/);
-  assert.match(css, /\.dark \.ai-surface\s*\{/);
-  assert.match(css, /color-scheme: dark/);
-  assert.match(css, /\.dark \.ai-surface \.ai-composer/);
-  assert.match(css, /\.dark \.ai-chat-trigger/);
-  assert.match(css, /\.ai-surface\s*\{[^}]*background-color: #fff7f0;/);
-  assert.match(css, /\.dark \.ai-surface\s*\{[^}]*background-color: #191a1e;/);
-  assert.match(css, /\.dark \.ai-surface \.prose\s*\{[^}]*--tw-prose-body: #e4e4e7;/);
-  assert.match(css, /\.ai-surface\s*\{[^}]*--primary: 20 80% 36%;/);
-  assert.match(css, /\.dark \.ai-surface\s*\{[^}]*--primary: 15 100% 60%;/);
-  assert.match(css, /\.dark \.ai-surface \.ai-message-user\s*\{[^}]*background: #2c2d32;/);
-  assert.match(css, /\.dark \.ai-surface \.ai-send\s*\{[^}]*background: #ff6429;/);
+  // Neutral assistant surfaces inherit both workspace themes; do not reintroduce a private orange palette.
+  assert.doesNotMatch(css, /#fff7f0|#ff6429|linear-gradient/);
   for (const hook of ["ai-message-assistant", "ai-message-user", "ai-input", "ai-send"]) {
-    assert.ok(css.includes(`.dark .ai-surface .${hook}`), hook);
     assert.ok(read("verticals/finance/pages/Backtest.tsx").includes(hook), hook);
   }
-  assert.match(css, /\.dark \.ai-surface \.ai-input:focus-within/);
+
 });
 
 test("侧栏只显示已接入的 AI，不再有 Agent 开关", () => {

@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
+from datetime import datetime
 
 from test_registry_sources import _ctx
 from sources import eastmoney, mappers, mappers_cn, sina
-from sources import astock_ported, baostock_src, tencent
+from sources import astock_ported, baostock_src, market_breadth_history, tencent
 
 
 def _mctx(ep_id: str, **kw):
@@ -18,6 +19,85 @@ def _mctx(ep_id: str, **kw):
 
 def _boom(*_a, **_k):
     raise ConnectionError("Remote end closed connection without response")
+
+
+def test_ranking_needs_consistent_provider_closing_timestamps():
+    close = int(datetime(2026, 10, 9, 15, 0, tzinfo=eastmoney.TZ_SH).timestamp())
+    assert eastmoney._common_close_day([{"f124": close}, {"f124": close + 2}]) == "2026-10-09"
+    for bad in [None, close - 2, close + 86400]:
+        assert not eastmoney._common_close_day([{"f124": close}, {"f124": bad}])
+
+
+def test_historical_breadth_bins_and_sample(monkeypatch):
+    day = "2026-10-09"
+    samples = [
+        ("sh", "600001", 10.1, 10, 80), ("sz", "300001", 9, 10, 50), ("bj", "920001", 8, 8, 3),
+        ("sh", "900001", 11, 10, 99), ("sh", "600003", 11, 10, 0), ("sz", "000001", 6, 0, 70),
+    ]
+    frame = pd.DataFrame(samples, columns=["market", "code", "close", "prev_close", "amount"])
+    frame["date"] = day
+    monkeypatch.setattr(astock_ported, "tdx_daily_package", lambda date: frame)
+    result = market_breadth_history.historical_breadth(day)
+    counts = {b["key"]: b["count"] for b in result["buckets"] if b["count"]}
+    assert counts == {1: 1, -10: 1, 0: 1}
+    mapped = mappers.em_market_breadth_map(result, _mctx("cn_market_breadth_history"))
+    assert {ev["source"] for ev in mapped["evidence"]} == {"tdx"}
+    assert {ev["period"] for ev in mapped["evidence"]} == {day}
+    assert sum(r["amount"] for r in result["exchanges"]) == 133
+    frame["date"] = "2026-10-08"
+    with pytest.raises(market_breadth_history.DataNotAvailable, match="日期不一致"):
+        market_breadth_history.historical_breadth(day)
+
+
+def test_historical_distribution_uses_only_matching_complete_close_capture(tmp_path, monkeypatch):
+    import json
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    day = "2026-10-09"
+    def sample(stamp, qdate, bins):
+        path = raw / f"eastmoney_push2ex_push2_ulist__20261009T{stamp}_12_123a.json"
+        path.write_text(json.dumps({"data": {"qdate": qdate, "fenbu": [{str(k): 2} for k in bins]}}))
+        return path
+    sample("145959111111", 20261009, range(-11,12))
+    sample("180000000000", 20261008, range(-11,12))
+    sample("163000000000", 20261009, range(-9,10))
+    assert not market_breadth_history.archived_distribution(day, tmp_path)
+    path = sample("150100222222", 20261009, range(-11,12))
+    def no_package(date):
+        raise ValueError("日包暂缺")
+    monkeypatch.setattr(astock_ported, "tdx_daily_package", no_package)
+    result = market_breadth_history.historical_breadth(day, tmp_path)
+    assert len(result["buckets"]) == 23
+    assert all(r["_raw"] == "raw/" + path.name for r in result["buckets"])
+    assert result["exchanges"] == []
+
+
+def test_before_package_publication_capture_closing_distribution_for_return_visit(tmp_path, monkeypatch):
+    import common
+    import json
+    from sources._http import record_raw
+
+    class AtClose(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 9, 15, 30, tzinfo=tz)
+
+    def no_package(date):
+        raise ValueError("盘后包尚未发布")
+
+    def provider(*args, **kwargs):
+        data = {"data": {"qdate": 20261009, "fenbu": [{str(k): 4} for k in range(-11, 12)]}}
+        record_raw(json.dumps(data).encode())
+        return data
+
+    monkeypatch.setattr(common, "datetime", AtClose)
+    monkeypatch.setattr(market_breadth_history, "datetime", AtClose)
+    monkeypatch.setattr(astock_ported, "tdx_daily_package", no_package)
+    monkeypatch.setattr(eastmoney, "em_json", provider)
+    result = market_breadth_history.historical_breadth("2026-10-09", tmp_path)
+    assert len(result["buckets"]) == 23
+    monkeypatch.setattr(eastmoney, "em_json", _boom)
+    assert market_breadth_history.historical_breadth("2026-10-09", tmp_path)["buckets"] == result["buckets"]
 
 
 # ---------- 涨跌分布 ----------

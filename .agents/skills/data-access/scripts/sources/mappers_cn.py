@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 
 import json
 import os
@@ -53,10 +54,20 @@ def _tx_market(code: str) -> str:
 def tencent_quotes_map(result: dict, ctx: dict) -> dict:
     if not result:
         return empty("腾讯无返回(代码无效或被拒)")
-    day = today_str()
+    fetched_day = today_str()
     evs, stale, missing = [], [], []
     for code, q in result.items():
-        note = f"{q.get('name')}({q.get('query')})" + (f";僵尸报价:{q.get('stale_reason')}" if q.get("is_stale") else "")
+        stamp = str(q.get("quote_time") or "").strip()
+        day = "unknown"
+        for fmt, width in (("%Y%m%d", 8), ("%Y-%m-%d", 10), ("%Y/%m/%d", 10)):
+            try:
+                day = datetime.strptime(stamp[:width], fmt).date().isoformat()
+                break
+            except ValueError:
+                continue
+        if day == "unknown":
+            missing.append({"field": "quote_time", "record_key": str(code), "reason": "报价实际日期未知，不能用抓取日代替"})
+        note = f"{q.get('name')}({q.get('query')});抓取日={fetched_day};行情日={day}" + (f";僵尸报价:{q.get('stale_reason')}" if q.get("is_stale") else "")
         # 🔴 **逐行判市场**:这个端点同时能取 A股 / 美股 / 港股(腾讯的 usDJI、hkHSI 等)。
         #    沿用端点级的 CN 会把道指标成 `CNY` —— 数字对、标签错,而界面上不显示币种,
         #    所以**看不出来**;错的那份会随证据进 AI 上下文。市场决定币种(见 `ev()`)。
@@ -162,8 +173,10 @@ def cls_telegraph_map(result: list, ctx: dict) -> dict:
 
 def cninfo_announcements_map(result: list, ctx: dict) -> dict:
     if not result:
+        if ctx["args"].get("day"):
+            return out([], status="ok", extra={"date": ctx["args"]["day"], "count": 0})
         return empty("巨潮无公告(orgId 可能解析失败)")
-    evs = text_items(ctx, result, field="announcement_title", title_key="title", date_key="date", key_of=lambda r: str(r.get("url"))[-40:], limit=int(ctx["args"].get("limit", 40)), extra_keys=("type", "url"))
+    evs = text_items(ctx, result, field="announcement_title", title_key="title", date_key="date", key_of=lambda r: str(r.get("id") or r.get("url"))[-80:], limit=int(ctx["args"].get("limit", 40)), extra_keys=("type", "url"))
     return out(evs, extra={"count": len(result)})
 
 

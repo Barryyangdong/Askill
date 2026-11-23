@@ -1,3 +1,4 @@
+import { navPageOf } from "../src/verticals/finance/lib/nav.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -46,6 +47,22 @@ test("前端调用:读走 GET,写走 POST JSON,测试只带渠道 id", async () 
   assert.deepEqual(JSON.parse(calls[2]!.body!), { channel: "system" });
 });
 
+test("提醒读取把取消信号传入 fetch，取消原因保持可辨认", async () => {
+  const original = globalThis.fetch;
+  const controller = new AbortController();
+  globalThis.fetch = (async (_input, init) => {
+    assert.equal(init?.signal, controller.signal);
+    return new Promise<Response>((_resolve, reject) => {
+      controller.signal.addEventListener("abort", () => reject(controller.signal.reason));
+    });
+  }) as typeof fetch;
+  try {
+    const pending = backend.notify(controller.signal);
+    controller.abort(new Error("消息读取超时，请重试。"));
+    await assert.rejects(pending, /消息读取超时/);
+  } finally { globalThis.fetch = original; }
+});
+
 test("提醒页:地址和密钥用密码框、不进本地存储,说明只在程序运行时生效,不给买卖建议", () => {
   const page = read("pages/Inbox.tsx");
   assert.match(page, /aria-label="Webhook 地址" type="password" autoComplete="off"/);
@@ -55,16 +72,15 @@ test("提醒页:地址和密钥用密码框、不进本地存储,说明只在程
   assert.match(page, /只列事实,不给买卖建议/);
   assert.match(page, /NOTIFY_CHANGED/);
   const layout = read("components/layout/Layout.tsx");
-  assert.match(read("lib/nav.ts"), /\{ to: "\/inbox", label: "提醒", icon: "Bell" \}/);
-  // 未读数：「提醒」二级和它所在的一级都显示（组收起、侧栏收成图标时也看得到）
-  assert.match(layout, /aria-describedby=\{inbox && unread > 0 \? \(inFlyout \? "nav-inbox-unread-flyout" : "nav-inbox-unread"\)/);
-  assert.match(layout, /const describedBy = inbox && unread > 0 \? "nav-section-unread" : undefined;/);
-  assert.match(layout, /\{inbox && unreadPill\("nav-section-unread"\)\}/);
+  assert.equal(navPageOf("/inbox"), null);
+  const reminder = layout.match(/<Link to="\/inbox"[\s\S]*?<\/Link>/)?.[0] ?? "";
+  assert.match(reminder, /aria-label=.*unread.*条未读/);
+  assert.match(reminder, /unread>0.*rounded-full/);
 });
 
 test("操作失败的原因不被随后的自动重读冲掉（第四轮审计 C7）", () => {
   const src = read("pages/Inbox.tsx");
-  const load = src.slice(src.indexOf("const load = useCallback"), src.indexOf("useEffect(() => { void load(); }"));
+  const load = src.slice(src.indexOf("const load = useCallback"), src.indexOf("  }, []);", src.indexOf("const load = useCallback")));
   assert.match(load, /setLoadError\(""\)/);
   assert.doesNotMatch(load, /setActError/, "重读只管读取失败，不碰操作失败");
   assert.match(src, /const error = actError \|\| loadError;/);

@@ -131,7 +131,7 @@ def test_factor_not_covering_early_bars_is_an_error_not_raw_prices(monkeypatch, 
 
 @pytest.mark.parametrize("req, msg", [
     ({"symbol": ""}, "请给一个代码"),
-    ({"symbol": "600519", "period": "m5"}, "period"),
+    ({"symbol": "600519", "period": "m2"}, "period"),
     ({"symbol": "600519", "adjust": "xx"}, "adjust"),
     ({"symbol": "EURUSD"}, "认不出"),
 ])

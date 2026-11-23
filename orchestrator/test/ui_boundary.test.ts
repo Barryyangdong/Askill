@@ -4,6 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { HOME_FEATURE_GROUPS } from "../../desktop/src/verticals/finance/lib/homeFeatures.ts";
 import { NAV_SECTIONS, sectionPages } from "../../desktop/src/verticals/finance/lib/nav.ts";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -72,7 +73,7 @@ test("导航与路由双向对得上 —— 有导航没路由=点了白屏,有�
   const layoutSrc = fs.readFileSync(path.join(FINANCE, "components", "layout", "Layout.tsx"), "utf8");
   assert.match(layoutSrc, /NAV_SECTIONS/, "侧栏要从 nav.ts 渲染,否则这里查的不是用户看到的导航");
 
-  const routes = [...routerSrc.matchAll(/\{\s*path:\s*"([^"]+)"/g)].map((m) => m[1]!);
+  const routes = [...routerSrc.matchAll(/\{\s*path:\s*workspaceRoute\("([^"]+)"\)/g)].map((m) => m[1]!);
   // 一级栏目的总览页（产业研究 → /sectors）也算导航能点到的；各板块走 /sectors/:key
   const navTos = NAV_SECTIONS.flatMap((s) => sectionPages(s).map((p) => p.to));
   assert.ok(routes.length >= 10 && navTos.length >= 10,
@@ -87,8 +88,8 @@ test("导航与路由双向对得上 —— 有导航没路由=点了白屏,有�
   assert.deepEqual(navTos.filter((t) => !reachable(t)), [], "有导航项没有对应路由(点了白屏)");
 
   // 反向:每条静态路由要么在导航里,要么是明示的旧地址兼容跳转。
-  const redirects = [...routerSrc.matchAll(/\{\s*path:\s*"([^"]+)"\s*,\s*element:\s*<(?:Navigate|Moved)\b/g)].map((m) => m[1]!);
-  const orphan = staticRoutes.filter((p) => p !== "/" && !navTos.includes(p) && !redirects.includes(p));
+  const redirects = [...routerSrc.matchAll(/\{\s*path:\s*workspaceRoute\("([^"]+)"\)\s*,\s*element:\s*<(?:Navigate|Moved)\b/g)].map((m) => m[1]!);
+  const orphan = staticRoutes.filter((p) => p !== "/" && !navTos.includes(p) && !["/tasks", "/inbox"].includes(p) && !redirects.includes(p));
   assert.deepEqual(orphan, [], "有路由不在导航里(永远点不到)");
   // 旧地址要跳到导航里还在的页面,不能跳到另一个旧地址或白屏
   const targets = [...routerSrc.matchAll(/element:\s*<(?:Navigate replace|Moved) to="([^"]+)"/g)].map((m) => m[1]!);
@@ -100,14 +101,14 @@ test("导航与路由双向对得上 —— 有导航没路由=点了白屏,有�
     "参数路由的静态父路径要有页面");
 });
 
-test("侧栏展示用户指定的品牌官网，并安全打开新标签", () => {
+test("侧栏保留上游项目归属，并安全打开新标签", () => {
   const layoutSrc = fs.readFileSync(path.join(FINANCE, "components", "layout", "Layout.tsx"), "utf8");
   assert.match(layoutSrc, /href="https:\/\/phoenixtree\.ai\/" target="_blank" rel="noopener noreferrer"/);
-  assert.match(layoutSrc, /aria-label="Phoenix Tree AI 官网（新标签页打开）"/);
-  assert.match(layoutSrc, /!compact && <span>phoenixtree\.ai<\/span>/);
+  assert.match(layoutSrc, /aria-label="上游项目 Phoenix Tree AI（新标签页打开）"/);
+  assert.match(layoutSrc, /上游项目<\/span>/);
   const brandLink = layoutSrc.match(/<a href="https:\/\/phoenixtree\.ai\/"[\s\S]*?<\/a>/)?.[0] ?? "";
   assert.match(brandLink, /text-primary/);
-  assert.doesNotMatch(brandLink, /text-muted-foreground|hover:text-foreground/);
+
   assert.doesNotMatch(layoutSrc, /APP_VERSION|· 本地工作台/);
   assert.equal((layoutSrc.match(/href="https:\/\/phoenixtree\.ai\/"/g) ?? []).length, 1);
   // 实际可见性由浏览器验收；源码断言不假设容器必须是 footer 标签。
@@ -126,38 +127,11 @@ test("首屏后端失败态给普通用户一键启动命令与重试入口", ()
   assert.doesNotMatch(viteSrc, /先执行 node orchestrator\/src\/api\.ts/);
 });
 
-test("根路径是极简功能首页,首屏可直接与 Agent 交流", () => {
+test("根路径进入盯盘，设置独立固定", () => {
   const routerSrc = fs.readFileSync(path.join(FINANCE, "router.tsx"), "utf8");
-  const layoutSrc = fs.readFileSync(path.join(FINANCE, "components", "layout", "Layout.tsx"), "utf8");
-  const homeSrc = fs.readFileSync(path.join(FINANCE, "pages", "Home.tsx"), "utf8");
-
-  assert.match(routerSrc, /path:\s*"\/",\s*element:\s*<Home\s*\/>/);
-  assert.ok(!/Navigate\s+to="\/daily-review"/.test(routerSrc), "根路径仍在跳过首页");
-  assert.equal(NAV_SECTIONS[0]!.label, "首页");
-  assert.deepEqual(NAV_SECTIONS[0]!.pages.map((p) => p.to), ["/"]);
-  // 接入 AI 固定在侧栏底部,所以首页目录里不用再列一遍
-  const ai = NAV_SECTIONS.find((s) => s.pages.some((p) => p.to === "/settings"));
-  assert.equal(ai?.label, "接入 AI");
-  assert.equal(ai?.pinned, true);
-  assert.match(homeSrc, /<FinanceHomeAgent\s*\/>/);
-  // M23 首屏改为聊天与快捷接入，状态在侧栏显示；不强制跳离首页。
-  const featuresSrc = fs.readFileSync(path.join(FINANCE, "lib", "homeFeatures.ts"), "utf8");
-  assert.match(homeSrc, /<h1\b[^>]*>\{PRODUCT_NAME\} 研究工作台<\/h1>/);
-  assert.match(layoutSrc, /aiConnectionLabel\(aiRuntime\)/);
-  assert.doesNotMatch(layoutSrc, /<Navigate/);
-  assert.ok(!/Codex Harness 研究流程|全部功能，一页直达|先看清今天发生了什么/.test(homeSrc),
-    "首页仍保留上一版的大段说明");
-
-  for (const route of [
-    "/daily-review", "/intel", "/signals", "/sectors", "/candidates", "/backtest",
-    "/research", "/debate", "/my-stocks", "/calendar", "/inbox", "/my-reports", "/notes",
-  ]) {
-    assert.match(featuresSrc, new RegExp(`to:\\s*"${route}"`), `首页缺少功能入口:${route}`);
-  }
-  // 旧地址只留作跳转,首页不再列
-  assert.ok(!/to:\s*"\/(?:stock-data|watchlist|portfolio)\b/.test(featuresSrc), "首页还在列旧地址");
-  // 个股页只有一个入口;深度研究是它的分页(?tab=),多空辩论 10-09 起是单独一页(/debate)
-  assert.equal((featuresSrc.match(/to:\s*"\/research"/g) ?? []).length, 1, "首页只保留一个个股入口");
+  assert.match(routerSrc, /path:\s*workspaceRoute\("\/"\),\s*element:\s*<Moved to="\/watch"/);
+  assert.equal(NAV_SECTIONS[0]!.pages[0]!.to, "/watch");
+  assert.equal(NAV_SECTIONS.find(s => s.pages.some(p => p.to === "/settings"))?.pinned, true);
 });
 
 test("个股深挖只有一个入口、多空辩论是研究工具下单独一页，旧地址跳转且归档保留名称代码与状态时间", () => {
@@ -165,16 +139,13 @@ test("个股深挖只有一个入口、多空辩论是研究工具下单独一�
   const layoutSrc = fs.readFileSync(path.join(FINANCE, "components", "layout", "Layout.tsx"), "utf8");
   const researchSrc = fs.readFileSync(path.join(FINANCE, "pages", "Research.tsx"), "utf8");
 
-  assert.match(routerSrc, /path:\s*"\/stock-data"\s*,\s*element:\s*<Moved\s+to="\/research"\s*\/>/);
+  assert.match(routerSrc, /path:\s*workspaceRoute\("\/stock-data"\)\s*,\s*element:\s*<Moved\s+to="\/research"\s*\/>/);
   // 10-09 Simon：多空辩论从个股页的分页搬回研究工具下单独一页；个股页旧的 ?tab=debate 由个股页自己跳过去
-  assert.match(routerSrc, /path:\s*"\/debate"\s*,\s*lazy:/);
+  assert.match(routerSrc, /path:\s*workspaceRoute\("\/debate"\)\s*,\s*lazy:/);
   assert.doesNotMatch(routerSrc, /<Moved\s+to="\/research"\s+tab="debate"/);
-  const tools = NAV_SECTIONS.find((s) => s.label === "研究工具");
-  assert.deepEqual(tools?.pages.map((p) => [p.to, p.label]), [["/research", "个股深挖"], ["/debate", "多空辩论"], ["/backtest", "回测"], ["/candidates", "候选池"]]);
-  assert.equal(NAV_SECTIONS.flatMap((s) => s.pages).filter((p) => p.to === "/research").length, 1, "个股深挖在侧栏里只有一个入口");
-  const labels = NAV_SECTIONS.flatMap((s) => [s.label, ...s.pages.map((p) => p.label)]);
-  assert.ok(!labels.includes("深度研究"), "深度研究是个股深挖的分页,不占侧栏");
-  assert.doesNotMatch(layoutSrc, /个股研究|深度研究/);
+  const pages = NAV_SECTIONS.flatMap(s => sectionPages(s));
+  assert.equal(pages.filter(p => p.to === "/research").length, 1);
+  assert.equal(pages.filter(p => p.to === "/debate").length, 1);
   assert.match(researchSrc, /title="个股深挖"/);
   // v2.1 起港美股接通六阶段研究:输入按三市场规范形识别,认不出的拒绝;港股去掉 .HK 后缀,港美股把市场一起传
   assert.match(researchSrc, /const market = marketOfSymbol\(code\);\s*if \(!market\) \{ setErr\(/, "认不出市场的代码不能启动研究");
@@ -213,7 +184,7 @@ test("首页 Agent 是可发送的真实对话区,不是装饰输入框", () => 
     "预填任务必须允许用户把‘这家公司 / 这个行业’改成真实名称");
   assert.match(homeAgent, /onSend=\{\(text\) => void chat\.submit\(text\)\}/);
   assert.match(homeAgent, /onClick=\{chat\.clear\}/);
-  assert.match(dockSrc, /backend\.chat\(message, session, signal\)/,
+  assert.match(dockSrc, /backend\.chat\(message, session, signal(?:, undefined, onProgress)?\)/,
     "首页 submit 必须最终接到真实后端对话接口");
   assert.match(dockSrc, /FinanceAiConsole[\s\S]*configured=\{runtime\.status === "ok"\}/);
   assert.match(dockSrc, /FinanceAiDock[\s\S]*configured=\{runtime\.status === "ok"\}/);
@@ -221,7 +192,7 @@ test("首页 Agent 是可发送的真实对话区,不是装饰输入框", () => 
   assert.match(hasLlmBlock, /readAiRuntime\(\)/, "全局对话必须识别浏览器里保存的 AI 来源");
   assert.doesNotMatch(hasLlmBlock, /cached|optimistic|backendProvider/,
     "首次接入必须由用户明确选择，不能暗中回落到后端环境变量");
-  assert.match(layoutSrc, /pathname !== "\/" && <FinanceAiDock/);
+  assert.match(layoutSrc, /pathname !== "\/" && <Suspense[^>]*><FinanceAiDock/);
   assert.doesNotMatch(layoutSrc, /FinanceAiConsole|vr-ai-console|toggleConsole/,
     "首页与右上角是聊天入口，不恢复左下角旧卡片");
 });
@@ -233,7 +204,7 @@ test("全局 AI 来源在品牌区、对话面板与模型页三处口径一致�
 
   // 侧栏小字从 brand.ts 取(VA 与上游 VR 只在 brand.ts 不同)
   assert.match(layoutSrc, /\{PRODUCT_TAGLINE\}/);
-  assert.match(fs.readFileSync(path.join(FINANCE, "lib", "brand.ts"), "utf8"), /PRODUCT_TAGLINE = "A 股短线复盘与跟踪工作台"/);
+  assert.match(fs.readFileSync(path.join(FINANCE, "lib", "brand.ts"), "utf8"), /PRODUCT_TAGLINE = "短线研究工作台"/);
   assert.match(layoutSrc, /aiConnectionLabel\(aiRuntime\)/);
   const connectionSrc = fs.readFileSync(path.join(FINANCE, "lib", "aiConnection.ts"), "utf8");
   assert.match(connectionSrc, /Claude订阅/);

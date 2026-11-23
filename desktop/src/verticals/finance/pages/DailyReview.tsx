@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useMemo, type ReactNode } from "react";
-import { backend, type PageBlock, type PageResult } from "@/lib/backend";
-import { Link } from "react-router-dom";
+import type { Envelope, PageBlock, PageResult } from "@/lib/backend";
+import { JourneyLink as Link } from "@/components/JourneyLink";
 import { Sparkles, Loader2, AlertCircle, RefreshCw, Gauge, TrendingUp, TrendingDown, Flame, BarChart3, Globe, Activity, Landmark, Coins } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { noRemoteImages } from "../../../core/ai/noRemoteImages";
+import { ContextHelp } from "@/components/ui/ContextHelp";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
@@ -12,12 +13,23 @@ import { Disclaimer } from "@/components/ui/Disclaimer";
 import { SegmentedToggle } from "@/components/ui/SegmentedToggle";
 import { EChart } from "@/components/ui/EChart";
 import { usePalette } from "@/components/ui/chartPalette";
-import { api, ApiError, type GlobalIndex } from "@/lib/api";
+import { ApiError, type GlobalIndex } from "@/lib/api";
 import { hasLlm, chatStream } from "@/lib/llm";
 import { SaveNoteButton } from "@/components/ui/SaveNoteButton";
 import { ReviewTiersCard } from "@/components/ReviewTiersCard";
+import { BoardBadge, ReviewBadge } from "@/components/ReviewBadge";
+import { ReviewMarketCharts } from "@/components/ReviewMarketCharts";
+import { ReviewBoardMetrics } from "@/components/ReviewBoardMetrics";
+import { ReviewBrokenPool } from "@/components/ReviewBrokenPool";
+import { ReviewSentimentRhythm } from "@/components/ReviewSentimentRhythm";
+import { ReviewAbnormalAlerts } from "@/components/ReviewAbnormalAlerts";
+import { ReviewDragon } from "@/components/ReviewDragon";
 import { TIER_PROMPT_RULES, tiersSummary, type ReviewTiersResult } from "@/lib/reviewTiers";
-import { BREADTH_RULE, SPECULATION_RULE, aboveMa, blockOf, parseReview, reviewLines, staleNote, yiText, type ReviewBlockId } from "@/lib/marketReview";
+import { BREADTH_RULE, exchangeHeadline, SPECULATION_RULE, aboveMa, allowsPublishedHistory, blockEnv, blockOf, parseBoardFlow, parseBreadth, parseTurnover, parseReview, reviewLines, staleNote, yiText, type Breadth, type ReviewBlockId } from "@/lib/marketReview";
+import { historicalFlow, historicalTurnover } from "@/lib/historicalFunds";
+import { peekHistoricalBreadth, readHistoricalBreadth } from "@/lib/historicalBreadth";
+import { peekArchivedMarket, peekDailyMarket, peekDailyTiers, readDailyMarket, readDailyIndices, readDailyTiers, type ReviewMode } from "@/lib/dailyReviewData";
+import { archivedOverview, loadMarketOverview, peekMarketOverview } from "@/lib/dailyMarketOverview";
 import { cn } from "@/lib/utils";
 
 // A股红涨绿跌。全球市场（美股/港股指数）**也沿用红涨**——与整个看板及东财等中国平台一致，
@@ -34,22 +46,22 @@ const bucketShort = (key: number, label: string) =>
   key === 11 ? "涨停" : key === -11 ? "跌停" : key === 0 ? "平" : key === 10 ? ">9%" : key === -10 ? "<-9%"
     : label.replace(/^涨\s*/, "+").replace(/^跌\s*/, "-");
 
-type ViewMode = "live" | "close";
+
 
 /** 块没取到的原因:主源抛错 / 信封写的原因 / 备源也失败 */
 function blockWhy(b: PageBlock | undefined): string {
   if (!b) return "这一块没有返回";
   const env = b.envelope as { reason?: unknown; missing?: { reason?: unknown }[] } | undefined;
-  const why = b.error ?? (typeof env?.reason === "string" ? env.reason : "") ?? "";
+  const why = b.error ?? (typeof env?.reason === "string" ? env.reason : "");
   const miss = Array.isArray(env?.missing) ? String(env!.missing[0]?.reason ?? "") : "";
-  return [why || miss || "上游没回数据", b.fallback_error ? `备用来源也没取到:${b.fallback_error}` : ""].filter(Boolean).join(";").slice(0, 200);
+  return [why || miss || (b.id === "board_flow" ? "该交易日暂未取得可核验的行业资金收盘榜" : "上游没回数据"), b.fallback_error ? `备用来源也没取到:${b.fallback_error}` : ""].filter(Boolean).join(";").slice(0, 200);
 }
 
 function Section({ icon: Icon, title, hint, children }: { icon: typeof Gauge; title: string; hint?: string; children: ReactNode }) {
   return <section className="mb-8">
     <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-border/60 pb-2">
       <h2 className="flex items-center gap-1.5 text-base font-semibold"><Icon className="h-4 w-4 text-primary" /> {title}</h2>
-      {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
+      {hint && <ContextHelp>{hint}</ContextHelp>}
     </div>
     {children}
   </section>;
@@ -73,7 +85,20 @@ function BlockHead({ title, page, id, date, extra }: { title: string; page: Page
 /** 块没取到 / 还在取 */
 function Pending({ page, id, done }: { page: PageResult | null; id: ReviewBlockId; done: boolean }) {
   if (!done) return <p className="py-4 text-center text-sm text-muted-foreground/60">加载中…</p>;
-  return <p role="status" className="py-4 text-center text-sm text-muted-foreground">这次没取到:{blockWhy(blockOf(page, id))}。不代表没有,可点右上角刷新重试。</p>;
+  return <p role="status" className="py-4 text-center text-sm text-muted-foreground">{blockWhy(blockOf(page, id)).replace(/[。.!！]+$/, "")}。</p>;
+}
+
+export function closedReviewPage(base: PageResult, details: PageResult[]) {
+  const day = base.context.review_date;
+  const blocks = [base, ...details].flatMap(page => page.blocks.map(block => {
+    if (block.status === "missing" || block.status === "failed") return block;
+    if (day && page.context.review_date === day && !page.context.live && (
+      block.business_date === day || (allowsPublishedHistory(block.id) && block.status === "partial" &&
+        block.business_date && /^\d{4}-\d{2}-\d{2}$/.test(block.business_date) && block.business_date < day)
+    )) return block;
+    return { ...block, status: "missing" as const, envelope: {}, error: "缺少该复盘日核验过的数据。" };
+  }));
+  return { ...base, context: { ...base.context, realtime_matches_review_day: true }, mixed_ages: false, blocks };
 }
 
 function Stat({ k, v, sub, tone, title }: { k: string; v: ReactNode; sub?: ReactNode; tone?: string; title?: string }) {
@@ -84,9 +109,326 @@ function Stat({ k, v, sub, tone, title }: { k: string; v: ReactNode; sub?: React
   </div>;
 }
 
+function BreadthCard({ breadth: B, page: pageMeta, done: ovDone, error }: {
+  breadth: Breadth | null; page: PageResult | null; done: boolean; error?: string;
+}) {
+  const palette = usePalette();
+  const distOption = useMemo(() => B && B.buckets.length ? {
+    grid: { left: 36, right: 8, top: 18, bottom: 24 },
+    tooltip: { trigger: "axis", backgroundColor: palette.tooltipBg, textStyle: { color: palette.tooltipText },
+      formatter: (ps: { dataIndex: number; value: number }[]) => `${B.buckets[ps[0]!.dataIndex]!.label}:${ps[0]!.value} 只` },
+    xAxis: { type: "category", data: B.buckets.map((b) => bucketShort(b.key, b.label)), axisLabel: { color: palette.text, fontSize: 10, interval: 0, hideOverlap: false }, axisLine: { lineStyle: { color: palette.axis } } },
+    yAxis: { type: "value", axisLabel: { color: palette.text, fontSize: 10 }, splitLine: { lineStyle: { color: palette.grid } } },
+    series: [{ type: "bar", data: B.buckets.map((b) => ({ value: b.count, itemStyle: { color: b.key > 0 ? palette.rise : b.key < 0 ? palette.fall : palette.benchmark } })), label: { show: true, position: "top", fontSize: 9, color: palette.text } }],
+  } : null, [B, palette]);
+
+  return (
+    <GlassCard className="mb-4">
+      <BlockHead title="个股涨跌分布" page={pageMeta} id="breadth" date={B?.date ?? null}
+        extra={B && <span className="text-[11px] text-muted-foreground">上涨 {B.up ?? "—"} · 平盘 {B.flat ?? "—"} · 下跌 {B.down ?? "—"} · {B.fromDailyBars ? "涨超 5%" : "涨 5% 以上"} {B.up5 ?? "—"} · {B.fromDailyBars ? "跌超 5%" : "跌 5% 以上"} {B.down5 ?? "—"}</span>} />
+      {B?.fromDailyBars && <p className="mb-2 text-xs text-muted-foreground">通达信盘后日行情 · 以收盘对昨收计算，涨跌幅每 1% 一档，超过 9% 的两档含涨跌停。</p>}
+      {B?.exchangeFromDailyBars && !B.fromDailyBars && <p className="mb-2 text-xs text-muted-foreground">分布按东方财富盘后归档统计，涨停和跌停分别单列。下表按通达信日行情统计，各所家数与图表覆盖范围可能不同。</p>}
+      {!B ? <p role="status" className="py-4 text-sm text-muted-foreground">{error || (ovDone ? blockWhy(blockOf(pageMeta, "breadth")) : "正在读取收盘涨跌分布…")}</p> : <>
+        {distOption ? <EChart option={distOption} height={220} /> : <p className="text-xs text-muted-foreground">该日仅取得涨跌家数，涨跌幅分档暂缺。</p>}
+        <div className="mt-2 overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead><tr className="border-b border-border/50 text-left text-muted-foreground">{["", "上涨", "下跌", "平盘", "成交额"].map((h) => <th key={h} className="px-2 py-1.5 font-medium">{h}</th>)}</tr></thead>
+            <tbody>
+              {B.exchanges.map((x) => (
+                <tr key={x.market} className="border-b border-border/30">
+                  <td className="px-2 py-1.5">{x.name}</td>
+                  <td className="px-2 py-1.5 font-mono text-danger">{x.up ?? "—"}</td>
+                  <td className="px-2 py-1.5 font-mono text-success">{x.down ?? "—"}</td>
+                  <td className="px-2 py-1.5 font-mono">{x.flat ?? "—"}</td>
+                  <td className="px-2 py-1.5 font-mono">{yiText(x.amount)}</td>
+                </tr>
+              ))}
+              <tr><td className="px-2 py-1.5 text-muted-foreground">合计</td><td colSpan={3} className="px-2 py-1.5 text-[11px] text-muted-foreground">{B.exchangeFromDailyBars ? "通达信沪深京有成交且收盘、昨收有效的 A 股，剔除 B 股、基金和停牌股票。" : "三所家数口径与上面的分布不同。"}</td><td className="px-2 py-1.5 font-mono">{yiText(B.amount)}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </>}
+    </GlassCard>
+  );
+}
+
+function FundsCards({ flow: F, turnover: TV, page: pageMeta, flowDone, turnoverDone, flowError, turnoverError }: {
+  flow: ReturnType<typeof parseBoardFlow>; turnover: ReturnType<typeof parseTurnover>; page: PageResult | null;
+  flowDone: boolean; turnoverDone: boolean; flowError?: string; turnoverError?: string;
+}) {
+  const flowIn = F ? F.rows.filter((x) => x.net !== null && x.net > 0).slice(0, 8) : [];
+  const flowOut = F ? F.rows.filter((x) => x.net !== null && x.net < 0).sort((a, b) => a.net! - b.net!).slice(0, 8) : [];
+  const hasIndustry = !!TV?.rows.some((r) => r.industry);
+  const hasMcap = !!TV?.rows.some((r) => r.mcap !== null);
+  return <>
+    <GlassCard className="mb-4">
+      <BlockHead title={`行业资金流向${F ? `(${F.source}口径)` : ""}`} page={pageMeta} id="board_flow" date={F?.date ?? null} />
+      {flowError && <p role="status">{flowError}</p>}
+      {!F || F.rows.length === 0 ? !flowError && <Pending page={pageMeta} id="board_flow" done={flowDone} /> : (
+        <div className="grid gap-4 md:grid-cols-2">
+          {[
+            { title: "净流入居前", icon: TrendingUp, color: "text-danger", rows: flowIn },
+            { title: "净流出居前", icon: TrendingDown, color: "text-success", rows: flowOut },
+          ].map((col) => (
+            <div key={col.title}>
+              <h4 className={cn("mb-2 flex items-center gap-1.5 text-xs font-semibold", col.color)}><col.icon className="h-3.5 w-3.5" /> {col.title}</h4>
+              {col.rows.length === 0 ? <p className="text-xs text-muted-foreground">所列样本中暂无{col.title.slice(0, 3)}行业</p> : (
+                <div className="space-y-1.5">
+                  {col.rows.map((s, i) => (
+                    <div key={s.name} className="flex items-center gap-3 border-b border-border/30 pb-1.5 text-sm last:border-0">
+                      <span className="w-5 text-xs text-muted-foreground/50">{i + 1}</span>
+                      <span className="flex-1 truncate" title={s.leader ? `领涨 ${s.leader}` : undefined}>{s.name}</span>
+                      <span className={cn("font-mono text-xs", pctColor(s.pct))}>{pctText(s.pct)}</span>
+                      <span className={cn("w-24 text-right font-mono text-xs", pctColor(s.net))}>{signedYi(s.net)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {F && <p className="mt-2 text-[11px] text-muted-foreground">{F.source === "新浪" ? "新浪按其行业分类统计，净额为流入减流出。" : F.source === "东财" ? "东财主力净额按超大单和大单统计。" : "大波浪按申万一级行业汇总，该榜只展示净额两端的行业。"}
+        {F.source === "大波浪·申万一级" && F.date && <a className="ml-2 text-primary hover:underline" href={`https://www.yyqyx.com/moneyflow/${encodeURIComponent(F.date)}`} target="_blank" rel="noreferrer">当日来源</a>}
+      </p>}
+    </GlassCard>
+
+    <GlassCard className="mb-4">
+      <BlockHead title="个股成交额前 20" page={pageMeta} id="turnover" date={TV?.date ?? null} />
+      {turnoverError && <p role="status">{turnoverError}</p>}
+      {!TV || TV.rows.length === 0 ? !turnoverError && <Pending page={pageMeta} id="turnover" done={turnoverDone} /> : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+                {["#", "名称", "价格", "涨跌", "成交额", ...(hasMcap ? ["总市值"] : []), ...(hasIndustry ? ["行业"] : [])].map((h) => <th key={h} className="whitespace-nowrap px-2 py-2 font-medium">{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {TV.rows.map((s, i) => (
+                <tr key={s.code} className="border-b border-border/30">
+                  <td className="px-2 py-2 font-mono text-xs text-muted-foreground/50">{i + 1}</td>
+                  <td className="whitespace-nowrap px-2 py-2"><span className="font-medium">{s.name || s.code}</span> <span className="text-xs text-muted-foreground/60">{s.code}</span></td>
+                  <td className="px-2 py-2 font-mono">{fmt(s.price)}</td>
+                  <td className={cn("px-2 py-2 font-mono", pctColor(s.pct))}>{pctText(s.pct)}</td>
+                  <td className="whitespace-nowrap px-2 py-2 font-mono">{yiText(s.amount)}</td>
+                  {hasMcap && <td className="whitespace-nowrap px-2 py-2 font-mono text-muted-foreground">{yiText(s.mcap)}</td>}
+                  {hasIndustry && <td className="whitespace-nowrap px-2 py-2 text-xs text-muted-foreground">{s.industry}</td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </GlassCard>
+
+  </>;
+}
+
+function useHistoricalRanking<T extends {date: string | null; rows: unknown[]}>(
+  loader: {peek(day: string): T | undefined; read(day: string, refresh: boolean): Promise<T>},
+  day: string, refreshNonce: number, archived?: T | null,
+) {
+  const [data, setData] = useState<T | undefined>(() => loader.peek(day));
+  const [error, setError] = useState("");
+  const revision = useRef(refreshNonce);
+  useEffect(() => {
+    const refresh = revision.current !== refreshNonce;
+    revision.current = refreshNonce;
+    if (archived?.date === day && archived.rows.length && !refresh) return;
+    let active = true;
+    setError("");
+    void loader.read(day, refresh).then(value => { if (active) setData(value); })
+      .catch(e => { if (active) setError(e instanceof Error ? e.message : String(e)); });
+    return () => { active = false; };
+  }, [loader, day, refreshNonce, archived]);
+  return {data: data?.date === day ? data : archived?.date === day ? archived : null, error};
+}
+
+function HistoricalFundsCards({day, refreshNonce, archived}: {day: string; refreshNonce: number; archived?: PageResult}) {
+  const flowEnv = verifiedEnvelope(archived, "board_flow", day);
+  const turnoverEnv = verifiedEnvelope(archived, "turnover", day);
+  const flowArchive = useMemo(() => parseBoardFlow(flowEnv), [flowEnv]);
+  const turnoverArchive = useMemo(() => parseTurnover(turnoverEnv), [turnoverEnv]);
+  const flow = useHistoricalRanking(historicalFlow, day, refreshNonce, flowArchive);
+  const turnover = useHistoricalRanking(historicalTurnover, day, refreshNonce, turnoverArchive);
+  return <FundsCards flow={flow.data} turnover={turnover.data} page={null}
+    flowDone={Boolean(flow.data || flow.error)} turnoverDone={Boolean(turnover.data || turnover.error)}
+    flowError={flow.error} turnoverError={turnover.error} />;
+}
+
+function verifiedEnvelope(page: PageResult | undefined, id: ReviewBlockId, day: string): Envelope | undefined {
+  if (!page || page.context.review_date !== day || page.context.live || blockOf(page, id)?.business_date !== day) return undefined;
+  return blockEnv(page, id);
+}
+
+export type ReviewSectionId = "market" | "emotion" | "relay" | "themes" | "risk" | "background";
+type SectionLayout = {
+  renderSection?: (id: ReviewSectionId, content: ReactNode) => ReactNode;
+  relayDetails?: (stockTable: ReactNode) => ReactNode;
+  themeTiming?: ReactNode;
+};
+type MarketProps = SectionLayout & { day?: string; refreshNonce: number; recentDay?: string | null };
+
+function ReviewTradingSignals({ day, revision }: { day: string; revision: number }) {
+  return <div className="mb-4 grid min-w-0 gap-3 xl:grid-cols-2">
+    <ReviewBoardMetrics day={day} revision={revision} />
+    <ReviewAbnormalAlerts day={day} revision={revision} />
+  </div>;
+}
+
+function HistoricalMarket({ day, refreshNonce, report, archived, ...layout }: MarketProps & { day: string; report?: boolean; archived?: PageResult }) {
+  const breadthEnv = verifiedEnvelope(archived, "breadth", day);
+  const snapshot = useMemo(() => parseBreadth(breadthEnv), [breadthEnv]);
+  const [breadth, setBreadth] = useState<Breadth | null>(() => peekHistoricalBreadth(day) ?? null);
+  const [breadthError, setBreadthError] = useState("");
+  const breadthRevision = useRef(refreshNonce);
+  useEffect(() => {
+    if (report) return;
+    const refresh = breadthRevision.current !== refreshNonce;
+    breadthRevision.current = refreshNonce;
+    if (snapshot && !refresh) return;
+    let active = true;
+    setBreadthError("");
+    void readHistoricalBreadth(day, refresh).then(value => { if (active) setBreadth(value); })
+      .catch(error => { if (active) setBreadthError(error instanceof Error ? error.message : String(error)); });
+    return () => { active = false; };
+  }, [day, report, refreshNonce, snapshot]);
+  const [data, setData] = useState<ReviewTiersResult | null>(() => report ? null : peekDailyTiers(day) ?? null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(!data);
+  const [retry, setRetry] = useState(0);
+  const previous = useRef({ refreshNonce, retry });
+
+  useEffect(() => {
+    if (report || archived) return;
+    let active = true;
+    const force = previous.current.refreshNonce !== refreshNonce || previous.current.retry !== retry;
+    previous.current = { refreshNonce, retry };
+    const cached = force ? null : peekDailyTiers(day) ?? null;
+    setBusy(!cached);
+    setData(cached);
+    setError("");
+    void readDailyTiers(day, force).then(value => {
+      if (!active) return;
+      if (value.date !== day) { setError("返回的分档日期与所选复盘日不一致。"); return; }
+      setData(value);
+    }).catch(e => {
+      if (active) setError(e instanceof Error ? e.message : String(e));
+    }).finally(() => { if (active) setBusy(false); });
+    return () => { active = false; };
+  }, [day, refreshNonce, retry, report, Boolean(archived)]);
+
+  const fundsCards = <HistoricalFundsCards day={day} refreshNonce={refreshNonce} archived={archived}/>;
+  if (archived) return <DailyMarketContent {...layout} archived={archived} historicalBreadth={breadth ?? snapshot} historicalFunds={fundsCards}
+    breadthError={breadthError} selectedDay={day} expectedDay={day} section={report ? "report" : "overview"} refreshNonce={refreshNonce} />;
+
+  if (layout.renderSection && !report) {
+    const render = layout.renderSection;
+    const totals = exchangeHeadline(breadth) ?? breadth;
+    const heights = data?.groups.flatMap(group => group.stocks.flatMap(stock => stock.boards == null ? [] : [stock.boards])) ?? [];
+    return <>
+      {render("market", <>
+        <h3 className="text-sm font-semibold">收盘概况</h3>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <Stat k="上涨 / 下跌" v={totals ? <><span className="text-danger">{totals.up ?? "—"}</span> / <span className="text-success">{totals.down ?? "—"}</span></> : "—"} />
+          <Stat k="沪深京成交额" v={yiText(totals?.amount ?? null)} />
+          <Stat k="涨停 / 跌停" v={`${breadth?.limitUp ?? "—"} / ${breadth?.limitDown ?? "—"}`} sub="东财分布中单列的涨跌停档" />
+          <a href="#review-ladder" className="rounded-lg focus-visible:outline-primary"><Stat k="最高连板" v={heights.length ? `${Math.max(...heights)} 板` : "—"} sub="收盘涨停池" /></a>
+        </div>
+        <ReviewMarketCharts day={day} revision={refreshNonce} />
+        <BreadthCard breadth={breadth} page={null} done={Boolean(breadthError || breadth)} error={breadthError} />
+      </>)}
+      {render("emotion", <ReviewSentimentRhythm day={day} revision={refreshNonce} />)}
+      {render("relay", <>
+        <ReviewBoardMetrics day={day} revision={refreshNonce} />
+        {layout.relayDetails?.(null)}
+        <ReviewBrokenPool day={day} revision={refreshNonce} />
+      </>)}
+      {render("themes", <>
+        <ReviewTiersCard data={data} loading={busy} error={error} bizDay={day} onRefresh={() => setRetry(n => n + 1)} />
+        {layout.themeTiming}
+        {fundsCards}
+        <ReviewDragon day={day} revision={refreshNonce} />
+      </>)}
+      {render("risk", <ReviewAbnormalAlerts day={day} revision={refreshNonce} />)}
+      {render("background", <p className="text-sm text-muted-foreground">{day} 尚无市场背景收盘归档。</p>)}
+    </>;
+  }
+  return <section className="mb-4">
+    <p className="mb-3 text-sm text-muted-foreground">{report
+      ? `${day} 缺少生成市场报告所需的整屏历史快照。`
+      : `${day} · 收盘盘面`}</p>
+    {!report && <ReviewMarketCharts key={day} day={day} revision={refreshNonce} />}
+    {!report && <ReviewSentimentRhythm day={day} revision={refreshNonce} />}
+    {!report && <BreadthCard breadth={breadth} page={null} done={Boolean(breadthError || breadth)} error={breadthError} />}
+    {!report && <ReviewTradingSignals day={day} revision={refreshNonce} />}
+    {!report && <ReviewBrokenPool day={day} revision={refreshNonce} />}
+    {!report && <ReviewTiersCard data={data} loading={busy} error={error} bizDay={day} onRefresh={() => setRetry(n => n + 1)} />}
+    {!report && fundsCards}
+    {!report && <ReviewDragon key={day} day={day} revision={refreshNonce} />}
+  </section>;
+}
+
+function ReviewMarket({ day, refreshNonce, recentDay, report, ...layout }: MarketProps & { report?: boolean }) {
+  if (day && recentDay && day !== recentDay) {
+    const archived = report ? peekArchivedMarket(day, "review") : archivedOverview(day);
+    return <HistoricalMarket {...layout} key={day} day={day} archived={archived ?? undefined} refreshNonce={refreshNonce} report={report} />;
+  }
+  return <DailyMarketContent {...layout} key={day} selectedDay={day} expectedDay={day ?? recentDay} refreshNonce={refreshNonce} section={report ? "report" : "overview"} />;
+}
+
+export function MarketOverview(props: MarketProps) {
+  return <ReviewMarket {...props} />;
+}
+
+export function MarketInterpretation(props: MarketProps) {
+  return <ReviewMarket {...props} report />;
+}
+
 export function DailyReview() {
+  return <DailyMarketContent section="snapshot" />;
+}
+
+function useMarketDetail(query: "review_indicators" | "review_funds", enabled: boolean, mode: ReviewMode,
+  day: string | undefined, live: boolean | undefined, refreshNonce: number) {
+  const [data, setData] = useState<PageResult | null>(null);
+  const [error, setError] = useState("");
+  const previous = useRef(refreshNonce);
+  useEffect(() => {
+    if (!enabled || !day) return;
+    let active = true;
+    const refresh = previous.current !== refreshNonce;
+    previous.current = refreshNonce;
+    setData(refresh ? null : peekDailyMarket(mode, query, day) ?? null);
+    setError("");
+    void readDailyMarket(mode, refresh, query, day).then(detail => {
+      if (!active) return;
+      if (detail.context.review_date !== day || Boolean(detail.context.live) !== Boolean(live)) {
+        setError("市场时段已变化，请刷新复盘日后再查看明细。");
+        return;
+      }
+      setData(detail);
+    }).catch(e => { if (active) setError(e instanceof Error ? e.message : String(e)); });
+    return () => { active = false; };
+  }, [enabled, mode, day, live, refreshNonce, query]);
+  return { data: data?.context.review_date === day && Boolean(data?.context.live) === Boolean(live) ? data : null, error };
+}
+
+function DailyMarketContent({ section, selectedDay, expectedDay, archived, historicalBreadth, historicalFunds, breadthError, refreshNonce = 0, ...layout }: SectionLayout & {
+  section: "snapshot" | "overview" | "report"; selectedDay?: string; expectedDay?: string | null; archived?: PageResult; refreshNonce?: number;
+  historicalBreadth?: Breadth | null; historicalFunds?: ReactNode; breadthError?: string;
+}) {
+  const overview = section === "overview";
+  const [shortOpen, setShortOpen] = useState(true);
+  const [longOpen, setLongOpen] = useState(true);
+  const [fundsOpen, setFundsOpen] = useState(true);
+  const standalone = section === "snapshot";
+  const reporting = section === "report";
   const fetchingRef = useRef(false);
-  const [mode, setMode] = useState<ViewMode>("live");
+  const forceTiers = useRef(false);
+  const [mode, setMode] = useState<ReviewMode>(standalone ? "live" : "close");
+  const fullQuery = standalone ? "market_snapshot" : "review";
   const [review, setReview] = useState("");
   /** 这份复盘是按哪个业务日的数据写的：刷新后业务日可能变，保存和显示都按写的那天（审计第三轮 C4） */
   const [reviewDay, setReviewDay] = useState<string | null>(null);
@@ -97,28 +439,31 @@ export function DailyReview() {
   const [globalErr, setGlobalErr] = useState<string | null>(null);
   const [globalDone, setGlobalDone] = useState(false);
 
-  /**
-   * 🔴 业务日与各块状态**由 Core 一次算好**（`/page/review`），不再让每块自己判。
-   *    页面各自拼旧端点时实测出现过：标题与"市场情绪"是 08-27，"短线情绪"却是 08-26 ——
-   *    同一屏跨了两天，而**页面上看不出任何异常**。
-   * 🔴 这一屏要的全部数据(指数中长线、涨跌分布、短线、资金、两融、估值)都在这一次请求里;
-   *    页面不再另拉实时行情补价格 —— 看上一个交易日时那是今天的价,和那一天对不上。
-   */
-  const [pageMeta, setPageMeta] = useState<PageResult | null>(null);
+  // 盘面按组显示；每组的业务日和时段由服务端给出，合并时核对。
+  // 市场报告继续从完整查询取得同一轮快照。
+  const [basePage, setPageMeta] = useState<PageResult | null>(() => archived ?? (overview ? peekMarketOverview(mode, selectedDay) : peekDailyMarket(mode, fullQuery, selectedDay) ?? null));
   const [pageErr, setPageErr] = useState<string | null>(null);
-  const [ovDone, setOvDone] = useState(false);
+  const [ovDone, setOvDone] = useState(Boolean(archived || (basePage && (!overview || basePage.blocks.length === 4))));
 
-  const loadPage = async (refresh = false, view: ViewMode = mode) => {
+  const loadPage = async (refresh = false, view: ReviewMode = mode) => {
+    if (archived) { setGlobalDone(true); setOvDone(true); return; }
     if (fetchingRef.current || reviewLoading) return;
     fetchingRef.current = true;
-    setOvDone(false); setPageMeta(null); setPageErr(null);
-    setGlobalDone(false); setGlobalErr(null); setGlobalIdx([]);
-    const globalTask = api.globalIndices(refresh).then(setGlobalIdx)
+    forceTiers.current = refresh;
+    const cached = refresh ? null : overview ? peekMarketOverview(view, selectedDay) : peekDailyMarket(view, fullQuery, selectedDay) ?? null;
+    setOvDone(Boolean(cached && (!overview || cached.blocks.length === 4))); setPageMeta(cached); setPageErr(null);
+    if (standalone) {
+      setGlobalDone(false); setGlobalErr(null); setGlobalIdx([]);
+    } else {
+      setGlobalDone(true);
+    }
+    const globalTask = !standalone ? Promise.resolve() : readDailyIndices(refresh).then(setGlobalIdx)
       .catch((e) => setGlobalErr(e instanceof Error ? e.message : "全球指数获取失败"))
       .finally(() => setGlobalDone(true));
     // 默认要「今天·盘中」:盘中打开就是此刻的市场;盘前 / 收盘后 / 休市日后端不理会 live,照常给完整的一天
-    const pageTask = backend.page("review", { ...(refresh ? { refresh: true } : {}), ...(view === "live" ? { mode: "live" as const } : {}) })
-      .then(setPageMeta)
+    const pageTask = (overview
+      ? loadMarketOverview(view, refresh, selectedDay, (page, error) => { setPageMeta(page); setPageErr(error); })
+      : readDailyMarket(view, refresh, fullQuery, selectedDay).then(setPageMeta))
       // 🔴 不吞:取不到这一屏 = 业务日与缺口保护都没了,必须让用户看见
       .catch((e) => { setPageMeta(null); setPageErr(e instanceof Error ? e.message : String(e)); })
       .finally(() => setOvDone(true));
@@ -128,7 +473,7 @@ export function DailyReview() {
 
   useEffect(() => { void loadPage(); }, []);
 
-  const switchMode = (m: ViewMode) => {
+  const switchMode = (m: ReviewMode) => {
     if (m === mode || fetchingRef.current || reviewLoading) return;
     setMode(m);
     setReview("");
@@ -136,8 +481,19 @@ export function DailyReview() {
   };
 
   /** 这一屏在看哪一天 —— **只认 Core 给的业务日**（拿不到就是 null，不拿本地日期顶上） */
-  const bizDay = pageMeta ? pageMeta.context.review_date ?? pageMeta.context.last_trading_day : null;
-  const ctx = pageMeta?.context;
+  const bizDay = basePage ? basePage.context.review_date ?? basePage.context.last_trading_day : null;
+  const ctx = basePage?.context;
+  const dayMatches = Boolean(bizDay && (!expectedDay || expectedDay === bizDay));
+  const indicators = useMarketDetail("review_indicators", overview && !archived && dayMatches && (shortOpen || longOpen),
+    mode, bizDay ?? undefined, ctx?.live, refreshNonce);
+  const funds = useMarketDetail("review_funds", overview && !archived && dayMatches && fundsOpen,
+    mode, bizDay ?? undefined, ctx?.live, refreshNonce);
+  const pageMeta = useMemo(() => {
+    if (!basePage || standalone) return basePage;
+    const details = [indicators.data, funds.data].filter((entry): entry is PageResult => Boolean(entry));
+    return closedReviewPage(basePage, details);
+  }, [basePage, standalone, indicators.data, funds.data]);
+
   const R = useMemo(() => parseReview(pageMeta), [pageMeta]);
   const palette = usePalette();
 
@@ -156,7 +512,7 @@ export function DailyReview() {
     setTiersErr("");
     setTiersFor(null);
     try {
-      const r = await backend.reviewTiers({ date: day, refresh });
+      const r = await readDailyTiers(day, refresh);
       if (my === tiersSeq.current) setTiers(r);
     } catch (e) {
       if (my === tiersSeq.current) { setTiers(null); setTiersErr(e instanceof Error ? e.message : String(e)); }
@@ -165,16 +521,31 @@ export function DailyReview() {
     }
   };
   useEffect(() => {
-    if (bizDay) void loadTiers(bizDay, false);
+    if (overview && !shortOpen) {
+      tiersSeq.current++;
+      setTiersLoading(false); setTiersFor(bizDay);
+    } else if (bizDay && dayMatches) {
+      void loadTiers(bizDay, forceTiers.current);
+      forceTiers.current = false;
+    }
     else { tiersSeq.current++; setTiersLoading(false); }
-  }, [bizDay]);
+  }, [bizDay, overview ? null : basePage, dayMatches, overview, shortOpen]);
   // 业务日没拿到(这一屏失败)就没有分档可等;页面那块结束即可
   const tiersReady = bizDay ? tiersFor === bizDay : ovDone;
   const dataReady = globalDone && ovDone && tiersReady;
+  const indicatorsDone = overview ? Boolean(archived || indicators.data || indicators.error) : ovDone;
+  const fundsDone = overview ? Boolean(archived || funds.data || funds.error) : ovDone;
+
+  const seenRefresh = useRef(refreshNonce);
+  useEffect(() => {
+    if (seenRefresh.current === refreshNonce || !(overview ? ovDone : dataReady) || reviewLoading || fetchingRef.current) return;
+    seenRefresh.current = refreshNonce;
+    void loadPage(true);
+  }, [refreshNonce, overview, ovDone, dataReady, reviewLoading]);
 
   const runReview = async () => {
     // Ref also covers a refresh click before React commits the pending flags.
-    if (!dataReady || fetchingRef.current || reviewLoading) return;
+    if (!dataReady || !bizDay || fetchingRef.current || reviewLoading) return;
     setReviewErr(null);
     setNeedConfig(false);
     if (!hasLlm()) { setNeedConfig(true); return; }
@@ -205,6 +576,7 @@ export function DailyReview() {
    * 🔴 只给数字不给读法，等于让模型替上游打包票;块没取到写【缺口】,空着会被读成"今天没有"。
    */
   const dataSummary = (() => {
+    if (overview) return "";
     const lines: string[] = [];
     if (!dataReady) lines.push("【加载中】本轮数据尚未全部返回。不要据此作整屏复盘，等待加载结束。");
     if (ovDone && (pageErr || !pageMeta)) lines.push(`【缺口】这一屏没取到${pageErr ? `（${pageErr}）` : ""}，业务日和各块数据都不可用，不要下结论。`);
@@ -222,7 +594,7 @@ export function DailyReview() {
     const gi = globalIdx.filter((i) => i.price !== null && i.change_pct !== null);
     lines.push(gi.length
       ? `【海外指数·腾讯快照，非逐笔实时】${gi.map((i) => `${i.name} ${i.price}（${i.change_pct! > 0 ? "+" : ""}${i.change_pct}%）；取数时间 ${i.fetched_at ?? "未知"}；价格证据 ${i.evidence_id ?? "未提供"}${i.note ? `；读法 ${i.note}` : ""}`).join("；")}`
-      : `【海外指数】${globalErr ?? (globalDone ? "未取得可用数据" : "仍在加载")}；没有可引用的数据，不就此下结论。`);
+      : `【海外指数】${standalone ? globalErr ?? (globalDone ? "未取得可用数据" : "仍在加载") : "缺少该复盘日的收盘归档"}；没有可引用的数据，不就此下结论。`);
     const missingGlobal = globalIdx.filter((i) => i.price === null || i.change_pct === null);
     if (missingGlobal.length) lines.push(`【海外指数缺口】${missingGlobal.map((i) => i.name).join("、")}报价不完整，不据此下结论。`);
     // 分档只认业务日那天的;没取到写缺口,别让模型以为「今天没有集中的行业」
@@ -240,27 +612,21 @@ export function DailyReview() {
 
   // 右上角那个 AI 按钮聊的就是这一页（登记处见 core/ai/pageContext）
   useAiPage({
-    key: "daily-review",
-    title: "每日复盘",
+    key: `market:${section}:${bizDay ?? "pending"}`,
+    title: reporting ? "市场解读" : "市场快照",
     context: `大盘数据：${dataSummary}`,
     suggestions: ["市场现在处在什么状态", "短线情绪怎么样", "各指数离均线和一年高点多远"],
-  });
+  }, section !== "overview" && (!expectedDay || expectedDay === bizDay));
 
-  const { breadth: B, short: S, trend: T, margin: M, valuation: V, flow: F, turnover: TV, dragon: D } = R;
+  const { short: S, trend: T, margin: M, valuation: V, flow: F, turnover: TV, dragon: D } = R;
+  const B = historicalBreadth ?? R.breadth;
+  const threeMarkets = exchangeHeadline(B);
+  const headline = threeMarkets ?? B;
   const idx = T?.indices ?? [];
   const aboveCount = (key: "ma20" | "ma60" | "ma250") => {
     const known = idx.map((i) => aboveMa(i.close, i[key])).filter((x): x is boolean => x !== null);
     return known.length ? `${known.filter(Boolean).length}/${known.length}` : "—";
   };
-
-  const distOption = useMemo(() => B && B.buckets.length ? {
-    grid: { left: 36, right: 8, top: 18, bottom: 24 },
-    tooltip: { trigger: "axis", backgroundColor: palette.tooltipBg, textStyle: { color: palette.tooltipText },
-      formatter: (ps: { dataIndex: number; value: number }[]) => `${B.buckets[ps[0]!.dataIndex]!.label}:${ps[0]!.value} 只` },
-    xAxis: { type: "category", data: B.buckets.map((b) => bucketShort(b.key, b.label)), axisLabel: { color: palette.text, fontSize: 10, interval: 0, hideOverlap: false }, axisLine: { lineStyle: { color: palette.axis } } },
-    yAxis: { type: "value", axisLabel: { color: palette.text, fontSize: 10 }, splitLine: { lineStyle: { color: palette.grid } } },
-    series: [{ type: "bar", data: B.buckets.map((b) => ({ value: b.count, itemStyle: { color: b.key > 0 ? palette.rise : b.key < 0 ? palette.fall : palette.benchmark } })), label: { show: true, position: "top", fontSize: 9, color: palette.text } }],
-  } : null, [B, palette]);
 
   const amountOption = useMemo(() => T && T.amounts.length ? {
     grid: { left: 52, right: 64, top: 16, bottom: 28 },
@@ -289,24 +655,311 @@ export function DailyReview() {
     series: [{ type: "line", name: "两融余额", showSymbol: false, data: M.series.map((x) => (x.balance === null ? null : Math.round(x.balance / 1e8))), lineStyle: { color: palette.primary, width: 2 }, itemStyle: { color: palette.primary } }],
   } : null, [M, palette]);
 
-  const flowIn = F ? F.rows.filter((x) => x.net !== null && x.net > 0).slice(0, 8) : [];
-  // 🔴 判据是**净额的正负**，不是"在列表的哪一头"(旧写法把末尾当流出,实测流出榜第一名是 +8.04 亿)
-  const flowOut = F ? F.rows.filter((x) => x.net !== null && x.net < 0).sort((a, b) => a.net! - b.net!).slice(0, 8) : [];
   const lianban = S ? S.stocks.filter((x) => (x.boards ?? 0) >= 2) : [];
-  const hasIndustry = !!TV?.rows.some((r) => r.industry);
-  const hasMcap = !!TV?.rows.some((r) => r.mcap !== null);
 
+  if (expectedDay && bizDay && expectedDay !== bizDay) {
+    return <HistoricalMarket {...layout} key={expectedDay} day={expectedDay} refreshNonce={refreshNonce} report={reporting} />;
+  }
+  const marketNotices = (<>
+    {pageErr && (
+    <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+      {pageMeta ? "部分指标未取得" : "市场数据未取得"}：{pageErr}
+    </div>
+  )}
+
+  {/*
+    🔴 **这一屏在看哪一天，要写在屏上**;缺了哪块也要说：没取到就说没取到，别让空白被读成"今天没有"。
+       换了备用来源的块写出口径 —— 新浪的板块分类和净额算法都和东财不一样。
+  */}
+  {pageMeta && (standalone || pageMeta.blocks.some(b => b.status !== "ok" || b.via_fallback)) && (
+    <div className="mb-5 space-y-1 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        {standalone && <span className="text-muted-foreground">
+          业务日 <span className="font-medium text-foreground">{bizDay}</span>
+          {ctx?.review_reason && <span className="ml-1 text-muted-foreground/70">（{ctx.review_reason}）</span>}
+        </span>}
+        {standalone && pageMeta.mixed_ages && <span className="text-warning">各数据源的取数日期不同</span>}
+        {standalone && ctx?.realtime_matches_review_day === false && <span className="text-warning">实时快照与业务日不同，数据日期见各项指标。</span>}
+      </div>
+      {pageMeta.blocks.some((b) => b.status !== "ok" || b.via_fallback) && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
+          {pageMeta.blocks.filter((b) => b.status === "failed" || b.status === "missing").map((b) => (
+            <span key={b.id}><span className="text-warning">缺</span> {b.title}（{blockWhy(b).slice(0, 40)}）</span>
+          ))}
+          {pageMeta.blocks.filter((b) => b.status === "partial").map((b) => <span key={b.id}>{b.title} 只取到一部分</span>)}
+          {pageMeta.blocks.filter((b) => b.via_fallback).map((b) => <span key={b.id}>{b.title} 换了备用来源</span>)}
+        </div>
+      )}
+    </div>
+  )}
+  </>);
+
+  const heightStat = <Stat k={layout.renderSection ? "最高连板" : "连板高度"} title={SPECULATION_RULE}
+    v={S?.maxBoards != null ? `${S.maxBoards} 板` : "—"}
+    sub={S ? <>2 板及以上 {S.lianban ?? "—"} 只{S.label && <> · 题材热度 <span className="text-primary">{S.label}</span></>}</> : ovDone ? "没取到" : "加载中"} />;
+
+  const closingOverview = (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+    <Stat k={threeMarkets ? "沪深京涨跌面" : B ? (B.fromDailyBars ? "涨跌面 · 通达信日行情" : "涨跌面 · 东财分布") : "涨跌面"} title={BREADTH_RULE} v={headline ? <><span className="text-danger">{headline.up ?? "—"}</span> / <span className="text-success">{headline.down ?? "—"}</span></> : "—"}
+      sub={headline && B ? <>上涨占比 {shareText(headline.upShare)}{headline.label && <> · <span className="text-primary">{headline.label}</span></>}{staleNote(pageMeta, "breadth", B.date) && " · 此刻快照"}</> : ovDone ? "没取到" : "加载中"} />
+    {threeMarkets?.amount != null ? <Stat k={`沪深京成交额 · ${B?.date?.slice(5) ?? ""}`} v={yiText(threeMarkets.amount)}
+      sub={T?.lastAmount != null && T.amountDate === B?.date ? `沪深两市 ${yiText(T.lastAmount)}` : "三所 A 股收盘成交额"} /> : <Stat k={`沪深两市成交额${T?.amountDate ? ` · ${T.amountDate.slice(5)}` : ""}${T?.partial ? " · 盘中累计" : ""}`} v={T?.lastAmount != null ? yiText(T.lastAmount) : "—"}
+      title={T?.partial ? "今天还没收盘:这是截至取数时刻的累计,不和整天的均值比" : undefined}
+      sub={T?.lastAmount == null ? (ovDone ? "没取到" : "加载中")
+        : T.partial ? <>还没收完 · 上一个交易日 {yiText(T.prevAmount)} · 20 日均 {yiText(T.ma20)}</>
+        : <>比 20 日均 <span className={pctColor(T.vsMa20)}>{pctText(T.vsMa20, 1)}</span> · 60 日均 <span className={pctColor(T.vsMa60)}>{pctText(T.vsMa60, 1)}</span></>} />}
+    <Stat k="涨停 / 跌停 · 东财股票池" v={S ? <><span className="text-danger">{S.zt ?? "—"}</span> / <span className="text-success">{S.dt ?? "—"}</span></> : "—"}
+      sub={S ? <>炸板 {S.zb ?? "—"} · 封板率 {shareText(S.sealRate)}</> : ovDone ? "没取到" : "加载中"} />
+    {layout.renderSection ? <a href="#review-ladder" className="rounded-lg focus-visible:outline-primary">{heightStat}</a> : heightStat}
+    {standalone && <Stat k="昨日涨停今日" v={<span className={pctColor(S?.yesterday?.avg)}>{pctText(S?.yesterday?.avg)}</span>}
+      sub={S?.yesterday ? <>平均涨跌 · 上涨占比 {shareText(S.yesterday.upShare)} · 晋级 {shareText(S.promotionAll?.rate)}</> : ovDone ? "没取到" : "加载中"} />
+    }
+    {!layout.renderSection && <Stat k="站上 20 日线的指数" title="收盘价 ≥ 均线的指数个数 / 取到的指数个数;只是位置关系" v={aboveCount("ma20")}
+      sub={<>站上 60 日线 {aboveCount("ma60")} · 250 日线 {aboveCount("ma250")}</>} />
+    }
+    {!overview && <><Stat k={`两融余额${M?.date ? ` · ${M.date.slice(5)}` : ""}`} v={M?.balance != null ? yiText(M.balance) : "—"}
+      sub={M ? <>比 5 个交易日前 <span className={pctColor(M.chg5)}>{signedYi(M.chg5)}</span></> : ovDone ? "没取到" : "加载中"} />
+    <Stat k={`沪深300${V?.date ? ` · ${V.date.slice(5)}` : ""}`} title="市盈率、股息率来自中证官网(总股本口径);10 年国债来自中债。只是收益率的差,不是估值判断"
+      v={V?.pe != null ? `${V.pe} 倍` : "—"}
+      sub={V ? <>股息率 {V.dy ?? "—"}% · 10 年国债 {V.y10 ?? "—"}%</> : ovDone ? "没取到" : "加载中"} />
+    </>}
+  </div>
+  );
+
+  const indexQuotes = (
+    <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+    {idx.length === 0
+      ? [1, 2, 3, 4].map((i) => (
+          <GlassCard key={i} className="p-3">
+            <p className="text-xs text-muted-foreground">{ovDone ? "指数没取到" : "加载中…"}</p>
+            <p className="mt-1 font-mono text-lg font-bold text-muted-foreground/40">—</p>
+          </GlassCard>
+        ))
+      : idx.map((i) => (
+          <GlassCard key={i.code} className="p-3">
+            <p className="truncate text-xs text-muted-foreground">{i.name}</p>
+            <p className={cn("mt-1 font-mono text-lg font-bold", pctColor(i.chg))}>{fmt(i.close)}</p>
+            <p className={cn("text-xs", pctColor(i.chg))}>{pctText(i.chg)}</p>
+            <p className="mt-1 text-[11px] text-muted-foreground">20 日 <span className={pctColor(i.r20)}>{pctText(i.r20, 1)}</span> · 60 日 <span className={pctColor(i.r60)}>{pctText(i.r60, 1)}</span></p>
+          </GlassCard>
+        ))}
+  </div>
+  );
+
+  const globalSnapshot = (
+    standalone ? <details open>
+    <summary className="mb-2 w-fit cursor-pointer text-sm font-medium"><Globe aria-hidden="true" className="mr-1 inline h-4 w-4" />全球市场快照</summary>
+    <p className="mb-2 text-xs text-muted-foreground">腾讯行情快照 · 取数时刻见各指数</p>
+  {globalIdx.length === 0 && <p role="status" className="mb-2 text-sm text-muted-foreground">
+    {globalErr ?? (globalDone ? "全球指数未取得可用数据，不代表市场没有变化。" : "全球指数加载中…")}
+  </p>}
+  <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+    {globalIdx.map((g) => (
+      <GlassCard key={g.key} className="p-3">
+        <p className="truncate text-xs text-muted-foreground">{g.name} <span className="text-muted-foreground/40">{g.region}</span></p>
+        <p title={`取数时间：${g.fetched_at ?? "未知"}；价格证据：${g.evidence_id ?? "未取得"}`} className={cn("mt-1 font-mono text-lg font-bold", g.change_pct == null ? "text-foreground" : pctColor(g.change_pct))}>{g.price ?? "—"}</p>
+        <p className={cn("text-xs", g.change_pct == null ? "text-muted-foreground" : pctColor(g.change_pct))}>
+          {g.change_pct == null ? "—" : `${g.change_pct > 0 ? "+" : ""}${g.change_pct}%`}
+        </p>
+        <p className="mt-1 text-[11px] text-muted-foreground">{g.fetched_at ? `取数：${new Date(g.fetched_at).toLocaleString()}` : "取数时间未知"}</p>
+        {g.note && <p role="status" className="mt-1 text-[11px] text-muted-foreground">{g.note}</p>}
+      </GlassCard>
+    ))}
+  </div>
+  </details> : <p className="text-xs text-muted-foreground">全球指数暂无该复盘日的收盘归档。</p>
+  );
+
+  const stockTable = (<>
+    <p className="mb-1.5 text-[11px] text-muted-foreground">连板股(2 板以上连续涨停)· 价格与成交额是业务日那天的 · 题材是同花顺的市场叙事,不是核验过的因果 · 非推荐 / 非预测</p>
+   {lianban.length === 0 ? <p className="text-xs text-muted-foreground/70">{S?.stocks.length ? "这一天没有 2 板以上的个股" : "涨停池没取到"}</p> : (
+     <div className="overflow-x-auto">
+       <table className="w-full text-sm">
+         <thead>
+           <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+             {["名称", "连板", "首封", "价格", "成交额", "流通市值", "行业", "同花顺题材"].map((h) => <th key={h} className="whitespace-nowrap px-2 py-2 font-medium">{h}</th>)}
+           </tr>
+         </thead>
+         <tbody>
+           {lianban.slice(0, 40).map((s) => (
+             <tr key={s.code} className="border-b border-border/30">
+               <td className="whitespace-nowrap px-2 py-2"><span className="font-medium">{s.name || s.code}</span> <span className="text-xs text-muted-foreground/60">{s.code}</span></td>
+               <td className="whitespace-nowrap px-2 py-2"><BoardBadge boards={s.boards!} /></td>
+               <td className="px-2 py-2 font-mono text-xs">{s.firstSeal ?? "—"}</td>
+               <td className="px-2 py-2 font-mono">{fmt(s.price)}</td>
+               <td className="whitespace-nowrap px-2 py-2 font-mono text-muted-foreground">{yiText(s.amount)}</td>
+               <td className="whitespace-nowrap px-2 py-2 font-mono text-muted-foreground">{yiText(s.floatCap)}</td>
+               <td className="whitespace-nowrap px-2 py-2">{s.industry && <ReviewBadge>{s.industry}</ReviewBadge>}</td>
+               <td className="min-w-[10rem] px-2 py-2">
+                 {s.reason ? <div className="flex flex-wrap gap-1" title={s.reason}>
+                   {s.reason.split(/(?<!\+)\+(?!\+)|＋/).map((tag, index) => {
+                     const label = tag.trim();
+                     return label && <ReviewBadge tone="blue" key={index}>{label}</ReviewBadge>;
+                   })}
+                 </div> : <span className="text-xs text-muted-foreground">—</span>}
+               </td>
+             </tr>
+           ))}
+         </tbody>
+       </table>
+     </div>
+   )}
+  </>);
+
+  const backgroundCharts = (<>
+    <GlassCard className="mb-4">
+      <BlockHead title="主要指数的中长期位置" page={pageMeta} id="trend" date={T?.date ?? null} />
+      {!T || idx.length === 0 ? <Pending page={pageMeta} id="trend" done={ovDone} /> : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+                {["指数", "收盘", "当日", "5 日", "20 日", "60 日", "250 日", "年初至今", "离一年高点", "20 / 60 / 250 日线"].map((h) => <th key={h} className="whitespace-nowrap px-2 py-2 font-medium">{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {idx.map((i) => (
+                <tr key={i.code} className="border-b border-border/30">
+                  <td className="whitespace-nowrap px-2 py-2 font-medium">{i.name}</td>
+                  <td className="px-2 py-2 font-mono">{fmt(i.close)}</td>
+                  {[i.chg, i.r5, i.r20, i.r60, i.r250, i.ytd].map((v, k) => <td key={k} className={cn("whitespace-nowrap px-2 py-2 font-mono", pctColor(v))}>{pctText(v)}</td>)}
+                  <td className={cn("whitespace-nowrap px-2 py-2 font-mono", pctColor(i.offHigh))} title={i.high250Date ? `一年最高收盘 ${fmt(i.high250)}(${i.high250Date})` : undefined}>{pctText(i.offHigh)}</td>
+                  <td className="whitespace-nowrap px-2 py-2 text-xs">
+                    {([["20", i.ma20], ["60", i.ma60], ["250", i.ma250]] as const).map(([n, ma]) => {
+                      const a = aboveMa(i.close, ma);
+                      return <span key={n} title={ma == null ? `${n} 日均线没算出来(日线不够)` : `${n} 日均线 ${fmt(ma)}`} className={cn("mr-1.5", a === null ? "text-muted-foreground/50" : a ? "text-danger" : "text-success")}>{a === null ? "—" : a ? "上" : "下"}</span>;
+                    })}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="mt-2 text-[11px] text-muted-foreground">N 日涨跌 = 最新收盘 ÷ N 个交易日前收盘 − 1;离一年高点 = 最新收盘 ÷ 250 日最高收盘 − 1;「上 / 下」= 收盘在均线上方 / 下方。{T.missing.length > 0 && <span className="text-warning"> 缺:{T.missing.join(";")}</span>}</p>
+        </div>
+      )}
+    </GlassCard>
+
+    <div className="mb-4 grid gap-3 lg:grid-cols-2">
+      <GlassCard className="min-w-0">
+        <BlockHead title="沪深两市成交额趋势（亿元）" page={pageMeta} id="trend" date={T?.amountDate ?? null}
+          extra={T?.lastAmount != null && <span className="text-[11px] text-muted-foreground">{T.partial ? `今天盘中累计 ${yiText(T.lastAmount)}(灰色那根,还没收完)` : `最新 ${yiText(T.lastAmount)}`} · 20 日均 {yiText(T.ma20)} · 60 日均 {yiText(T.ma60)}</span>} />
+        {!amountOption ? <Pending page={pageMeta} id="trend" done={ovDone} /> : <EChart option={amountOption} height={220} />}
+        <p className="mt-1 text-[11px] text-muted-foreground">沪深两市成交额 = 上证指数成交额 + 深证综指成交额;虚线是{T?.partial ? "截至上一个交易日(不含今天没收完的)" : "截至最新一天"}的 20 / 60 日均值。</p>
+      </GlassCard>
+      <GlassCard className="min-w-0">
+        <BlockHead title="两融余额(亿元)" page={pageMeta} id="margin" date={M?.date ?? null}
+          extra={<span className="text-[11px] text-muted-foreground">T 日数据 T+1 发布</span>} />
+        {!marginOption || !M ? <Pending page={pageMeta} id="margin" done={indicatorsDone} /> : <>
+          <EChart option={marginOption} height={160} />
+          <div className="mt-2 grid grid-cols-3 gap-2">
+            <Stat k="比 5 个交易日前" v={<span className={pctColor(M.chg5)}>{signedYi(M.chg5)}</span>} />
+            <Stat k="比 20 个交易日前" v={<span className={pctColor(M.chg20)}>{signedYi(M.chg20)}</span>} />
+            <Stat k="近 5 日融资净买入" v={<span className={pctColor(M.netBuy5)}>{signedYi(M.netBuy5)}</span>} sub={`融资余额占流通市值 ${M.floatPct == null ? "—" : `${M.floatPct.toFixed(2)}%`}`} />
+          </div>
+        </>}
+      </GlassCard>
+    </div>
+
+    <GlassCard>
+      <BlockHead title="沪深300 估值与国债收益率" page={pageMeta} id="valuation" date={V?.date ?? V?.y10Date ?? null} />
+      {!V ? <Pending page={pageMeta} id={blockOf(pageMeta, "valuation") ? "valuation" : "bond"} done={indicatorsDone} /> : <>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <Stat k="市盈率" v={V.pe != null ? `${V.pe} 倍` : "—"} sub={`计算用股本口径 ${V.peCalc ?? "—"} 倍`} />
+          <Stat k="股息率" v={V.dy != null ? `${V.dy}%` : "—"} sub={`计算用股本口径 ${V.dyCalc ?? "—"}%`} />
+          <Stat k="10 年国债收益率" v={V.y10 != null ? `${V.y10}%` : "—"} sub={V.y10Date ?? undefined} />
+          <Stat k="差值(百分点)" v={V.dySpread != null ? `${V.dySpread > 0 ? "+" : ""}${V.dySpread}` : "—"} sub={V.date && V.y10Date && V.date !== V.y10Date ? "两项数据日期不同，差值待更新" : `股息率 − 国债 · 盈利收益率 − 国债 ${V.eySpread == null ? "—" : `${V.eySpread > 0 ? "+" : ""}${V.eySpread}`}`} />
+        </div>
+        <p className="mt-2 text-[11px] text-muted-foreground">盈利收益率 = 1 ÷ 市盈率 = {V.ey ?? "—"}%。市盈率、股息率是中证官网指标文件(总股本口径,不含市净率),国债是中债国债收益率曲线。只是两组收益率的差,不是估值高低的判断。</p>
+      </>}
+    </GlassCard>
+  </>);
+
+  const tiersCard = (
+    <ReviewTiersCard data={bizDay && tiers?.date === bizDay ? tiers : null} loading={tiersLoading || (!bizDay && !ovDone)} error={tiersErr}
+      bizDay={bizDay} onRefresh={() => { if (bizDay) void loadTiers(bizDay, true); }} />
+  );
+
+  const dragonSummary = (<>
+    <BlockHead title="龙虎榜净买卖摘要" page={pageMeta} id="dragon" date={D?.date ?? null}
+      extra={D && <span className="text-[11px] text-muted-foreground">{D.stocks} 只上榜</span>} />
+    {!D ? <Pending page={pageMeta} id="dragon" done={fundsDone} /> : (D.buy.length + D.sell.length === 0) ? <p className="py-3 text-sm text-muted-foreground">这一天的榜单还没出(龙虎榜收盘后才发布)或为空。</p> : (
+      <div className="grid gap-4 md:grid-cols-2">
+        {[
+          { title: "净买入居前", rows: D.buy, color: "text-danger" },
+          { title: "净卖出居前", rows: D.sell, color: "text-success" },
+        ].map((col) => (
+          <div key={col.title}>
+            <h4 className={cn("mb-2 text-xs font-semibold", col.color)}>{col.title}</h4>
+            <div className="space-y-1.5">
+              {col.rows.map((x) => (
+                <div key={x.code} className="border-b border-border/30 pb-1.5 text-sm last:border-0">
+                  <div className="flex items-center gap-2">
+                    <span className="flex-1 truncate"><span className="font-medium">{x.name || x.code}</span> <span className="text-xs text-muted-foreground/60">{x.code}</span></span>
+                    <span className={cn("font-mono text-xs", pctColor(x.pct))}>{pctText(x.pct)}</span>
+                    <span className={cn("w-24 text-right font-mono text-xs", pctColor(x.net))}>{signedYi(x.net)}</span>
+                  </div>
+                  <p className="truncate text-[11px] text-muted-foreground" title={x.reason}>{x.reason}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
+    <p className="mt-2 text-[11px] text-muted-foreground">同一只可能因几条上榜理由各出现一次(统计区间不同),净额不相加,每只只列一条。</p>
+  </>);
+
+  if (overview && layout.renderSection) {
+    const render = layout.renderSection;
+    // An explicit selected day (or the confirmed default day) can load date-keyed
+    // panels alongside the general snapshot even on a cold visit.
+    const day = expectedDay ?? bizDay;
+    const tradeDetails = S && lianban.length > 0 ? <GlassCard>
+      <BlockHead title="连板股成交明细" page={pageMeta} id="zt_pool" date={S.dates.zt} />
+      {stockTable}
+    </GlassCard> : null;
+    return <>
+      {render("market", <>
+        <h3 className="mb-2 text-sm font-semibold">收盘概况</h3>
+        {closingOverview}
+        {day && <ReviewMarketCharts day={day} revision={refreshNonce} />}
+        <h3 className="mb-2 text-sm font-semibold">主要指数表现</h3>
+        {indexQuotes}
+        <BreadthCard breadth={B} page={pageMeta} done={ovDone} error={breadthError} />
+        {marketNotices}
+        {!archived && ctx?.live_available && <Link to="/watch/market" className="text-xs text-primary hover:underline">看今日盘中</Link>}
+      </>)}
+      {render("emotion", day && <ReviewSentimentRhythm day={day} revision={refreshNonce} />)}
+      {render("relay", <>
+        {day && <ReviewBoardMetrics day={day} revision={refreshNonce} />}
+        {layout.relayDetails ? layout.relayDetails(tradeDetails) : tradeDetails}
+        {day && <ReviewBrokenPool day={day} revision={refreshNonce} />}
+      </>)}
+      {render("themes", <>
+        {tiersCard}
+        {layout.themeTiming}
+        {historicalFunds ?? <FundsCards flow={F} turnover={TV} page={pageMeta} flowDone={fundsDone} turnoverDone={fundsDone} flowError={funds.error} turnoverError={funds.error} />}
+        {day && <ReviewDragon day={day} revision={refreshNonce} summary={D ? dragonSummary : undefined} />}
+      </>)}
+      {render("risk", day && <ReviewAbnormalAlerts day={day} revision={refreshNonce} />)}
+      {render("background", <>
+        {indicators.error && <p role="status">{indicators.error}</p>}
+        {idx.length > 0 && <p className="text-xs text-muted-foreground">主要指数站上均线 · 20 日 {aboveCount("ma20")} · 60 日 {aboveCount("ma60")} · 250 日 {aboveCount("ma250")}</p>}
+        {backgroundCharts}
+        <div><h3 className="mb-1 text-sm font-semibold">全球市场快照</h3>{globalSnapshot}</div>
+      </>)}
+    </>;
+  }
   return (
     <div>
       {/* 🔴 标题里的日期用 **Core 算出的业务日**,不用浏览器本地"今天"。业务日还没拿到就先不写日期,别先写一个再改。 */}
-      <PageHeader
-        title="每日复盘"
-        subtitle={`${bizDay ? `${bizDay}${ctx?.live ? "（盘中）" : ""} · ` : ""}市场处在什么状态：涨跌面与短线情绪、中长线趋势与量能、资金去了哪`}
+      {standalone && <><PageHeader
+        title="市场快照"
+        subtitle={`${bizDay ? `${bizDay}${ctx?.live ? "（盘中）" : ""} · ` : ""}涨跌面 · 趋势量能 · 资金`}
       />
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         {ctx?.live_available && (
-          <SegmentedToggle<ViewMode> label="看哪一天" value={ctx.live ? "live" : "close"} disabled={!dataReady || reviewLoading}
+          <SegmentedToggle<ReviewMode> label="看哪一天" value={ctx.live ? "live" : "close"} disabled={!dataReady || reviewLoading}
             onChange={switchMode} options={[{ key: "live", label: "今天 · 盘中" }, { key: "close", label: "上一个交易日 · 完整" }]} />
         )}
         <button onClick={() => loadPage(true)} disabled={reviewLoading || !dataReady}
@@ -316,120 +969,36 @@ export function DailyReview() {
         {!dataReady && <span role="status" className="text-xs text-muted-foreground">数据分批返回中…</span>}
       </div>
 
-      {pageErr && (
-        <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          这一屏没取到：{pageErr}
-          <span className="ml-1 text-destructive/80">—— 业务日与缺口提示都不可用。</span>
-        </div>
-      )}
-
-      {/*
-        🔴 **这一屏在看哪一天，要写在屏上**;缺了哪块也要说：没取到就说没取到，别让空白被读成"今天没有"。
-           换了备用来源的块写出口径 —— 新浪的板块分类和净额算法都和东财不一样。
-      */}
-      {pageMeta && (
-        <div className="mb-5 space-y-1 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs">
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-            <span className="text-muted-foreground">
-              业务日 <span className="font-medium text-foreground">{bizDay}</span>
-              {ctx?.review_reason && <span className="ml-1 text-muted-foreground/70">（{ctx.review_reason}）</span>}
-            </span>
-            {pageMeta.mixed_ages && <span className="text-warning">⚠️ 这一屏的数据来自不同业务日，跨日比较要当心</span>}
-            {ctx?.realtime_matches_review_day === false && <span className="text-warning">涨跌分布、板块资金、成交额榜三个源只给当天：现在显示的是今天此刻的快照，和业务日不是同一天</span>}
-          </div>
-          {pageMeta.blocks.some((b) => b.status !== "ok" || b.via_fallback) && (
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
-              {pageMeta.blocks.filter((b) => b.status === "failed" || b.status === "missing").map((b) => (
-                <span key={b.id}><span className="text-warning">缺</span> {b.title}（{blockWhy(b).slice(0, 40)}）</span>
-              ))}
-              {pageMeta.blocks.filter((b) => b.status === "partial").map((b) => <span key={b.id}>{b.title} 只取到一部分</span>)}
-              {pageMeta.blocks.filter((b) => b.via_fallback).map((b) => <span key={b.id}>{b.title} 换了备用来源</span>)}
-            </div>
-          )}
-        </div>
-      )}
-
+      </>}
+      {overview && !archived && ctx?.live_available && <Link to="/watch/market" className="mb-3 inline-flex text-xs text-primary hover:underline">看今日盘中</Link>}
+      {marketNotices}
+      {!reporting && <>
       {/* 0. 市场状态一眼看:全是事实与按固定规则算的数,不下判断 */}
       <Section icon={Gauge} title="市场状态" hint="一眼看全:涨跌面 · 量能 · 短线 · 中长线位置 · 杠杆 · 股债收益率">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <Stat k="涨跌面" title={BREADTH_RULE} v={B ? <><span className="text-danger">{B.up ?? "—"}</span> / <span className="text-success">{B.down ?? "—"}</span></> : "—"}
-            sub={B ? <>上涨占比 {shareText(B.upShare)}{B.label && <> · <span className="text-primary">{B.label}</span></>}{staleNote(pageMeta, "breadth", B.date) && " · 此刻快照"}</> : ovDone ? "没取到" : "加载中"} />
-          <Stat k={`两市成交额${T?.amountDate ? ` · ${T.amountDate.slice(5)}` : ""}${T?.partial ? " · 盘中累计" : ""}`} v={T?.lastAmount != null ? yiText(T.lastAmount) : "—"}
-            title={T?.partial ? "今天还没收盘:这是截至取数时刻的累计,不和整天的均值比" : undefined}
-            sub={T?.lastAmount == null ? (ovDone ? "没取到" : "加载中")
-              : T.partial ? <>还没收完 · 上一个交易日 {yiText(T.prevAmount)} · 20 日均 {yiText(T.ma20)}</>
-              : <>比 20 日均 <span className={pctColor(T.vsMa20)}>{pctText(T.vsMa20, 1)}</span> · 60 日均 <span className={pctColor(T.vsMa60)}>{pctText(T.vsMa60, 1)}</span></>} />
-          <Stat k="涨停 / 跌停" v={S ? <><span className="text-danger">{S.zt ?? "—"}</span> / <span className="text-success">{S.dt ?? "—"}</span></> : "—"}
-            sub={S ? <>炸板 {S.zb ?? "—"} · 封板率 {shareText(S.sealRate)}</> : ovDone ? "没取到" : "加载中"} />
-          <Stat k="连板高度" title={SPECULATION_RULE} v={S?.maxBoards != null ? `${S.maxBoards} 板` : "—"}
-            sub={S ? <>2 板及以上 {S.lianban ?? "—"} 只{S.label && <> · 题材热度 <span className="text-primary">{S.label}</span></>}</> : ovDone ? "没取到" : "加载中"} />
-          <Stat k="昨日涨停今日" v={<span className={pctColor(S?.yesterday?.avg)}>{pctText(S?.yesterday?.avg)}</span>}
-            sub={S?.yesterday ? <>平均涨跌 · 上涨占比 {shareText(S.yesterday.upShare)} · 晋级 {shareText(S.promotionAll?.rate)}</> : ovDone ? "没取到" : "加载中"} />
-          <Stat k="站上 20 日线的指数" title="收盘价 ≥ 均线的指数个数 / 取到的指数个数;只是位置关系" v={aboveCount("ma20")}
-            sub={<>站上 60 日线 {aboveCount("ma60")} · 250 日线 {aboveCount("ma250")}</>} />
-          <Stat k={`两融余额${M?.date ? ` · ${M.date.slice(5)}` : ""}`} v={M?.balance != null ? yiText(M.balance) : "—"}
-            sub={M ? <>比 5 个交易日前 <span className={pctColor(M.chg5)}>{signedYi(M.chg5)}</span></> : ovDone ? "没取到" : "加载中"} />
-          <Stat k={`沪深300${V?.date ? ` · ${V.date.slice(5)}` : ""}`} title="市盈率、股息率来自中证官网(总股本口径);10 年国债来自中债。只是收益率的差,不是估值判断"
-            v={V?.pe != null ? `${V.pe} 倍` : "—"}
-            sub={V ? <>股息率 {V.dy ?? "—"}% · 10 年国债 {V.y10 ?? "—"}%</> : ovDone ? "没取到" : "加载中"} />
-        </div>
+        {closingOverview}
       </Section>
 
       {/* 1. 指数 */}
       <Section icon={TrendingUp} title="主要指数" hint={T?.date ? `截至 ${T.date}${ctx?.live ? "(盘中,收盘前还会变)" : ""} · 按收盘价` : undefined}>
-        <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {idx.length === 0
-            ? [1, 2, 3, 4].map((i) => (
-                <GlassCard key={i} className="p-3">
-                  <p className="text-xs text-muted-foreground">{ovDone ? "指数没取到" : "加载中…"}</p>
-                  <p className="mt-1 font-mono text-lg font-bold text-muted-foreground/40">—</p>
-                </GlassCard>
-              ))
-            : idx.map((i) => (
-                <GlassCard key={i.code} className="p-3">
-                  <p className="truncate text-xs text-muted-foreground">{i.name}</p>
-                  <p className={cn("mt-1 font-mono text-lg font-bold", pctColor(i.chg))}>{fmt(i.close)}</p>
-                  <p className={cn("text-xs", pctColor(i.chg))}>{pctText(i.chg)}</p>
-                  <p className="mt-1 text-[11px] text-muted-foreground">20 日 <span className={pctColor(i.r20)}>{pctText(i.r20, 1)}</span> · 60 日 <span className={pctColor(i.r60)}>{pctText(i.r60, 1)}</span></p>
-                </GlassCard>
-              ))}
-        </div>
-        <div className="mb-2 flex items-center gap-2">
-          <h3 className="flex items-center gap-1.5 text-sm font-semibold"><Globe className="h-4 w-4 text-muted-foreground" /> 全球市场</h3>
-          <span className="text-[11px] text-muted-foreground/70">腾讯行情快照 · 非逐笔实时行情</span>
-        </div>
-        {globalIdx.length === 0 && <p role="status" className="mb-2 text-sm text-muted-foreground">
-          {globalErr ?? (globalDone ? "全球指数未取得可用数据，不代表市场没有变化。" : "全球指数加载中…")}
-        </p>}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-          {globalIdx.map((g) => (
-            <GlassCard key={g.key} className="p-3">
-              <p className="truncate text-xs text-muted-foreground">{g.name} <span className="text-muted-foreground/40">{g.region}</span></p>
-              <p title={`取数时间：${g.fetched_at ?? "未知"}；价格证据：${g.evidence_id ?? "未取得"}`} className={cn("mt-1 font-mono text-lg font-bold", g.change_pct == null ? "text-foreground" : pctColor(g.change_pct))}>{g.price ?? "—"}</p>
-              <p className={cn("text-xs", g.change_pct == null ? "text-muted-foreground" : pctColor(g.change_pct))}>
-                {g.change_pct == null ? "—" : `${g.change_pct > 0 ? "+" : ""}${g.change_pct}%`}
-              </p>
-              <p className="mt-1 text-[11px] text-muted-foreground">{g.fetched_at ? `取数：${new Date(g.fetched_at).toLocaleString()}` : "取数时间未知"}</p>
-              {g.note && <p role="status" className="mt-1 text-[11px] text-muted-foreground">{g.note}</p>}
-            </GlassCard>
-          ))}
-        </div>
+        {indexQuotes}
+      {overview && dayMatches && bizDay && <ReviewMarketCharts key={bizDay} day={bizDay} revision={refreshNonce} />}
+        {globalSnapshot}
       </Section>
-
-      {/* 2. Agent 复盘 */}
+      </>}
+      {reporting && (
       <GlassCard glow className="mb-8">
         <div className="flex items-center justify-between">
-          <h3 className="flex items-center gap-1.5 font-semibold"><Sparkles className="h-4 w-4 text-primary" /> Agent 复盘</h3>
-          <button onClick={runReview} disabled={reviewLoading || !dataReady}
+          <h3 className="flex items-center gap-1.5 font-semibold"><Sparkles className="h-4 w-4 text-primary" /> 市场解读</h3>
+          <button onClick={runReview} disabled={reviewLoading || !dataReady || !bizDay}
             className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/25 disabled:opacity-50">
             {reviewLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            {!dataReady ? "等待本轮数据…" : review ? "重新复盘" : `让 Agent 复盘${bizDay ? ` ${bizDay}` : ""}`}
+            {!dataReady ? "等待本轮数据…" : !bizDay ? "请先重试获取业务日" : review ? "重新复盘" : `让 Agent 复盘${bizDay ? ` ${bizDay}` : ""}`}
           </button>
         </div>
         {needConfig && (
           <div className="mt-3 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-muted-foreground">
             <AlertCircle className="h-4 w-4 shrink-0 text-warning" />
-            Agent 还没有可用模型。<Link to="/settings" className="text-primary">先为 Agent 选择模型</Link>，之后一键出复盘。
+            Agent 还没有可用模型。<Link context={{date:bizDay??undefined}} to="/settings" className="text-primary">先为 Agent 选择模型</Link>，之后一键出复盘。
           </div>
         )}
         {reviewErr && (
@@ -443,42 +1012,26 @@ export function DailyReview() {
             {!reviewLoading && reviewDay !== bizDay && (
               <p className="mt-3 text-xs text-warning">这份复盘是按 {reviewDay ?? "业务日未知"} 的数据写的，这一屏已经换成 {bizDay ?? "业务日未知"}；要按现在的数据请点「重新复盘」。</p>
             )}
-            {!reviewLoading && <div className="mt-3"><SaveNoteButton kind="复盘" title={`每日复盘 ${reviewDay ?? "（业务日未知）"}`} content={review} /></div>}
+            {!reviewLoading && reviewErr && <p role="status" className="mt-3 text-xs text-warning">生成中断，以上是未完成的片段；可重新复盘。</p>}
+            {!reviewLoading && !reviewErr && <div className="mt-3"><SaveNoteButton context={{date:reviewDay??undefined}} kind="复盘" title={`每日复盘 ${reviewDay ?? "（业务日未知）"}`} content={review} /></div>}
           </>
         ) : !needConfig && !reviewErr && !reviewLoading ? (
           <p className="mt-3 text-sm text-muted-foreground">
             快速复盘会把这一屏已经取到的客观数据、缺口与读法护栏交给所选模型整理；它不会启动完整研究工具链。
-            需要完整的多阶段流程，请进入<Link to="/research" className="text-primary hover:underline">个股研究</Link>。
+            需要完整的多阶段流程，请进入<Link context={{date:bizDay??undefined}} to="/research" className="text-primary hover:underline">个股研究</Link>。
           </p>
         ) : null}
       </GlassCard>
 
+      )}
+      {!reporting && <details open={shortOpen} onToggle={e => setShortOpen(e.currentTarget.open)} className="mb-4"><summary className="mb-3 w-fit cursor-pointer text-sm font-medium">短线情绪、打板与异动</summary>
+      {overview && !archived && !indicators.data && <p role="status">{indicators.error || "加载晋级明细…"}</p>}
       {/* 3. 短线 */}
-      <Section icon={Flame} title="短线情绪" hint="涨跌分布 · 赚钱效应 / 亏钱效应 · 晋级 · 连板股 · 涨停分档;客观公开榜单,非推荐">
-        <GlassCard className="mb-4">
-          <BlockHead title="涨跌分布" page={pageMeta} id="breadth" date={B?.date ?? null}
-            extra={B && <span className="text-[11px] text-muted-foreground">上涨 {B.up ?? "—"} · 平盘 {B.flat ?? "—"} · 下跌 {B.down ?? "—"} · 涨 5% 以上 {B.up5 ?? "—"} · 跌 5% 以上 {B.down5 ?? "—"}</span>} />
-          {!distOption ? <Pending page={pageMeta} id="breadth" done={ovDone} /> : <>
-            <EChart option={distOption} height={220} />
-            <div className="mt-2 overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead><tr className="border-b border-border/50 text-left text-muted-foreground">{["", "上涨", "下跌", "平盘", "成交额"].map((h) => <th key={h} className="px-2 py-1.5 font-medium">{h}</th>)}</tr></thead>
-                <tbody>
-                  {B!.exchanges.map((x) => (
-                    <tr key={x.market} className="border-b border-border/30">
-                      <td className="px-2 py-1.5">{x.name}</td>
-                      <td className="px-2 py-1.5 font-mono text-danger">{x.up ?? "—"}</td>
-                      <td className="px-2 py-1.5 font-mono text-success">{x.down ?? "—"}</td>
-                      <td className="px-2 py-1.5 font-mono">{x.flat ?? "—"}</td>
-                      <td className="px-2 py-1.5 font-mono">{yiText(x.amount)}</td>
-                    </tr>
-                  ))}
-                  <tr><td className="px-2 py-1.5 text-muted-foreground">合计</td><td colSpan={3} className="px-2 py-1.5 text-[11px] text-muted-foreground">三所家数口径与上面的分布不同,不互相凑</td><td className="px-2 py-1.5 font-mono">{yiText(B!.amount)}</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </>}
-        </GlassCard>
+      <Section icon={Flame} title="短线情绪" hint="情绪节奏、涨跌分布、打板指标、炸板池与晋级">
+        {overview && shortOpen && dayMatches && bizDay && <ReviewSentimentRhythm key={bizDay} day={bizDay} revision={refreshNonce} />}
+        <BreadthCard breadth={B} page={pageMeta} done={ovDone} error={breadthError} />
+        {overview && shortOpen && dayMatches && bizDay && <ReviewTradingSignals key={bizDay} day={bizDay} revision={refreshNonce} />}
+        {overview && shortOpen && dayMatches && bizDay && <ReviewBrokenPool key={bizDay} day={bizDay} revision={refreshNonce} />}
 
         {!S ? <GlassCard className="mb-4"><Pending page={pageMeta} id="sentiment" done={ovDone} /></GlassCard> : <>
           <div className="mb-4 grid gap-3 md:grid-cols-2">
@@ -503,210 +1056,58 @@ export function DailyReview() {
           </div>
 
           <GlassCard className="mb-4">
-            <BlockHead title="晋级与连板" page={pageMeta} id="zt_pool" date={S.dates.zt}
-              extra={<span className="text-[11px] text-muted-foreground">今天分层:{S.ladder.map((x) => `${x.boards === 1 ? "首板" : `${x.boards} 板${x.plus ? "及以上" : ""}`} ${x.count}`).join(" · ") || "—"}</span>} />
+            <BlockHead title="晋级与连板" page={pageMeta} id="zt_pool" date={S.dates.zt} />
+            {S.ladder.length > 0 && <div className="mb-3 flex flex-wrap items-center gap-1.5">
+              <span className="mr-1 text-xs text-muted-foreground">涨停梯队</span>
+              {S.ladder.map(x => <BoardBadge key={x.boards} {...x} />)}
+            </div>}
             {S.promotion ? (
-              <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <div className="mb-4 grid grid-cols-[repeat(auto-fit,minmax(min(100%,10rem),1fr))] gap-2">
                 {S.promotion.map((t) => (
-                  <Stat key={t.from} k={t.label} v={shareText(t.rate)} sub={`昨天 ${t.base} 只,今天又涨停 ${t.promoted}`} />
+                  <div key={t.from} className={cn("rounded-lg border p-3", t.promoted > 0 ? "border-primary/25 bg-primary/5" : "border-border/60 bg-muted/20")}>
+                    <p className="text-xs font-medium text-muted-foreground">{t.label}</p>
+                    <div className="mt-1.5 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
+                      <strong className={cn("text-lg tabular-nums", t.promoted > 0 ? "text-primary" : "text-muted-foreground")}>{shareText(t.rate)}</strong>
+                      <span className="text-xs tabular-nums text-muted-foreground"><b className="text-foreground">{t.promoted}</b> / {t.base} 只晋级</span>
+                    </div>
+                    {t.rate !== null && <div aria-hidden="true" className="mt-2 h-1 rounded-full bg-muted">
+                      <div className="h-full rounded-full bg-primary/75" style={{ width: `${t.rate * 100}%` }} />
+                    </div>}
+                  </div>
                 ))}
               </div>
             ) : <p className="mb-3 text-xs text-muted-foreground">{S.promotionGap}</p>}
-            <p className="mb-1.5 text-[11px] text-muted-foreground">连板股(2 板以上连续涨停)· 价格与成交额是业务日那天的 · 题材是同花顺的市场叙事,不是核验过的因果 · 非推荐 / 非预测</p>
-            {lianban.length === 0 ? <p className="text-xs text-muted-foreground/70">{S.stocks.length ? "这一天没有 2 板以上的个股" : "涨停池没取到"}</p> : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
-                      {["名称", "连板", "首封", "价格", "成交额", "流通市值", "行业", "同花顺题材"].map((h) => <th key={h} className="whitespace-nowrap px-2 py-2 font-medium">{h}</th>)}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {lianban.slice(0, 40).map((s) => (
-                      <tr key={s.code} className="border-b border-border/30">
-                        <td className="whitespace-nowrap px-2 py-2"><span className="font-medium">{s.name || s.code}</span> <span className="text-xs text-muted-foreground/60">{s.code}</span></td>
-                        <td className="whitespace-nowrap px-2 py-2 font-mono font-bold text-primary">{s.boards} 板</td>
-                        <td className="px-2 py-2 font-mono text-xs">{s.firstSeal ?? "—"}</td>
-                        <td className="px-2 py-2 font-mono">{fmt(s.price)}</td>
-                        <td className="whitespace-nowrap px-2 py-2 font-mono text-muted-foreground">{yiText(s.amount)}</td>
-                        <td className="whitespace-nowrap px-2 py-2 font-mono text-muted-foreground">{yiText(s.floatCap)}</td>
-                        <td className="whitespace-nowrap px-2 py-2 text-xs text-muted-foreground">{s.industry}</td>
-                        <td className="min-w-[10rem] px-2 py-2 text-xs text-muted-foreground">{s.reason || "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </GlassCard>
+            {stockTable}
+      </GlassCard>
         </>}
 
         {/* 涨停分档(按行业、和前两个交易日比;每组的最高板与梯队) */}
-        <ReviewTiersCard data={bizDay && tiers?.date === bizDay ? tiers : null} loading={tiersLoading || (!bizDay && !ovDone)} error={tiersErr}
-          bizDay={bizDay} onRefresh={() => { if (bizDay) void loadTiers(bizDay, true); }} />
+        {tiersCard}
       </Section>
 
+      </details>}
+      {!reporting && <details open={longOpen} onToggle={e => setLongOpen(e.currentTarget.open)} className="mb-4"><summary className="mb-3 w-fit cursor-pointer text-sm font-medium">指数趋势、量能与估值</summary>
+      {overview && !archived && !indicators.data && <p role="status">{indicators.error || "加载趋势与估值…"}</p>}
       {/* 4. 中长线 */}
       <Section icon={Activity} title="中长线" hint="趋势 · 量能 · 杠杆 · 股债收益率;都是按固定公式算的事实,不是趋势判断">
-        <GlassCard className="mb-4">
-          <BlockHead title="主要指数的中长期位置" page={pageMeta} id="trend" date={T?.date ?? null} />
-          {!T || idx.length === 0 ? <Pending page={pageMeta} id="trend" done={ovDone} /> : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
-                    {["指数", "收盘", "当日", "5 日", "20 日", "60 日", "250 日", "年初至今", "离一年高点", "20 / 60 / 250 日线"].map((h) => <th key={h} className="whitespace-nowrap px-2 py-2 font-medium">{h}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {idx.map((i) => (
-                    <tr key={i.code} className="border-b border-border/30">
-                      <td className="whitespace-nowrap px-2 py-2 font-medium">{i.name}</td>
-                      <td className="px-2 py-2 font-mono">{fmt(i.close)}</td>
-                      {[i.chg, i.r5, i.r20, i.r60, i.r250, i.ytd].map((v, k) => <td key={k} className={cn("whitespace-nowrap px-2 py-2 font-mono", pctColor(v))}>{pctText(v)}</td>)}
-                      <td className={cn("whitespace-nowrap px-2 py-2 font-mono", pctColor(i.offHigh))} title={i.high250Date ? `一年最高收盘 ${fmt(i.high250)}(${i.high250Date})` : undefined}>{pctText(i.offHigh)}</td>
-                      <td className="whitespace-nowrap px-2 py-2 text-xs">
-                        {([["20", i.ma20], ["60", i.ma60], ["250", i.ma250]] as const).map(([n, ma]) => {
-                          const a = aboveMa(i.close, ma);
-                          return <span key={n} title={ma == null ? `${n} 日均线没算出来(日线不够)` : `${n} 日均线 ${fmt(ma)}`} className={cn("mr-1.5", a === null ? "text-muted-foreground/50" : a ? "text-danger" : "text-success")}>{a === null ? "—" : a ? "上" : "下"}</span>;
-                        })}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <p className="mt-2 text-[11px] text-muted-foreground">N 日涨跌 = 最新收盘 ÷ N 个交易日前收盘 − 1;离一年高点 = 最新收盘 ÷ 250 日最高收盘 − 1;「上 / 下」= 收盘在均线上方 / 下方。{T.missing.length > 0 && <span className="text-warning"> 缺:{T.missing.join(";")}</span>}</p>
-            </div>
-          )}
-        </GlassCard>
-
-        <div className="mb-4 grid gap-3 lg:grid-cols-2">
-          <GlassCard className="min-w-0">
-            <BlockHead title="两市成交额(亿元)" page={pageMeta} id="trend" date={T?.amountDate ?? null}
-              extra={T?.lastAmount != null && <span className="text-[11px] text-muted-foreground">{T.partial ? `今天盘中累计 ${yiText(T.lastAmount)}(灰色那根,还没收完)` : `最新 ${yiText(T.lastAmount)}`} · 20 日均 {yiText(T.ma20)} · 60 日均 {yiText(T.ma60)}</span>} />
-            {!amountOption ? <Pending page={pageMeta} id="trend" done={ovDone} /> : <EChart option={amountOption} height={220} />}
-            <p className="mt-1 text-[11px] text-muted-foreground">沪深两市成交额 = 上证指数成交额 + 深证综指成交额;虚线是{T?.partial ? "截至上一个交易日(不含今天没收完的)" : "截至最新一天"}的 20 / 60 日均值。</p>
-          </GlassCard>
-          <GlassCard className="min-w-0">
-            <BlockHead title="两融余额(亿元)" page={pageMeta} id="margin" date={M?.date ?? null}
-              extra={<span className="text-[11px] text-muted-foreground">T 日数据 T+1 发布</span>} />
-            {!marginOption || !M ? <Pending page={pageMeta} id="margin" done={ovDone} /> : <>
-              <EChart option={marginOption} height={160} />
-              <div className="mt-2 grid grid-cols-3 gap-2">
-                <Stat k="比 5 个交易日前" v={<span className={pctColor(M.chg5)}>{signedYi(M.chg5)}</span>} />
-                <Stat k="比 20 个交易日前" v={<span className={pctColor(M.chg20)}>{signedYi(M.chg20)}</span>} />
-                <Stat k="近 5 日融资净买入" v={<span className={pctColor(M.netBuy5)}>{signedYi(M.netBuy5)}</span>} sub={`融资余额占流通市值 ${M.floatPct == null ? "—" : `${M.floatPct.toFixed(2)}%`}`} />
-              </div>
-            </>}
-          </GlassCard>
-        </div>
-
-        <GlassCard>
-          <BlockHead title="沪深300 估值与国债收益率" page={pageMeta} id="valuation" date={V?.date ?? null} />
-          {!V ? <Pending page={pageMeta} id="valuation" done={ovDone} /> : <>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <Stat k="市盈率" v={V.pe != null ? `${V.pe} 倍` : "—"} sub={`计算用股本口径 ${V.peCalc ?? "—"} 倍`} />
-              <Stat k="股息率" v={V.dy != null ? `${V.dy}%` : "—"} sub={`计算用股本口径 ${V.dyCalc ?? "—"}%`} />
-              <Stat k="10 年国债收益率" v={V.y10 != null ? `${V.y10}%` : "—"} sub={V.y10Date ?? undefined} />
-              <Stat k="差值(百分点)" v={V.dySpread != null ? `${V.dySpread > 0 ? "+" : ""}${V.dySpread}` : "—"} sub={`股息率 − 国债;盈利收益率 − 国债 ${V.eySpread == null ? "—" : `${V.eySpread > 0 ? "+" : ""}${V.eySpread}`}`} />
-            </div>
-            <p className="mt-2 text-[11px] text-muted-foreground">盈利收益率 = 1 ÷ 市盈率 = {V.ey ?? "—"}%。市盈率、股息率是中证官网指标文件(总股本口径,不含市净率),国债是中债国债收益率曲线。只是两组收益率的差,不是估值高低的判断。</p>
-          </>}
-        </GlassCard>
+        {backgroundCharts}
       </Section>
 
+      </details>}
+      {!reporting && <details open={fundsOpen} onToggle={e => setFundsOpen(e.currentTarget.open)} className="mb-4"><summary className="mb-3 w-fit cursor-pointer text-sm font-medium">行业资金、成交榜与龙虎榜</summary>
+      {overview && !archived && !funds.data && <p role="status">{funds.error || "加载资金与龙虎榜…"}</p>}
       {/* 5. 资金 */}
       <Section icon={Coins} title="资金去了哪" hint="行业资金 · 成交额居前 · 龙虎榜;客观公开榜单,非推荐 / 非预测">
-        <GlassCard className="mb-4">
-          <BlockHead title={`行业资金${F ? `(${F.source}口径)` : ""}`} page={pageMeta} id="board_flow" date={F?.date ?? null} />
-          {!F || F.rows.length === 0 ? <Pending page={pageMeta} id="board_flow" done={ovDone} /> : (
-            <div className="grid gap-4 md:grid-cols-2">
-              {[
-                { title: "净流入居前", icon: TrendingUp, color: "text-danger", rows: flowIn },
-                { title: "净流出居前", icon: TrendingDown, color: "text-success", rows: flowOut },
-              ].map((col) => (
-                <div key={col.title}>
-                  <h4 className={cn("mb-2 flex items-center gap-1.5 text-xs font-semibold", col.color)}><col.icon className="h-3.5 w-3.5" /> {col.title}</h4>
-                  {col.rows.length === 0 ? <p className="text-xs text-muted-foreground">没有{col.title.slice(0, 3)}的行业</p> : (
-                    <div className="space-y-1.5">
-                      {col.rows.map((s, i) => (
-                        <div key={s.name} className="flex items-center gap-3 border-b border-border/30 pb-1.5 text-sm last:border-0">
-                          <span className="w-5 text-xs text-muted-foreground/50">{i + 1}</span>
-                          <span className="flex-1 truncate" title={s.leader ? `领涨 ${s.leader}` : undefined}>{s.name}</span>
-                          <span className={cn("font-mono text-xs", pctColor(s.pct))}>{pctText(s.pct)}</span>
-                          <span className={cn("w-24 text-right font-mono text-xs", pctColor(s.net))}>{signedYi(s.net)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-          {F && <p className="mt-2 text-[11px] text-muted-foreground">{F.source === "新浪" ? "新浪口径:净额 = 流入 − 流出,行业是新浪自己的分类,和东财「主力净额」不是一个算法。" : "东财口径:主力净额(超大单 + 大单),全市场行业板块。"}按净额正负分流入 / 流出。</p>}
-        </GlassCard>
-
-        <GlassCard className="mb-4">
-          <BlockHead title="全市场成交额居前 20" page={pageMeta} id="turnover" date={TV?.date ?? null} />
-          {!TV || TV.rows.length === 0 ? <Pending page={pageMeta} id="turnover" done={ovDone} /> : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
-                    {["#", "名称", "价格", "涨跌", "成交额", ...(hasMcap ? ["总市值"] : []), ...(hasIndustry ? ["行业"] : [])].map((h) => <th key={h} className="whitespace-nowrap px-2 py-2 font-medium">{h}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {TV.rows.map((s, i) => (
-                    <tr key={s.code} className="border-b border-border/30">
-                      <td className="px-2 py-2 font-mono text-xs text-muted-foreground/50">{i + 1}</td>
-                      <td className="whitespace-nowrap px-2 py-2"><span className="font-medium">{s.name || s.code}</span> <span className="text-xs text-muted-foreground/60">{s.code}</span></td>
-                      <td className="px-2 py-2 font-mono">{fmt(s.price)}</td>
-                      <td className={cn("px-2 py-2 font-mono", pctColor(s.pct))}>{pctText(s.pct)}</td>
-                      <td className="whitespace-nowrap px-2 py-2 font-mono">{yiText(s.amount)}</td>
-                      {hasMcap && <td className="whitespace-nowrap px-2 py-2 font-mono text-muted-foreground">{yiText(s.mcap)}</td>}
-                      {hasIndustry && <td className="whitespace-nowrap px-2 py-2 text-xs text-muted-foreground">{s.industry}</td>}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </GlassCard>
-
-        <GlassCard>
-          <BlockHead title="龙虎榜" page={pageMeta} id="dragon" date={D?.date ?? null}
-            extra={D && <span className="text-[11px] text-muted-foreground">{D.stocks} 只上榜</span>} />
-          {!D ? <Pending page={pageMeta} id="dragon" done={ovDone} /> : (D.buy.length + D.sell.length === 0) ? <p className="py-3 text-sm text-muted-foreground">这一天的榜单还没出(龙虎榜收盘后才发布)或为空。</p> : (
-            <div className="grid gap-4 md:grid-cols-2">
-              {[
-                { title: "净买入居前", rows: D.buy, color: "text-danger" },
-                { title: "净卖出居前", rows: D.sell, color: "text-success" },
-              ].map((col) => (
-                <div key={col.title}>
-                  <h4 className={cn("mb-2 text-xs font-semibold", col.color)}>{col.title}</h4>
-                  <div className="space-y-1.5">
-                    {col.rows.map((x) => (
-                      <div key={x.code} className="border-b border-border/30 pb-1.5 text-sm last:border-0">
-                        <div className="flex items-center gap-2">
-                          <span className="flex-1 truncate"><span className="font-medium">{x.name || x.code}</span> <span className="text-xs text-muted-foreground/60">{x.code}</span></span>
-                          <span className={cn("font-mono text-xs", pctColor(x.pct))}>{pctText(x.pct)}</span>
-                          <span className={cn("w-24 text-right font-mono text-xs", pctColor(x.net))}>{signedYi(x.net)}</span>
-                        </div>
-                        <p className="truncate text-[11px] text-muted-foreground" title={x.reason}>{x.reason}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          <p className="mt-2 text-[11px] text-muted-foreground">同一只可能因几条上榜理由各出现一次(统计区间不同),净额不相加,每只只列一条。</p>
-        </GlassCard>
+        {historicalFunds ?? <FundsCards flow={F} turnover={TV} page={pageMeta} flowDone={fundsDone} turnoverDone={fundsDone} />}
+        {!overview && <GlassCard>
+          {dragonSummary}
+        </GlassCard>}
+        {overview && fundsOpen && dayMatches && bizDay && <ReviewDragon key={bizDay} day={bizDay} revision={refreshNonce} />}
       </Section>
 
-      <p className="mb-2 flex items-center gap-1.5 text-[11px] text-muted-foreground"><Landmark className="h-3.5 w-3.5" /> <BarChart3 className="h-3.5 w-3.5" /> 数据来自东财、腾讯、新浪、同花顺、中证指数、中债等公开来源,各块标了自己的数据日与口径。</p>
-      <Disclaimer />
+      </details>}
+      {!reporting && <p className="mb-2 flex items-center gap-1.5 text-[11px] text-muted-foreground"><Landmark className="h-3.5 w-3.5" /> <BarChart3 className="h-3.5 w-3.5" /> 数据来自东财、腾讯、新浪、同花顺、中证指数、中债等公开来源,各块标了自己的数据日与口径。</p>}
+      {standalone && <Disclaimer />}
     </div>
   );
 }

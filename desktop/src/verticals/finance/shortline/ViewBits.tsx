@@ -1,6 +1,7 @@
 /** 情绪复盘各分页共用的小件:加载中、没取到、缺口与来源、窗口选择 */
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { ContextHelp } from "@/components/ui/ContextHelp";
 import type { ViewState } from "./useView";
 
 export function ViewSlot<T>({ st, label, slow, children }: { st: ViewState<T>; label: string; slow?: string; children: (d: T) => ReactNode }) {
@@ -35,7 +36,7 @@ export function GapsAndSource({ gaps, source }: { gaps: string[]; source: string
   return (
     <div className="space-y-1 text-[11px] leading-relaxed">
       {gaps.map((g) => <p key={g} role="status" className="text-warning">⚠️ {g}</p>)}
-      {source && <p className="text-muted-foreground/70">来源:{source}</p>}
+      {source && <ContextHelp label="数据来源">来源:{source}</ContextHelp>}
     </div>
   );
 }

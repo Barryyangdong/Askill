@@ -136,28 +136,34 @@ const PROXY_PROBE_HOSTS = ["www.swsresearch.com", "push2delay.eastmoney.com", "q
 /**
  * 域名是否被解析到「不可能是公网服务器」的保留网段 —— fake-IP 代理的典型特征。
  * 198.18.0.0/15 是 RFC 2544 基准测试段(Clash 默认用它);其余按 RFC 1918 / 环回 / 链路本地判。
- * ⚠️ 只用**同步**的 DNS 缓存查询,拿不到就当没检测到 —— doctor 不该因为一次 DNS 卡住而卡住。
+ * 仅在显式 --net 时调用，每个解析器有超时；未取得地址时标记未完成。
  */
-function probeFakeIp(hosts: readonly string[]): string[] {
+function probeFakeIp(hosts: readonly string[]): { fake: string[]; complete: boolean } {
   const hit: string[] = [];
+  let complete = true;
   for (const h of hosts) {
     let ips: string[] = [];
     try {
       // lookup 是异步 API;这里用 spawnSync 调系统解析器,避免把 runDoctor 变成依赖网络的慢函数
       if (process.platform === "darwin") {
         const r = spawnSync("dscacheutil", ["-q", "host", "-a", "name", h], { encoding: "utf8", timeout: 3_000 });
+        if (r.error || r.status !== 0) throw new Error("DNS lookup failed");
         ips = [...(r.stdout || "").matchAll(/ip_address:\s*([0-9.]+)/g)].map((m) => m[1] as string);
       } else if (process.platform === "win32") {
         const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `(Resolve-DnsName -Type A '${h}' -ErrorAction SilentlyContinue).IPAddress`], { encoding: "utf8", timeout: 3_000, windowsHide: true });
+        if (r.error || r.status !== 0) throw new Error("DNS lookup failed");
         ips = (r.stdout || "").split(/\r?\n/).map((x) => x.trim()).filter((x) => /^\d+(?:\.\d+){3}$/.test(x));
       } else {
         const r = spawnSync("getent", ["ahostsv4", h], { encoding: "utf8", timeout: 3_000 });
+        if (r.error || r.status !== 0) throw new Error("DNS lookup failed");
         ips = [...(r.stdout || "").matchAll(/^(\d+(?:\.\d+){3})\s/gm)].map((m) => m[1] as string);
       }
     } catch { /* 解析不了就跳过这个主机 */ }
+    ips = ips.filter(ip => { const parts = ip.split(".").map(Number); return parts.length === 4 && parts.every(n => Number.isInteger(n) && n >= 0 && n <= 255); });
+    if (!ips.length) complete = false;
     if (ips.some(isReservedIp)) hit.push(h);
   }
-  return hit;
+  return { fake: hit, complete };
 }
 
 function isReservedIp(ip: string): boolean {
@@ -175,6 +181,7 @@ export async function runDoctor(opts: {
   repoRoot?: string; env?: NodeJS.ProcessEnv; exec?: Exec; net?: boolean; python?: string; writeReport?: boolean;
   /** 本机订阅 Agent 探测(测试注入;缺省真的去问三个 CLI 的版本与登录状态) */
   probeAgents?: (env: NodeJS.ProcessEnv) => Promise<LocalAgentStatus[]>;
+  probeProxyDns?: (hosts: readonly string[]) => { fake: string[]; complete: boolean };
 } = {}): Promise<DoctorResult> {
   const repoRoot = path.resolve(opts.repoRoot ?? repoRootFromHere());
   const env = opts.env ?? process.env;
@@ -344,7 +351,8 @@ export async function runDoctor(opts: {
     const proxyVars = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]
       .filter((k) => (env[k] ?? "").trim() !== "");
     // fake-IP:代理把域名解析到保留网段,真实 IP 由代理内部持有
-    const fake = probeFakeIp(PROXY_PROBE_HOSTS);
+    const dns = opts.net ? (opts.probeProxyDns ?? probeFakeIp)(PROXY_PROBE_HOSTS) : null;
+    const fake = dns?.fake ?? [];
     const on = proxyVars.length > 0 || fake.length > 0;
     add({
       // ⚠️ 有代理**不算故障**,所以是 ok 不是 warn:国内用户常年挂代理、很多是必须挂,
@@ -353,9 +361,9 @@ export async function runDoctor(opts: {
       id: "net_proxy", title: "代理拦截", status: "ok",
       detail: on
         ? `检测到本机流量可能经代理(${proxyVars.length ? `环境变量 ${proxyVars.join(" / ")}` : "无 *_proxy 变量"}` +
-          `${fake.length ? `;${fake.join("、")} 解析到保留网段 fake-IP` : ""})。` +
+          `${fake.length ? `;${fake.join("、")} 解析到保留网段 fake-IP${dns && !dns.complete ? "；部分 DNS 解析未完成" : ""}` : !dns ? ";未进行 DNS 探测" : !dns.complete ? ";DNS 解析未完成" : ";探测主机解析到公网地址"})。` +
           "取数失败(TLS 校验失败 / 超时 / 空响应)时**先查这里**,不要直接关掉证书校验。"
-        : "未发现代理迹象(无 *_proxy 变量;探测主机解析到公网地址)",
+        : `未发现代理环境变量；${!dns ? "未进行 DNS 探测" : dns.complete ? "探测主机解析到公网地址" : "DNS 解析未完成，无法判断"}` ,
       fix: on ? "取数异常时先临时关代理复测;确认是代理规则问题就改规则,别用 VRA_ALLOW_INSECURE_TLS 绕" : undefined,
     });
   }

@@ -4,10 +4,10 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { NAV_SECTIONS, isGroup } from "../../desktop/src/verticals/finance/lib/nav.ts";
+import { NAV_SECTIONS } from "../../desktop/src/verticals/finance/lib/nav.ts";
 import { FINANCE_STAGES } from "../src/finance/plugin.ts";
 import { RUN_TOOLS } from "../src/run_tools.ts";
-import { PRODUCT_NAME } from "../src/brand.ts";
+import { PRODUCT_SLUG } from "../src/brand.ts";
 
 /**
  * README 里的数字由这里兜住:端点数、层数、栏目数、受控工具数、研究阶段数、上游版本号。
@@ -74,40 +74,30 @@ test("README 端点数 / 层数 / 停用数跟数据注册表一致", () => {
 });
 
 test("README 栏目数和栏目名跟左侧导航一致", () => {
-  const sections = NAV_SECTIONS.map((s) => s.label);
-  // 表里每个页面一行:有二级的写「一级 | 二级」,只有一个页面的二级写「—」;产业研究的各板块合成一行「N 个板块」
-  const sectorCount = JSON.parse(read("desktop/src/verticals/finance/data/sectors.json")).sectors.length;
-  const rows = NAV_SECTIONS.flatMap((s) => [
-    ...s.pages.map((p) => [s.label, isGroup(s) ? p.label : "—"]),
-    ...(s.listsSectors ? [[s.label, `${sectorCount} 个板块`]] : []),
-  ]);
-  assert.ok(sections.length >= 5 && rows.length > sections.length, `只从导航里读到 ${sections.length} 个一级、${rows.length} 个页面`);
-  // 栏目表是 HTML 表格(标签列 nowrap,免得被挤成竖排):从表头那行取到 </table>,每行取前两格
-  const tableRows = (md: string, a: string, b: string) => {
-    const head = `<th nowrap>${a}</th><th nowrap>${b}</th>`;
-    const at = md.indexOf(head);
-    assert.ok(at >= 0, `README 里找不到表头 ${head}`);
-    const body = md.slice(at, md.indexOf("</table>", at));
-    return [...body.matchAll(/<tr><td[^>]*>(.*?)<\/td><td[^>]*>(.*?)<\/td>/g)].map((m) => [m[1]!.trim(), m[2]!.trim()]);
+  const workspaces = NAV_SECTIONS.filter(s => !s.pinned);
+  const sections = workspaces.map((s) => s.label);
+  assert.deepEqual(sections, ["盯盘", "复盘", "选手分析", "研究", "游资蒸馏", "我的"]);
+  assert.equal(NAV_SECTIONS.at(-1)?.pinned, true);
+  const tableRows = (md: string, header: string) => {
+    const start = md.indexOf(header);
+    assert.ok(start >= 0, `找不到栏目表头: ${header}`);
+    const end = md.indexOf("</table>", start);
+    assert.ok(end > start, "栏目表缺少结束标签");
+    return [...md.slice(start, end).matchAll(/<tr><td nowrap>(.*?)<\/td><td>(.*?)<\/td><\/tr>/g)]
+      .map((m) => [m[1]!, m[2]!] as const);
   };
+  const zhRows = tableRows(ZH, "<th nowrap>一级栏目</th><th nowrap>相关功能</th>");
+  const enRows = tableRows(EN, "<th nowrap>Section</th><th nowrap>Related features</th>");
+  assert.deepEqual(zhRows.map(([label]) => label), sections, "中文栏目表顺序及唯一性");
+  assert.deepEqual(enRows.map(([label]) => label), ["Watch", "Review", "Player Analysis", "Research", "Trader Distillation", "My"], "英文栏目表顺序及唯一性");
+  allEqual(ZH, /\*\*(\d+) 个一级栏目\*\*/g, 1, sections.length, "中文栏目数");
+  allEqual(EN, /\*\*(\d+) primary sections\*\*/g, 1, sections.length, "英文栏目数");
+  for (const [i, section] of workspaces.entries()) {
+    const [main, related] = zhRows[i]![1].split("；相关入口：");
+    assert.deepEqual(main!.split("、"), section.pages.map(p => p.label));
+    assert.deepEqual(related ? related.split("、") : [], (section.related ?? []).filter(p => p.to !== "/").map(p => p.label));
+  }
 
-  allEqual(ZH, /\*\*(\d+) 个一级栏目\*\*/g, 1, sections.length, "中文 README「N 个一级栏目」");
-  allEqual(ZH, /左侧共 (\d+) 个一级栏目/g, 1, sections.length, "中文 README「左侧共 N 个一级栏目」");
-  const listed = ZH.match(/\*\*\d+ 个一级栏目\*\*：(.+?)。/)![1]!.split("、");
-  assert.deepEqual(listed, sections, "中文 README 列出的一级栏目名和顺序要跟导航一致");
-  assert.deepEqual(tableRows(ZH, "一级栏目", "二级栏目"), rows, "中文 README 栏目表要跟导航一致");
-
-  allEqual(EN, /\*\*(\d+) primary sections\*\*/g, 1, sections.length, "English README 'N primary sections'");
-  allEqual(EN, /The sidebar has (\d+) primary sections/g, 1, sections.length, "English README sidebar count");
-  const enListed = EN.match(/\*\*\d+ primary sections\*\*: (.+?)\.\s/)![1]!.split(/, (?:and )?/);
-  assert.equal(enListed.length, sections.length, "English README 列出的一级栏目个数");
-  const enTable = tableRows(EN, "Section", "Page");
-  assert.equal(enTable.length, rows.length, "English README 栏目表行数");
-  // 英文表的一级栏目名跟着中文表分组:同一组的行连在一起、组数相同,只有一个页面的二级同样写「—」
-  assert.deepEqual(enTable.map(([, p]) => p === "—"), rows.map(([, p]) => p === "—"), "English README 哪几行没有二级要跟导航一致");
-  const groups = (t: string[][]) => t.map(([s]) => s).filter((s, i, a) => s !== a[i - 1]);
-  assert.equal(groups(enTable).length, sections.length, "English README 栏目表的一级分组数");
-  assert.deepEqual(groups(enTable), enListed, "English README 栏目表的一级顺序要跟列出的一致");
 });
 
 test("README 受控工具数和研究阶段数跟实现一致", () => {
@@ -115,7 +105,7 @@ test("README 受控工具数和研究阶段数跟实现一致", () => {
   allEqual(ZH, /(\d+) 个受控工具/g, 3, tools, "中文 README「N 个受控工具」");
   const zhList = ZH.match(/\d+ 个受控工具（(.+?)）/)![1]!.split("、");
   assert.equal(zhList.length, tools, `中文 README 列了 ${zhList.length} 个受控工具:${zhList.join(" / ")}`);
-  allEqual(EN, new RegExp(`\\b(${EN_WORD}|\\d+) controlled (?:${PRODUCT_NAME} )?tools`, "gi"), 3, tools, "English README 'N controlled tools'");
+  allEqual(EN, new RegExp(`\\b(${EN_WORD}|\\d+) controlled (?:${PRODUCT_SLUG} )?tools`, "gi"), 3, tools, "English README 'N controlled tools'");
 
   const stages = FINANCE_STAGES.length;
   allEqual(ZH, /([一二三四五六七八九十])个?阶段/g, 4, stages, "中文 README「六阶段」");

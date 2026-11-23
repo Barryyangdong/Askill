@@ -5,6 +5,29 @@ import test from "node:test";
 import { api, ApiError, gpuForwardOf, SAVED_REFRESH_FAILED } from "../src/verticals/finance/lib/api.ts";
 import { backend, type Evidence } from "../src/verticals/finance/lib/backend.ts";
 import type { HoldingsView } from "../src/verticals/finance/lib/holdings.ts";
+import {runInNewContext} from "node:vm";
+import ts from "typescript";
+import {createElement} from "react";
+import * as jsxRuntime from "react/jsx-runtime";
+import {renderToStaticMarkup} from "react-dom/server";
+import {withRenderer} from "./helpers/render.ts";
+import {maskPrivateText} from "../src/verticals/finance/lib/privacy.ts";
+import {recordSource} from "../src/verticals/finance/lib/recordSource.ts";
+import {readWorkspaceContext} from "../src/verticals/finance/lib/workspaceContext.ts";
+
+function componentHarness(file: string, deps: Record<string, unknown>) {
+  let slots: any[] = [], index = 0;
+  const react = { useState(initial: any) { const i=index++; if (!(i in slots)) slots[i]=typeof initial === "function" ? initial() : initial; return [slots[i], (v: any) => { slots[i]=typeof v === "function" ? v(slots[i]) : v; }]; }, useMemo: (fn: () => unknown) => fn() };
+  const code=ts.transpileModule(src(file),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022}}).outputText;
+  const exports: Record<string, any> = {};
+  runInNewContext(code,{exports,URLSearchParams,JSON,require:(id:string)=>id==="react"?react:id==="react/jsx-runtime"?jsxRuntime:deps[id]??{}});
+  return {exports,render(name:string,props:Record<string,unknown>){index=0;return exports[name](props);}};
+}
+function nodes(element: any): any[] {
+  if (!element || typeof element !== "object") return [];
+  if (Array.isArray(element)) return element.flatMap(nodes);
+  return [element, ...nodes(element.props?.children)];
+}
 
 // Codex 审计第三轮（2026-10-10）前端金融页那几条的回归测试
 const src = (p: string) => readFileSync(new URL(`../src/verticals/finance/${p}`, import.meta.url), "utf8");
@@ -34,15 +57,25 @@ test("C1 批量导入：写进去了、重读持仓失败 → 报「已经导入
   assert.ok(saved < caught.indexOf("await ask(selected, records, true)"), "不再走「重新预览、保留勾选」那条路");
 });
 
-test("C2 回测对话和历史报告在隐私模式下遮自己的股数、金额", () => {
-  const bt = src("pages/Backtest.tsx");
-  assert.match(bt, /const shown = \(t: string\) => \(hide \? maskPrivateText\(t\) : t\);/);
-  assert.equal((bt.match(/\{shown\(m\.content\)\}/g) ?? []).length, 2, "用户和 Agent 两种消息都过遮挡");
-  assert.ok(!/\{m\.content\}/.test(bt), "没有漏网的原文渲染");
-  const rh = src("components/ui/ReportHistory.tsx");
-  assert.ok(rh.includes("{shown(n.title)}</span>") && rh.includes("{shown(n.content)}</ReactMarkdown>"));
-  assert.ok(!/(?<!\$)\{n\.(title|content)\}/.test(rh), "标题和正文都不直接渲染原文（搜索用的模板字符串不算）");
-});
+test("C2 历史报告在隐私模式下遮自己的股数、金额", async () => withRenderer(async r => {
+  const {ReportAnswer}=await r.load("/src/verticals/finance/components/ReportAnswer.tsx");
+  const {MemoryRouter}=await r.load("react-router-dom");
+  const icon=()=>null;
+  const h=componentHarness("components/ui/ReportHistory.tsx",{
+    "lucide-react":{ChevronDown:icon,ChevronRight:icon,History:icon,Search:icon,Trash2:icon},
+    "../ReportAnswer":{ReportAnswer},"@/components/ui/GlassCard":{GlassCard:({children}:any)=>createElement("div",null,children)},
+    "@/lib/notes":{},"@/hooks/usePrivacyMode":{usePrivacyMode:()=>({on:true})},"@/lib/privacy":{maskPrivateText},
+    "../JourneyLink":{JourneyLink:({children}:any)=>createElement("span",null,children)},
+  });
+  const props={kind:"回测",notes:[{id:"one",kind:"回测",title:"成本 12345",content:"持有 6789 股，成本 54321。**复核记录**",ts:0}],onChange:()=>{}};
+  let tree=h.render("ReportHistory",props);
+  nodes(tree).find(n=>n.type==="button" && typeof n.props.onClick==="function").props.onClick();
+  tree=h.render("ReportHistory",props);
+  const html=renderToStaticMarkup(createElement(MemoryRouter,{},tree));
+  assert.doesNotMatch(html,/12345|6789|54321/);
+  assert.match(html,/••••/); assert.match(html,/持有/); assert.match(html,/成本/);
+  assert.match(html, /<strong>复核记录<\/strong>/);
+}));
 
 test("C3 持仓变了重新体检时先撤下旧结果，横幅和 AI 上下文不拿旧持仓的结果", () => {
   const x = src("components/PortfolioXray.tsx");
@@ -63,12 +96,28 @@ test("C4 每日复盘记下按哪天写的：保存用那一天，业务日变�
   assert.match(p, /reviewDay !== bizDay && \(\s*<p[^>]*>这份复盘是按 \{reviewDay \?\? "业务日未知"\} 的数据写的/);
 });
 
-test("C5 「存入沉淀」的状态绑在这一份内容上：换了赛道、换了内容回到没存；迟到的回包只改自己那一份", () => {
-  const b = src("components/ui/SaveNoteButton.tsx");
-  assert.ok(b.includes("const id = `${kind}\\u0000${title}\\u0000${content}`;"));
-  assert.ok(b.includes('const state = st.id === id ? st.state : "idle";'), "别的内容的状态不算数");
-  assert.equal((b.match(/setSt\(\(s\) => \(s\.id === forId \?/g) ?? []).length, 2, "存成功、存失败都只改发起时那一份");
-  assert.ok(!/useState<"idle"/.test(b), "不再有不分内容的单个状态");
+test("C5 保存状态按内容和来源隔离，迟到成功或失败不覆盖当前保存", async () => {
+  const pending: {resolve:(v:unknown)=>void;reject:(e:Error)=>void}[]=[];
+  const h=componentHarness("components/ui/SaveNoteButton.tsx",{
+    "lucide-react":{Check:()=>null,BookmarkPlus:()=>null,AlertCircle:()=>null},
+    "react-router-dom":{useLocation:()=>({pathname:"/shortline",search:"",hash:""})},
+    "@/lib/notes":{addNote:()=>new Promise((resolve,reject)=>pending.push({resolve,reject})),canSaveNoteSource:()=>true,canSaveResearchNote:()=>true},
+    "../../lib/recordSource":{recordSource},"../../lib/workspaceContext":{readWorkspaceContext},
+  });
+  const render=(kind="复盘",content="正文",date="2026-10-12")=>h.render("SaveNoteButton",{kind,title:"标题",content,context:{date}});
+  const first=render(); const a=first.props.onClick();
+  assert.equal(render().props.disabled,true);
+  assert.equal(render("今日要点").props.disabled,false); assert.equal(render("复盘","新正文").props.disabled,false); assert.equal(render("复盘","正文","2026-10-13").props.disabled,false);
+  const b=render("复盘","新正文").props.onClick(); pending[0]!.resolve([]); await a;
+  assert.equal(render("复盘","新正文").props.disabled,true,"旧成功不能结束新保存");
+  pending[1]!.reject(new Error("保存失败")); await b;
+  assert.equal(render("复盘","新正文").props.disabled,false,"新失败可重试");
+  const c=render().props.onClick(); const d=render("复盘","正文","2026-10-13").props.onClick();
+  pending[2]!.reject(new Error("旧失败")); await c;
+  assert.equal(render("复盘","正文","2026-10-13").props.disabled,true,"旧失败不能结束新来源保存");
+  pending[3]!.resolve([]); await d;
+  assert.equal(render("复盘","正文","2026-10-13").props.disabled,true);
+  assert.equal(render().props.disabled,false);
 });
 
 test("C6 体检横幅的「看明细」先切到体检分页再定位", () => {

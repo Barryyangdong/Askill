@@ -4,8 +4,8 @@ import { Loader2, Search } from "lucide-react";
 
 import { backend } from "@/lib/backend";
 import { cn } from "@/lib/utils";
-import type { MarketCode } from "@/lib/marketSymbol";
-import { MARKET_TAG, liveMatches, matchTag, parseSearch, searchKey, type SearchResult, type SymbolMatch } from "@/lib/symbolSearch";
+import { marketOfSymbol, type MarketCode } from "@/lib/marketSymbol";
+import { directCode, MARKET_TAG, liveMatches, matchTag, parseSearch, searchKey, type SearchResult, type SymbolMatch } from "@/lib/symbolSearch";
 
 /** 联想结果缓存十分钟：同一个词来回改不必每次都等东财限流（每次约 1 秒）。 */
 const CACHE_MS = 10 * 60 * 1000;
@@ -49,6 +49,9 @@ export function SymbolSearch({ value, onChange, onPick, onEnter, markets, placeh
   const [place, setPlace] = useState<CSSProperties | null>(null);
   const listId = useId();
   const marketKey = (markets ?? []).join(",");
+  const explicitCode = directCode(value);
+  const canUseCode = !!explicitCode && (!markets?.length || markets.includes(marketOfSymbol(explicitCode)!));
+  const searchFailure = canUseCode ? "" : "名称搜索暂不可用，请稍后重试，或输入完整代码";
 
   useEffect(() => {
     const q = value.trim();
@@ -57,6 +60,7 @@ export function SymbolSearch({ value, onChange, onPick, onEnter, markets, placeh
     ctl.current = null;
     setLoading(false);
     setOpen(false);
+    setError("");
     // 刚选中的那一个不再弹下拉；清空也不搜
     if (!q || (picked && picked.symbol === q)) { setResult(null); return; }
     const key = searchKey(q);
@@ -71,11 +75,11 @@ export function SymbolSearch({ value, onChange, onPick, onEnter, markets, placeh
         .then((out) => {
           if (c.signal.aborted) return;
           const r = parseSearch(out);
-          if (!r.ok) { setError(r.error); setResult(null); setOpen(false); return; }
+          if (!r.ok) { setError(canUseCode ? "" : r.error); setResult(null); setOpen(false); return; }
           cache.set(key, { at: Date.now(), matches: r.matches });
           setError(""); setResult({ query: key, matches: keep(r.matches) }); setHi(0); setOpen(focused.current);
         })
-        .catch((e) => { if (!c.signal.aborted) { setError(`名称搜索暂时不通（${e instanceof Error ? e.message : String(e)}），可以直接输入代码`); setOpen(false); } })
+        .catch(() => { if (!c.signal.aborted) { setError(searchFailure); setResult(null); setOpen(false); } })
         .finally(() => { if (!c.signal.aborted) setLoading(false); });
     }, DEBOUNCE_MS);
     return () => clearTimeout(t);
@@ -128,7 +132,7 @@ export function SymbolSearch({ value, onChange, onPick, onEnter, markets, placeh
   }, [showList, empty]);
 
   return (
-    <div className={cn("relative", className)}>
+    <div className={cn("symbol-search relative min-w-0 max-w-full", className)}>
       <div ref={box} className="relative">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
         <input
@@ -151,8 +155,8 @@ export function SymbolSearch({ value, onChange, onPick, onEnter, markets, placeh
         />
         {loading && <Loader2 className="absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-muted-foreground" />}
       </div>
-      {showName && <p className="mt-1 truncate text-[11px] text-muted-foreground">{showName}</p>}
-      {error && !open && <p className="mt-1 text-[11px] leading-4 text-warning">{error}</p>}
+      {showName && <p className="symbol-search-feedback truncate text-muted-foreground" title={showName}>{showName}</p>}
+      {error && !open && <p role="status" className="symbol-search-feedback text-warning">{error}</p>}
       {showList && place && createPortal(
         <ul id={listId} role="listbox" style={place}
           className="z-50 max-h-72 overflow-auto rounded-lg border border-border bg-card p-1 shadow-xl">

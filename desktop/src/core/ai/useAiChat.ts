@@ -23,7 +23,7 @@ export interface AiMsg {
   partial?: boolean;
 }
 
-export type AiSend = (args: { message: string; session: string; signal: AbortSignal }) => Promise<string>;
+export type AiSend = (args: { message: string; session: string; signal: AbortSignal; onProgress?: (text: string) => void }) => Promise<string>;
 
 const readText = (k: string): string | null => {
   try {
@@ -188,6 +188,8 @@ export function sessionId(key: string, epoch: number): string {
 }
 
 export interface AiChat {
+  recoverableQuestion: string | null;
+  progress: string | null;
   msgs: AiMsg[];
   /**
    * `msgs` 现在属于哪个 key。
@@ -217,6 +219,8 @@ export function useAiChat(key: string, send: AiSend): AiChat {
    */
   const [chat, setChat] = useState<{ key: string; msgs: AiMsg[] }>(() => ({ key, msgs: key ? loadChat(key) : [] }));
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
+  const [recoverableQuestion, setRecoverableQuestion] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [storageWarning, setStorageWarning] = useState<string | null>(null);
@@ -251,6 +255,7 @@ export function useAiChat(key: string, send: AiSend): AiChat {
     setErr(null);
     setInfo(null);
     setEpoch(Number(readText(EPOCH_KEY + key) ?? 0) || 0);
+    setRecoverableQuestion(null);
     const loaded = key ? loadChat(key) : [];
     synced.current = chatSyncOf(key, loaded);
     setChat({ key, msgs: loaded });
@@ -296,6 +301,7 @@ export function useAiChat(key: string, send: AiSend): AiChat {
     setErr(null);
     setInfo(null);
     setMsgs([]); // 存储里已经删了；落盘那边见空数组也只是再删一次
+    setRecoverableQuestion(null);
     setEpoch(next);
   }, [abort, setMsgs]);
 
@@ -313,6 +319,8 @@ export function useAiChat(key: string, send: AiSend): AiChat {
       setInfo(null);
       setMsgs((m) => [...m, { role: "user", content: q }, { role: "assistant", content: "", partial: true }]);
       setLoading(true);
+      setRecoverableQuestion(q);
+      setProgress(null);
 
       const patchLast = (fn: (m: AiMsg) => AiMsg) =>
         setMsgs((m) => m.map((msg, i) => (i === m.length - 1 && msg.role === "assistant" ? fn(msg) : msg)));
@@ -327,12 +335,14 @@ export function useAiChat(key: string, send: AiSend): AiChat {
           message: decorate ? decorate(q) : q,
           session: sessionRef.current,
           signal: ac.signal,
+          onProgress: text => { if (alive()) setProgress(text); },
         });
         if (alive()) {
           // 🔴 **空回答不算回答**。后端解析失败 / 空响应 / 降级都可能返回 ""，
           //    照原样收下就会在界面上出现一个"正常结束的空气泡"，还会落盘、
           //    并作为完整历史进入下一轮 —— 典型的把「没取到」渲染成正常结果。
           if (!reply.trim()) throw new Error("模型没有返回内容（空回答）");
+          setRecoverableQuestion(null);
           patchLast((m) => {
             const { partial: _drop, ...rest } = m;
             return { ...rest, content: reply };
@@ -367,5 +377,5 @@ export function useAiChat(key: string, send: AiSend): AiChat {
     [loading, setMsgs],
   );
 
-  return { msgs: chat.msgs, key: chat.key, loading, err, info: [storageWarning, info].filter(Boolean).join(" ") || null, submit, clear, abort };
+  return { msgs: chat.msgs, key: chat.key, loading, recoverableQuestion: loading ? null : recoverableQuestion, progress: loading ? progress : null, err, info: [storageWarning, info].filter(Boolean).join(" ") || null, submit, clear, abort };
 }

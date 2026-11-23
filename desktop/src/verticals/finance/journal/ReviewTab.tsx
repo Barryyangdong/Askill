@@ -34,7 +34,7 @@ function InboxPanel({ inbox, hide }: { inbox: Inbox; hide: boolean }) {
               <ul className="mt-1 space-y-0.5">
                 {it.flags.map((f) => <li key={f.key} className="text-[11px] text-muted-foreground">· {maskJournalText(f.text, hide)}</li>)}
               </ul>
-              {it.note && <p className="mt-1 text-[11px] text-muted-foreground/80">备注:{it.note}</p>}
+              {it.note && <p className="mt-1 text-[11px] text-muted-foreground/80">备注:{hide ? "••••" : it.note}</p>}
             </div>
           ))}
         </div>

@@ -161,6 +161,7 @@ class TestTurnoverTop:
         monkeypatch.setattr(S, "today_sh", lambda: "2026-10-10")
         d = M.shortline_turnover_top_map(W.build_turnover_top("2026-10-09", top=2), _mctx("cn_shortline_turnover_top", "tdx+calc"))
         assert d.get("status") is None
+        assert d["extra"]["source_close_date"] == "2026-10-09"
         got = {(e["field"], e.get("record_key")): e for e in d["evidence"]}
         e = got[("turnover_amount", "stock|300308")]
         assert (e["value"], e["unit"], e["currency"], e["period"]) == (2e10, "元", "CNY", "2026-10-09")

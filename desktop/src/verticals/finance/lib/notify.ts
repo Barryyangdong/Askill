@@ -20,7 +20,7 @@ export type WebhookKind = "feishu" | "wecom" | "dingtalk";
 
 export interface NotifyWebhook { id: string; kind: WebhookKind; kind_label: string; label: string; enabled: boolean; url: string; signed: boolean }
 
-export interface InboxItem { id: string; at: string; job: string; job_label: string; title: string; lines: string[]; link?: string; read: boolean; kind: "message" | "notice" }
+export interface InboxItem { context?: {type:string;refs:{id:string;date?:string}[]}; id: string; at: string; job: string; job_label: string; title: string; lines: string[]; link?: string; read: boolean; kind: "message" | "notice" }
 
 export interface NotifyOverview {
   scheduler: {

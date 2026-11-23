@@ -14,6 +14,8 @@ export type ReviewBlockId =
   | "breadth" | "board_flow" | "turnover"
   | "trend" | "margin" | "valuation" | "bond";
 
+export const allowsPublishedHistory = (id: string) => ["trend", "margin", "valuation", "bond"].includes(id);
+
 /** 只给当天、不认日期的块 */
 export const REALTIME_BLOCKS: readonly ReviewBlockId[] = ["breadth", "board_flow", "turnover"];
 
@@ -79,6 +81,8 @@ export interface BreadthBucket { key: number; label: string; count: number }
 export interface ExchangeBreadth { market: "SH" | "SZ" | "BJ"; name: string; up: number | null; down: number | null; flat: number | null; amount: number | null }
 export interface Breadth {
   date: string | null;
+  fromDailyBars: boolean;
+  exchangeFromDailyBars: boolean;
   /** 涨停 → 跌停,23 档 */
   buckets: BreadthBucket[];
   up: number | null; down: number | null; flat: number | null;
@@ -94,6 +98,14 @@ export interface Breadth {
 }
 const EX_NAME = { SH: "沪市", SZ: "深市", BJ: "北交所" } as const;
 
+export function exchangeHeadline(breadth: Breadth | null) {
+  if (!breadth?.exchangeFromDailyBars || breadth.exchanges.length !== 3) return null;
+  const up = sum(breadth.exchanges.map(row => row.up));
+  const down = sum(breadth.exchanges.map(row => row.down));
+  if (up === null || down === null) return null;
+  return { up, down, upShare: ratio(up, up + down), label: breadthLabel(up, down), amount: breadth.amount };
+}
+
 export function parseBreadth(env: Envelope | undefined): Breadth | null {
   if (!env) return null;
   const all = rows(env);
@@ -103,8 +115,9 @@ export function parseBreadth(env: Envelope | undefined): Breadth | null {
     .filter((b): b is BreadthBucket => Number.isInteger(b.key) && b.count !== null)
     .sort((a, b) => b.key - a.key);
   const pick = (f: (k: number) => boolean) => (buckets.length ? buckets.filter((b) => f(b.key)).reduce((n, b) => n + b.count, 0) : null);
-  const up = pick((k) => k >= 1);
-  const down = pick((k) => k <= -1);
+  const distEvidence = env.evidence.filter(e => e.field === "market_dist_count");
+  const exchangeFromDailyBars = env.evidence.some(e => e.record_key?.startsWith("exchange|") && e.source === "tdx");
+  const fromDailyBars = distEvidence.length ? distEvidence.every(e => e.source === "tdx") : exchangeFromDailyBars;
   const exchanges: ExchangeBreadth[] = (["SH", "SZ", "BJ"] as const).map((m) => {
     const r = all.find((x) => x.key === `exchange|${m}`);
     return {
@@ -113,16 +126,24 @@ export function parseBreadth(env: Envelope | undefined): Breadth | null {
       flat: num(r?.fields.market_flat_count), amount: num(r?.fields.market_turnover_amount),
     };
   });
+  const bucketKeys = new Set(buckets.map(bucket => bucket.key));
+  const completeRange = (min: number, max: number) => {
+    for (let key = min; key <= max; key++) if (!bucketKeys.has(key)) return false;
+    return true;
+  };
+  const up = fromDailyBars && !completeRange(1, 10) ? sum(exchanges.map(x => x.up)) : pick(k => k >= 1);
+  const down = fromDailyBars && !completeRange(-10, -1) ? sum(exchanges.map(x => x.down)) : pick(k => k <= -1);
   const upShare = ratio(up, up === null || down === null ? null : up + down);
   return {
     date: dataDay(env),
+    fromDailyBars, exchangeFromDailyBars,
     buckets,
     up, down,
-    flat: pick((k) => k === 0),
+    flat: fromDailyBars && !bucketKeys.has(0) ? sum(exchanges.map(x => x.flat)) : pick(k => k === 0),
     limitUp: buckets.find((b) => b.key === 11)?.count ?? null,
     limitDown: buckets.find((b) => b.key === -11)?.count ?? null,
-    up5: pick((k) => k >= 6),
-    down5: pick((k) => k <= -6),
+    up5: fromDailyBars && !completeRange(6, 10) ? null : pick(k => k >= 6),
+    down5: fromDailyBars && !completeRange(-10, -6) ? null : pick(k => k <= -6),
     upShare,
     label: breadthLabel(up, down),
     exchanges,
@@ -430,21 +451,23 @@ export function parseValuation(val: Envelope | undefined, bond: Envelope | undef
   const pe = num(vr?.fields.index_pe_total);
   const dy = num(vr?.fields.index_dividend_yield_total);
   const y10 = num(br?.fields.yield_10y);
+  const date = vr?.key.split(":")[1]?.slice(0, 10) ?? null;
+  const y10Date = br?.fields.yield_10y?.period?.slice(0, 10) ?? null;
   const ey = pe && pe > 0 ? r2(100 / pe) : null;
   return {
-    date: vr?.key.split(":")[1]?.slice(0, 10) ?? null,
+    date,
     pe, dy, peCalc: num(vr?.fields.index_pe_calculation), dyCalc: num(vr?.fields.index_dividend_yield_calculation),
-    y10, y10Date: br?.fields.yield_10y?.period?.slice(0, 10) ?? null,
+    y10, y10Date,
     ey,
-    dySpread: dy === null || y10 === null ? null : r2(dy - y10),
-    eySpread: ey === null || y10 === null ? null : r2(ey - y10),
+    dySpread: dy === null || y10 === null || !date || date !== y10Date ? null : r2(dy - y10),
+    eySpread: ey === null || y10 === null || !date || date !== y10Date ? null : r2(ey - y10),
   };
 }
 
 /* ---------- 资金:板块资金 / 成交额榜 / 龙虎榜 ---------- */
 
 export interface BoardFlowRow { name: string; pct: number | null; net: number | null; leader: string }
-export interface BoardFlow { source: "东财" | "新浪"; date: string | null; rows: BoardFlowRow[] }
+export interface BoardFlow { source: "东财" | "新浪" | "大波浪·申万一级"; date: string | null; rows: BoardFlowRow[] }
 const SINA_LEADER = /领涨\s+(\S+)\s+(-?[\d.]+)%/;
 
 /** 东财主力净额 / 新浪「流入 − 流出」两种口径都认;按净额从大到小 */
@@ -452,8 +475,10 @@ export function parseBoardFlow(env: Envelope | undefined): BoardFlow | null {
   if (!env) return null;
   const all = rows(env);
   const sina = all.some((r) => r.fields.board_net_sina);
+  const published = all.some(r => r.fields.board_net_sw_close);
   const out = all.map((r) => {
     const name = r.note.split(/\s+排名/)[0]!.trim() || r.key;
+    if (published) return { name, pct: null, net: num(r.fields.board_net_sw_close), leader: "" };
     if (sina) {
       const m = SINA_LEADER.exec(r.note);
       return { name, pct: num(r.fields.board_change_pct_sina), net: num(r.fields.board_net_sina), leader: m ? `${m[1]} ${r2(Number(m[2]))}%` : "" };
@@ -461,7 +486,7 @@ export function parseBoardFlow(env: Envelope | undefined): BoardFlow | null {
     return { name, pct: num(r.fields.board_change_pct_today), net: num(r.fields.board_main_net_today), leader: "" };
   }).filter((x) => x.net !== null || x.pct !== null);
   out.sort((a, b) => (b.net ?? -Infinity) - (a.net ?? -Infinity));
-  return { source: sina ? "新浪" : "东财", date: dataDay(env), rows: out };
+  return { source: published ? "大波浪·申万一级" : sina ? "新浪" : "东财", date: dataDay(env), rows: out };
 }
 
 export interface TurnoverRow { code: string; name: string; industry: string; price: number | null; pct: number | null; amount: number | null; mcap: number | null }
@@ -475,7 +500,7 @@ export function parseTurnover(env: Envelope | undefined): { date: string | null;
       return {
         rank: num(r.fields.turnover_rank) ?? 9999,
         code: m?.[2] ?? r.key.replace(/^stock\|/, ""), name: m?.[1] ?? "", industry: m?.[3] ?? "",
-        price: num(r.fields.last_price), pct: num(r.fields.change_pct), amount: num(r.fields.turnover_amount),
+        price: num(r.fields.last_price ?? r.fields.close), pct: num(r.fields.change_pct), amount: num(r.fields.turnover_amount),
         mcap: num(r.fields.market_cap),
       };
     })
@@ -572,6 +597,10 @@ export function reviewLines(page: PageResult | null, r: MarketReview): string[] 
 
   const b = r.breadth;
   if (b) {
+    const headline = exchangeHeadline(b);
+    if (headline) L.push(`【沪深京收盘概览·${b.date}】上涨 ${headline.up} 家，下跌 ${headline.down} 家，成交额 ${yiText(headline.amount)}。`);
+    if (b.fromDailyBars) L.push("【涨跌分布口径】通达信沪深京有成交且收盘、昨收有效的 A 股，按涨跌幅分为 21 档。两端为超过 9% 的样本，包含实际涨跌停；不能由此推算涨跌停家数。");
+    else if (b.exchangeFromDailyBars) L.push("【涨跌分布口径】东方财富盘后归档的 23 档包含单列的涨跌停。交易所分项来自通达信有成交且收盘、昨收有效的 A 股，两种样本口径各自统计。");
     L.push(`【涨跌面${tag("breadth", b.date)}】上涨 ${b.up ?? "—"} / 下跌 ${b.down ?? "—"} / 平盘 ${b.flat ?? "—"} 家;涨停 ${b.limitUp ?? "—"} / 跌停 ${b.limitDown ?? "—"};涨 5% 以上 ${b.up5 ?? "—"} / 跌 5% 以上 ${b.down5 ?? "—"};`
       + `上涨占比 ${share(b.upShare)}${b.label ? `(派生标签「${b.label}」,规则:${BREADTH_RULE})` : ""};沪深京成交额 ${yiText(b.amount)}`);
   } else gap("breadth", "涨跌分布");

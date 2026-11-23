@@ -4,6 +4,8 @@
  * 过了时点补不回来;非交易时段不冒充当场快照。和 VA 的不同:路径柱按红涨绿跌上色(VA 那里写反了)。
  */
 import { useEffect, useState } from "react";
+import { replaySnapshots } from "@/lib/intradayReplay";
+import { DataStamp } from "@/components/ui/DataStamp";
 import { Camera, ClipboardCheck, Gavel, Route } from "lucide-react";
 import { backend } from "@/lib/backend";
 import { cn } from "@/lib/utils";
@@ -231,6 +233,7 @@ export function IntradayView({ r, onCapture, capturing, captureMsg }: { r: Intra
       </div>
       {captureMsg && <p role="status" className="text-[12px] text-muted-foreground">{captureMsg}</p>}
       <SlotStrip slots={r.slots} />
+      <DataStamp mode="snapshot" dataAt={r.slots.some(s => s.snapshot) ? r.date : null} />
       <Auction snap={r.auction} reason={r.auction_reason} basisLabel={r.basis_labels.open} />
       <PathTable slots={r.slots} closed={closed} today={r.today} />
       <Checks checks={r.checks} date={r.date} closed={closed} today={r.today} />
@@ -262,6 +265,7 @@ export function IntradayTab({ date, refreshNonce, onBusy }: { date: string | nul
   const [reloads, setReloads] = useState(0);
   const [capturing, setCapturing] = useState(false);
   const [captureMsg, setCaptureMsg] = useState<string | null>(null);
+  const [cutoff, setCutoff] = useState("");
   useEffect(() => {
     const ctl = new AbortController();
     onBusy?.(true);
@@ -280,8 +284,9 @@ export function IntradayTab({ date, refreshNonce, onBusy }: { date: string | nul
     const t = window.setInterval(() => { if (!document.hidden) setReloads((x) => x + 1); }, 60_000);
     return () => window.clearInterval(t);
   }, [today]);
-  const r = st.state === "done" ? st.r : null;
-  useAiPage(r ? { key: `watch:intraday:${r.date}`, title: `竞价与盘中路径 ${r.date}`, context: intradaySummary(r),
+  const full = st.state === "done" ? st.r : null;
+  const r = full && cutoff ? replaySnapshots(full, cutoff) : full;
+  useAiPage(r ? { key: `watch:intraday:${r.date}:${cutoff}`, title: `竞价与盘中路径 ${r.date}${cutoff ? ` · 截至采集 ${cutoff}` : ""}`, context: `${cutoff ? `仅包含采集时间不晚于 ${cutoff} 的存档快照。\n` : ""}${intradaySummary(r)}`,
     suggestions: ["今天竞价承接和昨天收盘比是强是弱", "盘中路径是一路走强还是冲高回落", "昨晚的验证条件现在看哪些在兑现"] } : null);
   const capture = async () => {
     setCapturing(true);
@@ -298,5 +303,15 @@ export function IntradayTab({ date, refreshNonce, onBusy }: { date: string | nul
   };
   if (st.state === "loading") return <div className="glass flex min-h-[10rem] items-center justify-center p-6"><p role="status" className="text-sm text-muted-foreground">竞价与盘中路径加载中…</p></div>;
   if (st.state === "failed") return <div className="glass p-6"><p role="status" className="text-sm text-muted-foreground">竞价与盘中路径这次没取到:{st.why || "原因不明"}。不代表没有,可点右上角刷新重试。</p></div>;
-  return <IntradayView r={st.r} onCapture={st.r.today ? () => void capture() : null} capturing={capturing} captureMsg={captureMsg} />;
+  return <>
+    <div className="mb-4 flex flex-wrap items-center gap-2 rounded border border-border p-3 text-xs">
+      <label htmlFor="snapshot-cutoff" className="font-medium">快照回看</label>
+      <select id="snapshot-cutoff" value={cutoff} onChange={e => setCutoff(e.target.value)} className="rounded border border-border bg-background px-2 py-1">
+        <option value="">全部已存时点</option>
+        {st.r.slots.filter(s => s.state === "saved" && s.snapshot && Number.isFinite(Date.parse(s.snapshot.captured_at))).map(s => <option key={s.slot} value={s.snapshot!.captured_at}>截至 {s.slot}（实际采集 {s.snapshot!.clock}）</option>)}
+      </select>
+      <span className="text-muted-foreground">{cutoff ? "仅展示所选采集时间及之前的快照" : "使用当场存档，缺失时点不补造"}</span>
+    </div>
+    <IntradayView r={r!} onCapture={!cutoff && st.r.today ? () => void capture() : null} capturing={capturing} captureMsg={cutoff ? null : captureMsg} />
+  </>;
 }

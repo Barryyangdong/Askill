@@ -1,26 +1,35 @@
+import { HistoricalDebate } from "./HistoricalDebate";
+import { ObservationDraftButton } from "../components/ui/ObservationDraftButton";
+import { JourneyLink } from "../components/JourneyLink";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Swords, Play, Square, CheckCircle2, Circle, AlertTriangle } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { noRemoteImages } from "../../../core/ai/noRemoteImages";
 import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { FormActions, FormField, FormToolbar } from "@/components/ui/FormToolbar";
 import { Disclaimer } from "@/components/ui/Disclaimer";
+import { DebateConclusion } from "../components/DebateConclusion";
+import { DebateReport } from "../components/DebateReport";
+import { DebateProgress } from "../components/DebateProgress";
 import { SymbolSearch } from "../components/SymbolSearch";
 import { ReportHistory } from "@/components/ui/ReportHistory";
+import { previousDebate } from "../lib/debateHistory";
 import { debateStream, type DebateStage } from "@/lib/agents";
-import type { DebateNumberAudit } from "@/lib/backend";
-import { addNote, loadNotes, type Note } from "@/lib/notes";
-import { ApiError } from "@/lib/api";
+import { backend, type DebateNumberAudit, type DebateStage as BackendStage } from "@/lib/backend";
+import { parseSearch } from "@/lib/symbolSearch";
+import { hydrateNotes, loadNotes, type Note } from "@/lib/notes";
 import { marketOfSymbol, normalizeMarketSymbol } from "@/lib/marketSymbol";
+import { storageGet, storageSet } from "@/lib/storage";
 
 interface StageBox {
   stage: DebateStage;
   label: string;
   content: string;
   done: boolean;
+  status?: BackendStage["status"];
+  started_at?: string;
+  finished_at?: string;
   /** 这一段里数字的着落（后端就地自查的结果） */
   audit?: DebateNumberAudit;
 }
@@ -32,10 +41,24 @@ const STAGE_TONE: Record<DebateStage, string> = {
   bull_rebut: "border-primary/30 bg-primary/[0.03]",
   bear: "border-sky-500/40 bg-sky-500/[0.06]",
   bear_rebut: "border-sky-500/25 bg-sky-500/[0.03]",
+  bull_reply: "border-primary/30 bg-primary/[0.03]",
+  bear_reply: "border-sky-500/25 bg-sky-500/[0.03]",
   referee: "border-border bg-background/40",
 };
 
 const DOSSIER_HINT = "多空双方拿到的是同一份接口实时拉取的数据，谁也不能靠编数字赢。";
+
+export function DebateDossier({ progress, missing }: { progress: { title: string; ok: boolean }[]; missing: string[] }) {
+  if (!progress.length && !missing.length) return null;
+  return <div className="mt-4 border-t border-border/40 pt-3">
+    <p className="mb-2 text-[11px] text-muted-foreground">{DOSSIER_HINT}</p>
+    <div className="flex flex-wrap gap-x-4 gap-y-1.5">{progress.map(p => <span key={p.title} className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">{p.ok ? <CheckCircle2 className="h-3 w-3 text-primary/70" /> : <Circle className="h-3 w-3 text-muted-foreground/40" />}{p.title}</span>)}</div>
+    {missing.length > 0 && <p className="mt-2 text-[11px] text-warning">资料限制：{missing.join("、")}（双方立论时不得臆测这部分）</p>}
+  </div>;
+}
+export function restoredDebateRounds(value: unknown, fallback: number): number {
+  return value === 1 || value === 2 ? value : fallback;
+}
 
 
 /**
@@ -67,35 +90,14 @@ function AuditBar({ a }: { a: DebateNumberAudit }) {
           </ul>
         </div>
       )}
-      <p className="text-muted-foreground/70">
-        数字 {a.total} 个：<b className="text-foreground/70">{a.bound}</b> 个对得上资料包 ·{" "}
-        <b className="text-foreground/70">{a.derived}</b> 个写了算式且重算通过 ·{" "}
-        <b className={a.loose ? "text-warning" : "text-foreground/70"}>{a.loose}</b> 个没有交代出处
-        {a.loose > 0 && <span className="text-muted-foreground/60">（不等于错，但这一档没经过核对）</span>}
-      </p>
+      <details className="text-muted-foreground">
+        <summary className="cursor-pointer py-1">数字复核 · 来源吻合 {a.bound} · 自算通过 {a.derived} · <span className={a.loose ? "text-warning" : ""}>待核对 {a.loose}</span></summary>
+        <p className="mt-1 leading-relaxed">共识别 {a.total} 个数字。来源吻合只表示数值与共同资料一致；自算通过只表示已写明的算式重算一致；待核对不等于错误。资料期、口径及结论仍需单独判断。</p>
+      </details>
     </div>
   );
 }
 
-function auditMarkdown(a?: DebateNumberAudit): string[] {
-  if (!a) return ["### 数字复核", "", "本阶段没有返回数字复核结果。", ""];
-  const lines = [
-    "### 数字复核",
-    "",
-    `- 数字总数：${a.total}`,
-    `- 与资料包吻合：${a.bound}`,
-    `- 写明算式且重算通过：${a.derived}`,
-    `- 没有交代出处：${a.loose}（不等于错，但未经过核对）`,
-  ];
-  if (a.badMath.length) {
-    lines.push("", `- **算式重算不一致：${a.badMath.length} 处**`);
-    for (const row of a.badMath) {
-      const raw = row.raw.replace(/\s+/g, " ").trim();
-      lines.push(`  - ${raw}；原报告写 ${row.stated}${row.percent ? "%" : ""}，重算为 ${row.recomputed.toFixed(2)}${row.percent ? "%" : ""}`);
-    }
-  }
-  return [...lines, ""];
-}
 
 /**
  * 「研究工具 → 多空辩论」页：自己选股票（目前只做 A 股）。正在看哪只记在地址里（?symbol=），
@@ -103,44 +105,76 @@ function auditMarkdown(a?: DebateNumberAudit): string[] {
  * 选股票只是选定，不会自动开始（辩论要用 AI 额度）。跑的途中不让换股票。
  */
 export function DebatePage() {
+ const [params] = useSearchParams();
+ return params.has('job') ? <HistoricalDebate key={`${params.get('job')}:${params.get('symbol')}`} id={params.get('job')??''} symbol={params.get('symbol')??''}/> : <NewDebatePage/>;
+}
+function NewDebatePage() {
   const [params, setParams] = useSearchParams();
   const code = normalizeMarketSymbol(params.get("symbol")) ?? "";
   const [input, setInput] = useState(code);
-  useEffect(() => { setInput(code); }, [code]);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const choose = (raw: string) => {
+  const [resolving, setResolving] = useState(false);
+  const lookup = useRef<AbortController | null>(null);
+  useEffect(() => { setInput(code); lookup.current?.abort(); lookup.current = null; setResolving(false); }, [code]);
+  useEffect(() => () => lookup.current?.abort(), []);
+  const choose = async (raw: string) => {
+    lookup.current?.abort();
+    lookup.current = null;
     const c = normalizeMarketSymbol(raw);
-    if (!c) { setErr("请输入 A 股 6 位代码，或在下拉里选一个"); return; }
+    const apply = (symbol: string) => {
+      setInput(symbol);
+      if (symbol !== code) setParams((prev) => { const next = new URLSearchParams(prev); next.set("symbol", symbol); return next; });
+    };
     setErr("");
-    if (c !== code) setParams((prev) => { const next = new URLSearchParams(prev); next.set("symbol", c); return next; });
+    setResolving(false);
+    if (c && marketOfSymbol(c) === "CN") { apply(c); return; }
+    if (!raw.trim()) { setErr("请输入 A 股代码、名称或拼音"); return; }
+    const ac = new AbortController();
+    lookup.current = ac;
+    setResolving(true);
+    try {
+      const reply = parseSearch(await backend.runTool("search", { query: raw.trim() }, ac.signal));
+      if (ac.signal.aborted) return;
+      if (!reply.ok) { setErr(reply.error); return; }
+      const matches = reply.matches.filter(m => m.market === "CN");
+      const exact = matches.filter(m => m.name === raw.trim() || m.pinyin.toUpperCase() === raw.trim().toUpperCase());
+      const candidates = exact.length ? exact : matches;
+      if (candidates.length === 1) apply(candidates[0]!.symbol);
+      else setErr(candidates.length ? "找到多个 A 股标的，请从下拉候选中选择" : "没找到匹配的 A 股标的，请核对名称或输入 6 位代码");
+    } catch {
+      if (!ac.signal.aborted) setErr("名称搜索暂不可用，请稍后重试，或输入 6 位 A 股代码");
+    } finally {
+      if (lookup.current === ac) { lookup.current = null; setResolving(false); }
+    }
   };
   return (
     <div>
       <PageHeader
         title="多空辩论"
-        subtitle="同一份客观数据，多方与空方各自立论、互相质疑，最后由中立主持归纳分歧点与验证清单——不给买卖结论，判断留给你自己。目前只做 A 股"
+        subtitle="多空观点核对 · A股" description="同一份客观数据，多方与空方各自立论、互相质疑，通过质询与回应修正观点，形成有依据、有条件的方向判断。目前只做 A 股"
       />
       <GlassCard className="mb-4">
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="space-y-1.5">
-            <span className="block text-xs text-muted-foreground">A 股代码 / 名称 / 拼音</span>
-            <SymbolSearch value={input} onChange={setInput} onPick={(m) => choose(m.symbol)} onEnter={() => choose(input)}
-              markets={["CN"]} placeholder="600519 / 茅台 / gzmt" disabled={busy} ariaLabel="A 股代码" className="w-56" />
-          </div>
-          <button onClick={() => choose(input)} disabled={busy}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted/40 disabled:opacity-50">
-            <Swords className="h-4 w-4" /> 选这只
-          </button>
-          {code && (
-            <Link to={`/research?symbol=${encodeURIComponent(code)}`} className="pb-2 text-xs text-muted-foreground hover:text-primary">
-              去个股深挖看走势和财报 →
-            </Link>
-          )}
-        </div>
+        <FormToolbar>
+          <FormField label="A 股代码 / 名称 / 拼音">
+            <SymbolSearch value={input} onChange={setInput} onPick={(m) => void choose(m.symbol)} onEnter={() => void choose(input)}
+              markets={["CN"]} placeholder="600825 / 新华传媒 / xhcm" disabled={busy || resolving} ariaLabel="A 股代码" className="w-56" />
+          </FormField>
+          <FormActions>
+            <button onClick={() => void choose(input)} disabled={busy || resolving}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted/40 disabled:opacity-50">
+              <Swords className="h-4 w-4" /> {resolving ? "查找中…" : "选这只"}
+            </button>
+            {code && (
+              <JourneyLink to={`/research?symbol=${encodeURIComponent(code)}`} className="text-xs text-muted-foreground hover:text-primary">
+                去个股深挖看走势和财报 →
+              </JourneyLink>
+            )}
+          </FormActions>
+        </FormToolbar>
         {err && <p role="alert" className="mt-2 text-xs text-destructive">{err}</p>}
       </GlassCard>
-      <Debate symbol={code} onBusy={setBusy} />
+      <Debate key={code} symbol={code} onBusy={setBusy} />
       <Disclaimer />
     </div>
   );
@@ -155,7 +189,7 @@ export function Debate({ symbol, active = true, onBusy }: { symbol: string; acti
   const market = marketOfSymbol(code);
   /** 下面显示的这场辩论是哪只的（开始那一刻定下，跑的中途换股票也不变） */
   const [runCode, setRunCode] = useState("");
-  const [rounds, setRounds] = useState(1);
+  const [rounds, setRounds] = useState(2);
   const [running, setRunning] = useState(false);
   const runningRef = useRef(false);
   runningRef.current = running;
@@ -166,18 +200,30 @@ export function Debate({ symbol, active = true, onBusy }: { symbol: string; acti
   const [stages, setStages] = useState<StageBox[]>([]);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [startedAt, setStartedAt] = useState(0);
+  const [now, setNow] = useState(Date.now());
+  const lastActivity = useRef(Date.now());
+  const [dossierReady, setDossierReady] = useState(false);
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
   const [notes, setNotes] = useState<Note[]>(loadNotes);
   const abortRef = useRef<AbortController | null>(null);
   const stagesRef = useRef<StageBox[]>([]);
+  useEffect(() => () => { abortRef.current?.abort(); }, []);
 
-  const updateStages = (fn: (rows: StageBox[]) => StageBox[]) => setStages((rows) => {
-    const next = fn(rows);
+  const updateStages = (fn: (rows: StageBox[]) => StageBox[]) => {
+    const next = fn(stagesRef.current);
     stagesRef.current = next;
-    return next;
-  });
+    setStages(next);
+  };
 
   const reset = () => {
     stagesRef.current = [];
+    setStartedAt(0);
+    setDossierReady(false);
     setStatus(""); setProgress([]); setMissing([]); setStages([]); setError(""); setSaved(false);
   };
   // 换了股票、又没在跑：上一只的辩论收起来（结果已自动归档在下面的历史里）
@@ -185,17 +231,57 @@ export function Debate({ symbol, active = true, onBusy }: { symbol: string; acti
     if (!runningRef.current && runCode && runCode !== code) { reset(); setRunCode(""); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
+  useEffect(() => {
+    let cancelled = false;
+    void backend.backgroundJobs().then(jobs => {
+      const job = jobs.find(j => j.key === `debate:${code}` && ["running", "cancelling"].includes(j.status));
+      if (!cancelled && job && !runningRef.current) void start(job.id);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [code]);
+  // Refresh restores confirmed output; it never silently starts more model calls.
+  useEffect(() => {
+    if (!code || runningRef.current) return;
+    try {
+      const cached = JSON.parse(storageGet(`askill-debate:${code}`) ?? "null");
+      if (cached?.version !== 1 || cached.state?.symbol !== code || !Array.isArray(cached.state.stages) || !Number.isFinite(cached.startedAt) || !Number.isFinite(cached.savedAt)) return;
+      const rows = cached.state.stages.filter((s: BackendStage) => s && typeof s.id === "string" && typeof s.label === "string" && typeof s.text === "string").map((s: BackendStage) => ({
+        stage: s.id as DebateStage, label: s.label, content: s.text, done: s.status === "done", status: s.status, audit: s.audit, started_at: s.started_at, finished_at: s.finished_at,
+      }));
+      updateStages(() => rows);
+      setRounds(current => restoredDebateRounds(cached.rounds, current));
+      setRunCode(code); setStartedAt(cached.startedAt); setNow(cached.savedAt); setDossierReady(true); setMissing(cached.state.gaps ?? []);
+      setStatus(cached.state.outcome === "completed" ? "已恢复上次辩论结果" : "已恢复上次未完成的内容；未完成环节需重新开始");
+    } catch { /* Malformed or unavailable local cache does not block a fresh run. */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code]);
 
-  async function start() {
+
+  async function start(resumeId?: string) {
     const c = code;
     if (!/^\d{6}$/.test(c)) { setError("多空辩论目前只支持 A 股，请在页头选一只 A 股"); return; }
     reset();
     setRunCode(c);
     setRunning(true);
+    const begun = Date.now(); setStartedAt(begun); setNow(begun); lastActivity.current = begun;
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
       const final = await debateStream(c, rounds, {
+        onActivity: () => { if (abortRef.current === ctrl) lastActivity.current = Date.now(); },
+        onState: state => {
+          if (abortRef.current !== ctrl) return;
+          storageSet(`askill-debate:${c}`, JSON.stringify({ version: 1, state, rounds, startedAt: begun, savedAt: Date.now() }));
+          updateStages(rows => state.stages.map(stage => ({
+            stage: stage.id as DebateStage, label: stage.label, status: stage.status,
+            done: stage.status === "done", audit: stage.audit,
+            started_at: stage.started_at, finished_at: stage.finished_at,
+            content: stage.text || (stage.status === "running" ? rows.find(row => row.stage === stage.id)?.content ?? "" : ""),
+          })));
+        },
+        onPreview: (stage, text) => {
+          if (abortRef.current === ctrl) updateStages(rows => rows.map(row => row.stage === stage && !row.done ? { ...row, content: text } : row));
+        },
         onStatus: (message) => { if (abortRef.current === ctrl) setStatus(message); },
         onDossierProgress: (title, ok, loaded, total) => {
           if (abortRef.current !== ctrl) return;
@@ -203,10 +289,10 @@ export function Debate({ symbol, active = true, onBusy }: { symbol: string; acti
           setProgress((p) => [...p, { title, ok }]);
         },
         onDossierReady: (_sections, miss) => {
-          if (abortRef.current === ctrl) { setMissing(miss); setStatus("底稿就绪，辩论开始"); }
+          if (abortRef.current === ctrl) { setDossierReady(true); setMissing(miss); setStatus("底稿就绪，辩论开始"); }
         },
         onStageStart: (stage, label) => {
-          if (abortRef.current === ctrl) updateStages((s) => [...s, { stage, label, content: "", done: false }]);
+          if (abortRef.current === ctrl) updateStages((s) => s.some(b => b.stage === stage) ? s : [...s, { stage, label, content: "", done: false, status: "running" }]);
         },
         onDelta: (stage, text, audit) => {
           if (abortRef.current === ctrl) updateStages((s) => s.map((b) => (b.stage === stage && !b.done ? { ...b, content: b.content + text, ...(audit ? { audit } : {}) } : b)));
@@ -215,50 +301,47 @@ export function Debate({ symbol, active = true, onBusy }: { symbol: string; acti
           if (abortRef.current === ctrl) updateStages((s) => s.map((b) => (b.stage === stage && !b.done ? { ...b, content, done: true } : b)));
         },
         onError: (message, stage) => {
-          if (abortRef.current === ctrl) setError(stage ? `${stage}：${message}` : message);
+          if (abortRef.current === ctrl) setError(stage ? `${stagesRef.current.find(s => s.stage === stage)?.label ?? stage}：${message}` : message);
         },
-      }, ctrl.signal);
+      }, ctrl.signal, previousDebate(notes, c, begun), resumeId);
       if (abortRef.current === ctrl && !ctrl.signal.aborted && final?.done
           && final.outcome !== "failed" && final.outcome !== "cancelled" && stagesRef.current.some((s) => s.done)) {
-        const body = [
-          `# 多空辩论 · ${c}`,
-          "",
-          `- 完成状态：${final.outcome}`,
-          `- 共同资料：${final.evidence_count} 条证据`,
-          ...(final.gaps.length ? ["- 资料缺口：" + final.gaps.join("；")] : []),
-          "",
-          ...stagesRef.current.filter((s) => s.done).flatMap((s) => [
-            `## ${s.label}`, "", s.content, "", ...auditMarkdown(s.audit), "---", "",
-          ]),
-        ].join("\n");
         try {
-          setNotes(await addNote("多空辩论", `多空辩论 · ${c}`, body));
+          await hydrateNotes(); setNotes(loadNotes());
           setSaved(true);
           setStatus(final.outcome === "completed" ? "辩论完成，报告已自动归档" : "辩论结束（有环节未完成），现有报告已自动归档");
         } catch (e) {
-          setError(`辩论已经完成，但自动归档失败：${e instanceof Error ? e.message : String(e)}`);
+          setError(`报告已在后台归档，但页面记录未刷新：${e instanceof Error ? e.message : String(e)}`);
         }
+      } else if (abortRef.current === ctrl && !ctrl.signal.aborted) {
+        setStatus(final?.outcome === "cancelled" ? "本次已中止，已完成内容保留" : "本次未完成，已生成内容保留");
       }
     } catch (e) {
       if (abortRef.current === ctrl) {
-        if (e instanceof DOMException && e.name === "AbortError") setStatus("已请求中止；页面停止等待，后台停止尚未确认");
-        else setError(e instanceof ApiError ? e.message : String(e));
+        if (e instanceof DOMException && e.name === "AbortError") setStatus("页面已断开，后台任务可在任务中心继续查看");
+        else setError((e instanceof Error ? e.message : String(e)) + " 可在任务中心查看后台结果。");
       }
     } finally {
       if (abortRef.current === ctrl) {
-        if (ctrl.signal.aborted) setStatus("已请求中止；页面停止等待，后台停止尚未确认");
+        if (ctrl.signal.aborted) setStatus("页面已断开，后台任务可在任务中心继续查看");
+        setNow(Date.now());
         setRunning(false);
         abortRef.current = null;
       }
     }
   }
 
-  function stop() {
-    abortRef.current?.abort();
-    setStatus("正在中止…");
+  async function stop() {
+    setStatus("正在请求后台中止…");
+    try {
+      const jobs = await backend.backgroundJobs();
+      const job = jobs.find(j => j.key === `debate:${runCode}` && ["running", "cancelling"].includes(j.status));
+      if (job) await backend.cancelBackgroundJob(job.id);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   }
 
   const finished = stages.length > 0 && stages.every((s) => s.done);
+  const conclusion = stages.find(s=>s.stage==="referee"&&s.done)?.content;
 
   const shown = runCode || code;
   useAiPage({
@@ -293,44 +376,41 @@ export function Debate({ symbol, active = true, onBusy }: { symbol: string; acti
               : `下面是 ${runCode} 的辩论结果，不是 ${code || "当前选的股票"}；点「开始辩论」会换成当前这只。`}
           </p>
         )}
-        <div className="flex flex-wrap items-end gap-3">
-          <div>
-            <label className="mb-1 block text-xs text-muted-foreground">辩论深度</label>
-            <select
+        <FormToolbar>
+          <FormField label="辩论深度">
+            <select aria-label="辩论深度"
               value={rounds}
               onChange={(e) => setRounds(Number(e.target.value))}
               disabled={running}
               className="rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm outline-none focus:border-primary/60"
             >
-              <option value={1}>一轮 · 各自陈述</option>
-              <option value={2}>两轮 · 加交叉反驳</option>
+              <option value={1}>快速对照 · 不含交叉质询</option>
+              <option value={2}>完整辩论 · 质询、回应与修正</option>
             </select>
-          </div>
-          {running ? (
-            <button onClick={stop}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 px-4 py-2 text-sm hover:text-destructive">
-              <Square className="h-4 w-4" /> 中止
-            </button>
-          ) : (
-            <button onClick={start} disabled={!canStart}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-primary/90 px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary disabled:opacity-40">
-              <Play className="h-4 w-4" /> 开始辩论
-            </button>
-          )}
-          {finished && !running && saved && <span className="text-xs text-success">报告已自动归档</span>}
-        </div>
+          </FormField>
+          <FormActions>
+            {running ? (
+              <button onClick={stop}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 px-4 py-2 text-sm hover:text-destructive">
+                <Square className="h-4 w-4" /> 中止
+              </button>
+            ) : (
+              <button onClick={() => void start()} disabled={!canStart}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary/90 px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary disabled:opacity-40">
+                <Play className="h-4 w-4" /> 开始辩论
+              </button>
+            )}
+            {finished && !running && saved && <span className="form-toolbar-summary text-xs text-success">报告已自动归档</span>}
+        </FormActions>
+        </FormToolbar>
 
-        {/* 开销提示：辩论比问答重得多，让用户在点下去之前就知道要花多久、调几次模型 */}
-        {!running && !status && (
-          <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground/70">
-            ⏱ {rounds === 2
-              ? "两轮约 3 分钟 · 5 次模型调用 · 约 6 万字进上下文"
-              : "一轮约 100 秒 · 3 次模型调用 · 约 3.5 万字进上下文"}
-            （每个角色都会带上完整底稿）。其中拉底稿约 35 秒、走公开数据接口，不消耗 token。
-            省额度可用「订阅接入」的本机 CLI，或选中档模型——数据已备齐，模型只做组织和表达。
-          </p>
-        )}
-
+        {!running && !status && <p className="mt-3 text-xs text-muted-foreground">
+          多空独立陈述并行生成{rounds === 2 ? " → 交叉质询 → 回应与修正" : ""} → 综合判断 → 自动归档
+        </p>}
+        {startedAt > 0 && <DebateProgress
+          stages={stages.map(s => ({ id: s.stage, label: s.label, text: s.content, status: s.status ?? (s.done ? "done" : "pending"), started_at: s.started_at, finished_at: s.finished_at }))}
+          rounds={rounds} startedAt={startedAt} now={now} running={running} dossierReady={dossierReady} lastActivity={lastActivity.current}
+        />}
         {status && <p className="mt-3 text-xs text-muted-foreground">{status}</p>}
         {error && (
           <p className="mt-3 flex items-start gap-1.5 text-xs text-destructive">
@@ -338,55 +418,43 @@ export function Debate({ symbol, active = true, onBusy }: { symbol: string; acti
           </p>
         )}
 
-        {progress.length > 0 && (
-          <div className="mt-4 border-t border-border/40 pt-3">
-            <p className="mb-2 text-[11px] text-muted-foreground">{DOSSIER_HINT}</p>
-            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-              {progress.map((p) => (
-                <span key={p.title} className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                  {p.ok
-                    ? <CheckCircle2 className="h-3 w-3 text-primary/70" />
-                    : <Circle className="h-3 w-3 text-muted-foreground/40" />}
-                  {p.title}
-                </span>
-              ))}
-            </div>
-            {missing.length > 0 && (
-              <p className="mt-2 text-[11px] text-warning">
-                未取到：{missing.join("、")}（双方立论时不得臆测这部分）
-              </p>
-            )}
-          </div>
-        )}
+        <DebateDossier progress={progress} missing={missing} />
       </GlassCard>
 
-      <div className="mt-4 space-y-4">
-        {stages.map((s) => (
+      {stages.find(s => s.stage === "referee" && s.content) && <div className="mt-4">
+        <DebateConclusion content={stages.find(s => s.stage === "referee")!.content} provisional={!stages.find(s => s.stage === "referee")!.done} />
+        {stages.find(s => s.stage === "referee")?.audit && <AuditBar a={stages.find(s => s.stage === "referee")!.audit!} />}
+      </div>}
+      {conclusion && <ObservationDraftButton initialSymbol={shown} question={`${shown} · 辩论后的观察`} reply={conclusion} />}
+      <details className="mt-4" open={running || !stages.some(s => s.stage === "referee" && s.done)}>
+      <summary className="cursor-pointer py-2 text-sm font-medium">完整交锋过程{finished ? " · 已完成" : ""}</summary>
+      <div className="mt-2 space-y-4">
+        {stages.filter(s => s.status !== "pending" && s.stage !== "referee").map((s) => (
           <div key={s.stage} className={`rounded-xl border p-4 ${STAGE_TONE[s.stage]}`}>
             <div className="mb-2 flex items-center gap-2">
               <Swords className="h-4 w-4 text-muted-foreground" />
               <span className="text-sm font-semibold">{s.label}</span>
-              {!s.done && <span className="animate-pulse text-[11px] text-muted-foreground">生成中…</span>}
+              <span className="ml-auto text-[11px] text-muted-foreground">{s.done ? "已完成" : s.status === "failed" ? "未完成" : s.status === "cancelled" ? "已中止" : running ? "生成预览 · 数字待复核" : "未确认完成"}</span>
             </div>
-            <div className="prose prose-sm dark:prose-invert max-w-none text-foreground prose-table:text-sm">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={noRemoteImages}>{s.content || "…"}</ReactMarkdown>
-            </div>
+            {s.content ? <DebateReport content={s.content} /> : <p className="py-4 text-sm text-muted-foreground">{running && s.status === "running" ? "正在组织观点，正文返回后将在这里逐段显示…" : "这个环节没有返回可用正文。"}</p>}
             {s.audit && <AuditBar a={s.audit} />}
           </div>
         ))}
       </div>
+
+      </details>
 
       {stages.length === 0 && !running && (
         <GlassCard className="mt-4">
           <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
             <Swords className="h-8 w-8 text-muted-foreground/40" />
             点「开始辩论」。后端会先拉一份客观事实底稿，再让多方 / 空方基于同一份数据互相质疑。
-            <span className="text-xs">产出的是「分歧点 + 验证清单」，不是买卖建议。</span>
+            <span className="text-xs">默认包含独立立论、交叉质询、回应修正与综合判断。</span>
           </div>
         </GlassCard>
       )}
 
-      <ReportHistory kind="多空辩论" notes={notes} onChange={setNotes} />
+      <ReportHistory kind="多空辩论" notes={notes} onChange={setNotes} renderContent={content => <DebateReport content={content} />} />
     </div>
   );
 }

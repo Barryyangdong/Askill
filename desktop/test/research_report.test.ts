@@ -28,7 +28,9 @@ test("研究报告区区分未校验、缺失与资料不完整，不渲染未�
         appendix: "## 引用明细\n\n| 证据 | 资料期 |\n| --- | --- |\n| ev-test | 2026-06 |\n\nAPPENDIX_CANARY" },
     }));
     const ready = withAppendix("ready");
-    assert.match(ready, /<h2>研究结论<\/h2>/);
+    const heading = /<h2 id="([^"]+)">研究结论<\/h2>/.exec(ready);
+    assert.ok(heading, "已放行正文渲染为可定位标题");
+    assert.equal((ready.match(new RegExp(`id="${heading[1]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`, "g")) ?? []).length, 1, "标题 ID 在正文和附录中唯一");
     assert.match(ready, /<strong>证据优先<\/strong>/);
     assert.match(ready, /<table>/); assert.match(ready, /APPENDIX_CANARY/);
     assert.match(ready, /证据附录/);

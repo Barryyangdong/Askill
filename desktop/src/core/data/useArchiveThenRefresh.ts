@@ -56,19 +56,23 @@ export function useArchiveThenRefresh<T>(
    *    旧请求的结果本来就会被 run 号挡掉,不需要它顺带锁住新请求。
    */
   const busyRun = useRef<number | null>(null);
+  const refreshState = useRef<{run:number; started:boolean; success:boolean; failure:string | null}>({run:0,started:false,success:false,failure:null});
 
   const doRefresh = useCallback(async (run: number) => {
     if (busyRun.current === run) return;   // 只拦同一 run 的重入(狂点刷新)
     busyRun.current = run;
+    if (refreshState.current.run === run) { refreshState.current.started = true; refreshState.current.failure = null; }
     setRefreshing(true);
     try {
       const fresh = await loadRef.current(true);
       if (runRef.current !== run) return;
+      refreshState.current.success = true;
       setData(fresh);
       setErr(null);
       setStaleNote(null);
     } catch (e) {
       if (runRef.current !== run) return;
+      refreshState.current.failure = msg(e);
       // 🔴 有存档就**留着**，只把失败说出来；一个字都没有时才算真错
       setData((prev) => {
         if (prev === null) setErr(msg(e));
@@ -87,6 +91,7 @@ export function useArchiveThenRefresh<T>(
 
   useEffect(() => {
     const run = ++runRef.current;
+    refreshState.current = {run,started:false,success:false,failure:null};
     setLoading(true);
     setErr(null);
     setStaleNote(null);
@@ -95,14 +100,18 @@ export function useArchiveThenRefresh<T>(
       try {
         const archived = await loadRef.current(false);
         if (runRef.current !== run) return;
-        setData(archived);
+        if (!refreshState.current.success) {
+          setData(archived);
+          if (refreshState.current.failure) { setErr(null); setStaleNote(`刷新没成功（${refreshState.current.failure}）——下面仍是上一次的存档`); }
+        }
         setLoading(false); // 存档已经能看了，剩下的在后台刷
       } catch {
         // 没有存档（新机器 / 上游从没成功过）：继续走下面那次真取，界面保持"正在取"
         if (runRef.current !== run) return;
       }
-      await doRefresh(run);
+      if (!refreshState.current.started) await doRefresh(run);
     })();
+    return () => { if (runRef.current === run) runRef.current += 1; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 

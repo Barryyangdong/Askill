@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import {createElement} from "react";
+import {withRenderer} from "./helpers/render.ts";
+import { chartRequest, currentChart } from "../src/verticals/finance/lib/chartRequest.ts";
 import {
   applyOrder, currencyRank, loadOrder, loadSort, moveInOrder, nextSort, saveOrder, saveSort, sortRows, visibleOrder, visibleSort, type SortValue,
 } from "../src/verticals/finance/lib/tableSort.ts";
@@ -173,21 +176,32 @@ test("页面接线：首页持仓合计是对齐的表格；首页和持仓页�
   assert.match(wl, /key: "price", label: "现价", right: true, byCurrency: true/, "现价不跨币种比");
   assert.match(wl, /currencyRank\(quotes\[c\]\?\.currency \?\? currencyOfSymbol\(c\)\)/, "行情没回来也按代码认币种");
   assert.match(wl, /\{shown\.map\(\(c\) =>/);
-  assert.match(wl, /onClick=\{\(\) => setPicked\(c\)\}/, "整行可点");
-  assert.match(wl, /<tr key=\{c\} aria-current=\{sel \? "true" : undefined\}/, "读屏能知道选中的是哪行");
-  assert.match(wl, /<button type="button" aria-pressed=\{sel\} onClick=\{\(e\) => \{ e\.stopPropagation\(\); setPicked\(c\); \}\}/,
-    "名称是真按钮：键盘、读屏都能选");
-  assert.doesNotMatch(wl, /<tr[^>]*tabIndex/, "行本身不再进 Tab 顺序（里面的按钮会被读屏念两遍）");
-  assert.match(wl, /onClick=\{\(e\) => \{ e\.stopPropagation\(\); remove\(c\); \}\}/, "点移除不顺带换 K 线");
-  assert.match(wl, /const quotesSettled = settled !== null;/, "完整取过一次行情（成功失败都算）才定住");
-  assert.match(wl, /const current = picked && codes\.includes\(picked\) \? picked : quotesSettled \|\| !sort \? shown\[0\] \?\? null : null;/,
-    "默认第一行；选中的被移除了回到第一行；按行情排着时行情回来之前先不画");
-  assert.ok(wl.indexOf("<KlineCard") > wl.indexOf("自选总览") && wl.indexOf("<KlineCard") < wl.indexOf("<AbnormalCard"), "K 线在自选总览下面");
-  assert.match(wl, /<KlineCard symbol=\{normalizeMarketSymbol\(current\) \?\? current\}/);
-
   const card = read("components/KlineCard.tsx");
-  assert.match(card, /const res = got\?\.symbol === symbol \? got\.res : null;/, "换股票时上一只的图一帧都不显示");
-  assert.equal(card.match(/setGot\(\{ symbol, res: /g)?.length, 2, "成功、失败都连同代码一起记");
+  const previous = chartRequest("600519", "day", "qfq");
+  const previousResult = { key: previous.key, res: { series: [] } };
+  assert.equal(currentChart(previous.key, previousResult), previousResult.res);
+  const nextRequests = {
+    股票: chartRequest("000001", "day", "qfq"),
+    周期: chartRequest("600519", "week", "qfq"),
+    复权: chartRequest("600519", "day", "hfq"),
+  };
+  for (const [changed, request] of Object.entries(nextRequests)) {
+    assert.equal(currentChart(request.key, previousResult), null, `切换${changed}后隐藏旧图`);
+  }
+  assert.equal(card.match(/setGot\(\{ key: requestKey, res: /g)?.length, 2, "成功、失败都连同请求条件一起记");
   assert.doesNotMatch(card, /setRes\(/);
   assert.match(read("components/ui/SortTh.tsx"), /onClick=\{\(e\) => \{ e\.stopPropagation\(\); onMove\(-1\); \}\}/, "上移下移不冒泡成点整行");
+});
+
+test("自选列表提供键盘选择与当前股票标记",async()=>{
+ await withRenderer(async r=>{
+  const {MemoryRouter}=await r.load("react-router-dom");const {AiPageProvider}=await r.load("/src/core/ai/pageContext.tsx");
+  const {backend}=await r.load("/src/verticals/finance/lib/backend.ts");const {hydrateWatch}=await r.load("/src/verticals/finance/lib/watchlist.ts");
+  const old=backend.ledger;backend.ledger=async()=>({records:{watch:[{id:"w",symbol:"600519",name:"样本"}]}});
+  try {await hydrateWatch();const {Watchlist}=await r.load("/src/verticals/finance/pages/Watchlist.tsx");
+   const html=r.html(()=>createElement(MemoryRouter,null,createElement(AiPageProvider,null,createElement(Watchlist))),{});
+   assert.match(html,/<tr[^>]*aria-current="true"/);assert.match(html,/<button[^>]*aria-pressed="true"[^>]*>[\s\S]*?样本/);
+   assert.match(html,/600519/);
+  } finally {backend.ledger=old;}
+ });
 });

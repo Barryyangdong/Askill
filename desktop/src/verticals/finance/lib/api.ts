@@ -294,7 +294,11 @@ async function quoteMap(codes: string[], refresh = false): Promise<Record<string
 /* ---------- 财务 / 公告 / 研报 / 新闻 ---------- */
 
 async function announcementsOf(code: string, refresh = false): Promise<Announcement[]> {
-  const e = await env("cninfo_announcements", { symbol: code, refresh });
+  let e = await env("cninfo_announcements", { symbol: code, refresh });
+  // Old snapshots contain the broken legacy detail route; replace them once.
+  if (!refresh && rows(e).some(r => /[?&]annoId=/.test(noteKV(r.note).url ?? ""))) {
+    e = await env("cninfo_announcements", { symbol: code, refresh: true });
+  }
   return rows(e).map((r) => {
     const kv = noteKV(r.note);
     return {

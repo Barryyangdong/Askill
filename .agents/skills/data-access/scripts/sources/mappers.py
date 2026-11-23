@@ -152,7 +152,7 @@ def text_items(ctx: dict, items: list[dict], *, field: str, title_key: str, date
         if not title:
             continue
         date = str(it.get(date_key, ""))[:10] or today_str()
-        note = "; ".join(f"{k}={str(it.get(k))[:120]}" for k in extra_keys if it.get(k) not in (None, ""))
+        note = "; ".join(f"{k}={str(it.get(k))[:2048 if k in ('url', 'pdf') else 120]}" for k in extra_keys if it.get(k) not in (None, ""))
         evs.append(ev(ctx, field, title[:300], "text", date, currency="n/a", as_of=date, record_key=key_of(it), note=note or None, raw_ref=it.get("_raw")))
     return evs
 
@@ -294,8 +294,9 @@ def em_board_fund_flow(result: dict, ctx: dict) -> dict:
         return empty("板块资金流为空")
     per = result.get("period", "today")
     specs = [("main_net", f"board_main_net_{per}", "元"), ("main_pct", f"board_main_pct_{per}", "%"), ("change_pct", f"board_change_pct_{per}", "%")]
-    evs = rows_fields(ctx, rows, specs, period_of=lambda r: today_str(), key_of=lambda r: f"{result.get('board_type')}|{r.get('code')}", note_of=lambda r: f"{r.get('name')} 排名 {r.get('rank')}")
-    extra = {"board_type": result.get("board_type"), "period": per, "total": result.get("total")}
+    source_day = result.get("source_close_date")
+    evs = rows_fields(ctx, rows, specs, period_of=lambda r: source_day or today_str(), key_of=lambda r: f"{result.get('board_type')}|{r.get('code')}", note_of=lambda r: f"{r.get('name')} 排名 {r.get('rank')}")
+    extra = {"board_type": result.get("board_type"), "period": per, "total": result.get("total"), "source_close_date": source_day}
     want = result.get("expected")
     if isinstance(want, int) and len(rows) < want:
         return out(evs, extra=extra, status="partial", missing=[{"field": specs[0][1], "period": today_str(), "reason": f"上游共 {result.get('total')} 个板块,应取 {want} 个,分页中途断了,只拿到 {len(rows)} 个"}])
@@ -597,13 +598,13 @@ def em_turnover_rank(result: dict, ctx: dict) -> dict:
                                  ("change_pct", r.get("pct"), "%")):
             if val is None:
                 continue
-            evs.append(ev(ictx, field, val, unit, ctx.get("as_of") or today_str(), record_key=rk, note=note))
+            evs.append(ev(ictx, field, val, unit, result.get("source_close_date") or ctx.get("as_of") or today_str(), record_key=rk, note=note))
     missing: list[Any] = [] if evs else ["成交额榜一条都没取到"]
     want = (result or {}).get("expected")
     short = bool(evs) and isinstance(want, int) and len(rows) < want
     if short:
         missing.append({"field": "turnover_rank", "period": ctx.get("as_of") or today_str(), "reason": f"全市场 {total} 只,应取前 {want} 名,分页中途断了,只拿到 {len(rows)} 名"})
-    return out(evs, extra={"total": total, "returned": len(rows)}, missing=missing,
+    return out(evs, extra={"total": total, "returned": len(rows), "source_close_date": result.get("source_close_date")}, missing=missing,
                status=("partial" if short else "ok") if evs else "failed")
 
 
@@ -613,15 +614,18 @@ def em_market_breadth_map(result: dict, ctx: dict) -> dict:
     day = (result or {}).get("date") or today_str()   # 取数层已按交易日历补过;还是空就只能标取数当天,notes 里写明了
     buckets = (result or {}).get("buckets") or []
     exchanges = (result or {}).get("exchanges") or []
-    evs = [ev(ctx, "market_dist_count", b["count"], "只", day, currency="n/a", as_of=day, record_key=f"dist|{b['key']}", note=b["label"], raw_ref=b.get("_raw"))
+    evs = [ev(ctx, "market_dist_count", b["count"], "只", day, currency="n/a", as_of=day, record_key=f"dist|{b['key']}", note=b["label"], raw_ref=b.get("_raw"), source=b.get("source"))
            for b in buckets]
     for x in exchanges:
         rk = f"exchange|{x['market']}"
+        exchange_day = x.get("source_close_date") or day
         src = x.get("source") or "eastmoney"
         note = f"{x['label']}全市场(" + ("东财指数行情口径" if src == "eastmoney" else "腾讯指数行情的成交额;东财三所家数这次没取到") + ")"
+        if src == "tdx":
+            note = f"{x['label']} A 股盘后日线：有成交且昨收、收盘价有效；不含 B 股、基金及停牌股"
         for key, field, unit in (("up", "market_up_count", "只"), ("down", "market_down_count", "只"), ("flat", "market_flat_count", "只"), ("amount", "market_turnover_amount", "元")):
             if x.get(key) is not None:
-                evs.append(ev(ctx, field, x[key], unit, day, as_of=day, record_key=rk, note=note, raw_ref=x.get("_raw"), source=src))
+                evs.append(ev(ctx, field, x[key], unit, exchange_day, as_of=exchange_day, record_key=rk, note=note, raw_ref=x.get("_raw"), source=src))
     missing = [{"field": "market_up_count", "period": day, "reason": n} for n in (result or {}).get("notes") or []]
     if not buckets:
         missing.append({"field": "market_dist_count", "period": day, "reason": "涨跌分布没取到"})
@@ -630,7 +634,8 @@ def em_market_breadth_map(result: dict, ctx: dict) -> dict:
         missing += [{"field": "market_up_count", "period": day, "reason": f"{m} 的家数与成交额没取到"} for m in ("SH", "SZ", "BJ") if m not in got]
     if not evs:
         return empty("涨跌分布与三所家数都没取到")
-    return out(evs, missing=missing, status="partial" if missing else None, extra={"date": day, "bucket_total": sum(b["count"] for b in buckets)})
+    return out(evs, missing=missing, status="partial" if missing else None, extra={"date": day, "bucket_total": sum(b["count"] for b in buckets),
+               "distribution_date": result.get("distribution_date"), "exchange_close_dates": {x["market"]: x.get("source_close_date") for x in exchanges}})
 
 
 def _now_sh():

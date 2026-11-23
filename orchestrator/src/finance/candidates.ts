@@ -36,6 +36,8 @@ export const UNIVERSES: { id: string; label: string }[] = [...LEDGER_UNIVERSES, 
 
 /** 可设区间的指标。`div` 把腾讯给的单位换成界面上的单位(成交额:万元 → 亿元)。用除法:乘 1e-4 会让 70000 万元变成 7.000000000000001 亿,卡在上限 7 外面 */
 export const METRICS = {
+  change_pct: { label: "涨跌幅", unit: "%", field: "change_pct", zeroIsMissing: false, div: 1 },
+  volume_ratio: { label: "量比", unit: "倍", field: "volume_ratio", zeroIsMissing: false, div: 1 },
   pe_ttm: { label: "市盈率(TTM)", unit: "倍", field: "pe_ttm", zeroIsMissing: true, div: 1 },
   pb: { label: "市净率", unit: "倍", field: "pb", zeroIsMissing: true, div: 1 },
   market_cap: { label: "总市值", unit: "亿元", field: "market_cap", zeroIsMissing: true, div: 1 },

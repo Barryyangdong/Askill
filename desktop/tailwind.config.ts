@@ -23,10 +23,10 @@ export default {
         sans: ["-apple-system", "BlinkMacSystemFont", "PingFang SC", "Microsoft YaHei", "sans-serif"],
         mono: ["SFMono-Regular", "JetBrains Mono", "Consolas", "ui-monospace", "monospace"],
       },
-      borderRadius: { "3xl": "14px", "2xl": "10px", xl: "8px", lg: "var(--radius)", md: "6px", sm: "4px" },
+      borderRadius: { "3xl": "8px", "2xl": "6px", xl: "5px", lg: "var(--radius)", md: "4px", sm: "4px" },
       boxShadow: {
         glass: "none",
-        glow: "0 0 0 1px hsl(var(--primary) / .3)",
+        glow: "none",
       },
     },
   },

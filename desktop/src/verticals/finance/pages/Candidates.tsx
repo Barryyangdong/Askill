@@ -1,5 +1,7 @@
-import { useCallback, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { useLocalPreference } from "../hooks/useLocalPreference";
+import { FormActions, FormField, FormToolbar } from "@/components/ui/FormToolbar";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { JourneyLink as Link } from "@/components/JourneyLink";
 import { Check, Filter, Minus, RefreshCw, SearchX, X } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
@@ -13,6 +15,9 @@ import { storageGet, storageSet } from "@/lib/storage";
 import { PERSONAL_TRADES_TO_AI } from "@/lib/brand";
 import { useAiPage } from "../../../core/ai/pageContext";
 import { cn } from "@/lib/utils";
+
+import { PRESETS_KEY, parsePresets } from "@/lib/candidatePresets";
+import { ContextHelp } from "@/components/ui/ContextHelp";
 
 const BTN = "inline-flex items-center gap-1.5 rounded-lg border border-border/60 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50";
 const INPUT = "w-full min-w-0 rounded-lg border border-border bg-background/60 px-2.5 py-1.5 text-sm tabular-nums";
@@ -60,8 +65,21 @@ export function Candidates() {
   const [tab, setTab] = useState<CheckState>("met");
   const [shownCount, setShownCount] = useState(PAGE_SIZE);
   const seq = useRef(0);
+  const {value:presets,save:savePresets,ready:presetsReady,error:presetsError}=useLocalPreference("candidate-presets",()=>parsePresets(storageGet(PRESETS_KEY)),value=>parsePresets(JSON.stringify(value)));
+  const [presetName, setPresetName] = useState("");
+  const [notice, setNotice] = useState("");
+  useEffect(() => () => { ++seq.current; }, []);
+  const savePreset = async () => {
+    setNotice("");
+    const name = presetName.trim();
+    const bad = formError(form);
+    if (!name || bad) { setError(bad || "请填写方案名称"); return; }
+    if (presets.some(p => p.name === name)) { setError("已有同名方案，请使用新名称"); return; }
+    if (presets.length >= 20) { setError("最多保存 20 个方案，请先删除不用的方案"); return; }
+    if (await savePresets([...presets, { name, form }])) setNotice("已保存到本机");
+  };
 
-  const update = (next: CandidateForm) => { setForm(next); storageSet(FORM_KEY, JSON.stringify(next)); };
+  const update = (next: CandidateForm) => { ++seq.current; setLoading(false); setData(null); setError(""); setNotice(""); setForm(next); storageSet(FORM_KEY, JSON.stringify(next)); };
   const setRange = (id: MetricId, side: "min" | "max", v: string) => update({ ...form, ranges: { ...form.ranges, [id]: { ...form.ranges[id], [side]: v } } });
 
   const run = useCallback(async (refresh: boolean) => {
@@ -96,21 +114,35 @@ export function Candidates() {
 
   return <div>
     <PageHeader title="候选池"
-      subtitle="在自选、持仓或某个指数的成分股里,按你设的条件逐只核对:每一条都写明满足、不满足还是缺数据。只排除、不排名,不打分、不给买卖建议。"
+      subtitle="逐项核对 · 不排名" description="在自选、持仓或某个指数的成分股里,按你设的条件逐只核对:每一条都写明满足、不满足还是缺数据。只排除、不排名,不打分、不给买卖建议。"
       actions={data ? <button type="button" onClick={() => void run(true)} disabled={loading} className={BTN}><RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />{loading ? "取数中…" : "重新取行情"}</button> : undefined} />
 
     <GlassCard className="mb-5">
+      <div className="mb-4 flex flex-wrap items-center gap-2 border-b border-border pb-4">
+        <select aria-label="已保存的筛选方案" value="" className={BTN} onChange={e => {
+          const preset = presets.find(p => p.name === e.target.value);
+          if (preset) { update(preset.form); setPresetName(preset.name); }
+        }}>
+          <option value="">载入方案（{presets.length}）</option>
+          {presets.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+        </select>
+        <input aria-label="方案名称" placeholder="方案名称" maxLength={40} value={presetName} onChange={e => { setPresetName(e.target.value); setNotice(""); }} className="min-w-0 rounded border border-border bg-background px-2 py-1.5 text-xs" />
+        <button type="button" className={BTN} disabled={!presetsReady} onClick={() => void savePreset()}>保存为新方案</button>
+        {presets.some(p => p.name === presetName.trim()) && <button type="button" className={BTN} onClick={async () => {
+          if (confirm(`删除方案“${presetName.trim()}”？`) && await savePresets(presets.filter(p => p.name !== presetName.trim()))) { setPresetName(""); setNotice("已删除方案"); }
+        }}>删除方案</button>}
+        <span className="text-xs text-muted-foreground" role="status">{presetsError || notice || "方案保存在本机服务，可跨浏览器使用"}</span>
+      </div>
       <form onSubmit={(e) => { e.preventDefault(); if (!loading) void run(false); }} className="space-y-4">
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="space-y-1.5">
-            <span className="block text-xs text-muted-foreground">范围</span>
-            <select value={form.universe} onChange={(e) => update({ ...form, universe: e.target.value as UniverseId })}
+        <FormToolbar>
+          <FormField label="范围">
+            <select aria-label="候选范围" value={form.universe} onChange={(e) => update({ ...form, universe: e.target.value as UniverseId })}
               className="rounded-lg border border-border bg-background/60 px-3 py-2 text-sm">
               {UNIVERSES.map((u) => <option key={u.id} value={u.id}>{u.label}</option>)}
             </select>
-          </label>
-          <p className="pb-2 text-[11px] text-muted-foreground">指数成分取自中证 / 国证指数官网的成分文件;自选和持仓只核对 A 股。</p>
-        </div>
+          </FormField>
+          <FormActions><ContextHelp label="范围口径">指数成分取自中证 / 国证指数官网的成分文件;自选和持仓只核对 A 股。</ContextHelp></FormActions>
+        </FormToolbar>
 
         <div className="grid gap-x-5 gap-y-3 sm:grid-cols-2 xl:grid-cols-3">
           {METRICS.map((m) => <fieldset key={m.id} className="min-w-0">
@@ -133,7 +165,7 @@ export function Candidates() {
             <Filter className="h-4 w-4" />{loading ? "核对中…" : "开始核对"}
           </button>
         </div>
-        <p className="text-[11px] leading-5 text-muted-foreground">两头都可以只填一头;区间包含边界。没取到的值单独算「缺数据」,既不算满足也不算不满足。</p>
+        <ContextHelp label="筛选口径">两头都可以只填一头;区间包含边界。没取到的值单独算「缺数据」,既不算满足也不算不满足。</ContextHelp>
       </form>
     </GlassCard>
 
@@ -186,8 +218,16 @@ export function Candidates() {
       </GlassCard>
 
       <GlassCard>
-        <h2 className="mb-2 text-sm font-semibold">条件和来源</h2>
-        <ul className="space-y-1 text-xs text-muted-foreground">{data.conditions.map((c) => <li key={c.id}>{c.label}:{c.source}</li>)}</ul>
+        <h2 className="mb-2 text-sm font-semibold">条件核对</h2>
+        <div className="mb-3 flex flex-wrap gap-2">{data.conditions.map(c => {
+          const checks = data.rows.map(row => row.checks.find(check => check.id === c.id));
+          return <div key={c.id} className="rounded border border-border px-3 py-2 text-xs">
+            <div className="mb-1 font-medium">{c.label}</div>
+            <div className="text-muted-foreground">满足 {checks.filter(c => c?.state === "met").length} · 不满足 {checks.filter(c => c?.state === "unmet").length} · 缺数据 {checks.filter(c => !c || c.state === "missing").length}</div>
+          </div>;
+        })}</div>
+        <ContextHelp label="数据来源">
+        <ul className="space-y-1 text-xs text-muted-foreground">{data.conditions.map((c) => <li key={c.id}>{c.label}:{c.source}</li>)}</ul></ContextHelp>
       </GlassCard>
 
       {data.gaps.length > 0 && <GlassCard>

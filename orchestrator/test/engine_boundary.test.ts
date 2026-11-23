@@ -99,7 +99,7 @@ export async function resolve(specifier, context, nextResolve) {
     for (const entry of ["run.ts", "api.ts", "mcp.ts"]) {
       const url = pathToFileURL(path.join(SRC, entry)).href;
       const child = spawnSync(process.execPath, [
-        "--experimental-loader", loader, "--input-type=module", "-e", `await import(${JSON.stringify(url)});`,
+        "--experimental-loader", pathToFileURL(loader).href, "--input-type=module", "-e", `await import(${JSON.stringify(url)});`,
       ], { cwd: tmp, encoding: "utf8", timeout: 30_000 });
       assert.equal(child.status, 0, `${entry} 加载失败。stdout=${child.stdout}\nstderr=${child.stderr}`);
       assert.doesNotMatch(`${child.stdout}\n${child.stderr}`, /CODEX_IMPORT_FORBIDDEN/, `${entry} 仍在加载旧引擎 SDK`);

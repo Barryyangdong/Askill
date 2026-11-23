@@ -138,7 +138,7 @@ export function closeDigestMessage(page: PageResult, indices: unknown, day: stri
   lines.push(!dragon ? "龙虎榜:没取到" : listedN ? `龙虎榜 上榜 ${listedN} 只` : "龙虎榜:还没有数据(可能还没公布)");
 
   const key = reviewDay ?? day;
-  return { title: `收盘摘要 ${key}`, lines, link: "/daily-review", dedupeKey: `close_digest:${key}` };
+  return { title: `收盘摘要 ${key}`, lines, link: `/shortline?date=${key}&reminder=close`, dedupeKey: `close_digest:${key}` };
 }
 
 async function closeDigest(j: JobContext): Promise<JobResult> {

@@ -8,6 +8,7 @@
  * `stageCalcs`、`extraTopics` 四处。漏改哪一处,`registerPlugin` 会在注册时当场报出来
  * (键集必须与 stages 完全一致)—— 这是故意的,别去放宽那个校验。
  */
+import { FINANCE_DEBATE } from "./debate_policy.ts";
 import type { Plugin } from "../plugin.ts";
 import { FINANCE_GATE } from "./gate_rules.ts";
 import { FINANCE_ENUM_LABELS, FINANCE_FIELD_LABELS, FINANCE_LEDGER_KINDS } from "./ledger_kinds.ts";
@@ -24,6 +25,7 @@ import { buildGateRewritePrompt, buildStagePrompt } from "./stages.ts";
 import { INDUSTRY_FILE_REL, applyIndustryGate, detectIndustryTags, loadIndustryTags, writeIndustryFile } from "./industry.ts";
 import { appendThermoLedger, applyThermometerHistory, readThermoLedger, thermoDir, thermoLedgerOverview, thermoLedgerPath } from "./thermo_history.ts";
 import { PRODUCT_NAME } from "../brand.ts";
+import { financeToolRequest } from "./tool_cache.ts";
 
 /** 阶段顺序:摸清公司 → 财务 → 一致预期 → 估值 → 风险 → 成文 */
 export const FINANCE_STAGES = ["profile", "financials", "estimates", "valuation", "risk", "report"] as const;
@@ -31,6 +33,10 @@ export type FinanceStage = (typeof FINANCE_STAGES)[number];
 
 export const FINANCE_PLUGIN: Plugin = {
   id: "finance",
+  apiRoute: (ctx, method, parts, body) => parts[0] === "mentors"
+    ? import("./mentors.ts").then(module => module.mentorRoute(ctx, method, parts.slice(1), body))
+    : undefined,
+  wrapToolRequest: financeToolRequest,
   stages: FINANCE_STAGES,
 
   /** 每阶段必需 / 可选的取数脚本(由编排器执行;fetch/<script>.json 必须存在且有账本记录) */
@@ -114,53 +120,7 @@ export const FINANCE_PLUGIN: Plugin = {
    * 仍然要求证据在报告全文里被引用(校验器按这张表出错误措辞)。
    */
   /** 扩展章节插在「风险与反证」之后(下一章骨架是「裁决点」) */
-  /**
-   * 多空辩论的资料包与角色。
-   * 🔴 资料包**只放确定性数字类端点** —— 市场声音那种第三方文本进来,
-   *    就等于让双方引用别人的观点当证据,而对方无法核实。
-   */
-  debate: {
-    outputLanguage: "zh",
-    dossierEndpoints: ["tx_quote", "fetch_profile", "fetch_financials", "indicators_cn"],
-    stages: [
-      {
-        id: "bull",
-        label: "多方陈述",
-        sees: [],
-        prompt: "你是多方。**只用资料包里的数字**,列出支持这家公司的三到五条论据,每条注明依据哪条证据 id。不许引入资料包以外的数字;拿不准就说拿不准。不要给任何操作建议。自己算出来的数(同比 / 差额 / 单季拆解)必须**把算式写出来**并注明两个数各自的资料期(如「2026H1 444.64 亿 [ev-x] ÷ 2025H1 453.90 亿 [ev-y] − 1 = −2.04%」);算式与结论对不上时以算式为准。跨期比较必须用**同一口径的相邻期**,别拿隔年的数当去年。",
-      },
-      {
-        id: "bear",
-        label: "空方陈述",
-        sees: [],
-        prompt: "你是空方。**只用资料包里的数字**,列出看空这家公司的三到五条论据,每条注明依据哪条证据 id。不许引入资料包以外的数字;拿不准就说拿不准。不要给任何操作建议。自己算出来的数(同比 / 差额 / 单季拆解)必须**把算式写出来**并注明两个数各自的资料期(如「2026H1 444.64 亿 [ev-x] ÷ 2025H1 453.90 亿 [ev-y] − 1 = −2.04%」);算式与结论对不上时以算式为准。跨期比较必须用**同一口径的相邻期**,别拿隔年的数当去年。",
-      },
-      {
-        id: "bull_rebut",
-        label: "多方反驳",
-        sees: ["bear"],
-        prompt: "你是多方,现在反驳空方。逐条指出空方哪里用错了数、哪里把假设当成了事实。**只能用资料包里的数字**。反驳不了的就承认反驳不了 —— 承认比硬圆更有价值。自己算出来的数(同比 / 差额 / 单季拆解)必须**把算式写出来**并注明两个数各自的资料期(如「2026H1 444.64 亿 [ev-x] ÷ 2025H1 453.90 亿 [ev-y] − 1 = −2.04%」);算式与结论对不上时以算式为准。跨期比较必须用**同一口径的相邻期**,别拿隔年的数当去年。",
-      },
-      {
-        id: "bear_rebut",
-        label: "空方反驳",
-        sees: ["bull"],
-        prompt: "你是空方,现在反驳多方。逐条指出多方哪里用错了数、哪里把假设当成了事实。**只能用资料包里的数字**。反驳不了的就承认反驳不了。自己算出来的数(同比 / 差额 / 单季拆解)必须**把算式写出来**并注明两个数各自的资料期(如「2026H1 444.64 亿 [ev-x] ÷ 2025H1 453.90 亿 [ev-y] − 1 = −2.04%」);算式与结论对不上时以算式为准。跨期比较必须用**同一口径的相邻期**,别拿隔年的数当去年。",
-      },
-      {
-        id: "referee",
-        label: "裁判",
-        sees: ["bull", "bear", "bull_rebut", "bear_rebut"],
-        prompt: "你是裁判,不站队。做三件事:① 列出双方**都认的事实**;② 列出**争议点**,并说明分歧根源是数据不足还是口径不同;③ 把每个争议点写成一条**可裁决的判据**——需要看到什么数据、什么时候能看到。**不要给结论说谁赢,更不要给任何操作建议。**自己算出来的数(同比 / 差额 / 单季拆解)必须**把算式写出来**并注明两个数各自的资料期(如「2026H1 444.64 亿 [ev-x] ÷ 2025H1 453.90 亿 [ev-y] − 1 = −2.04%」);算式与结论对不上时以算式为准。跨期比较必须用**同一口径的相邻期**,别拿隔年的数当去年。",
-      },
-    ],
-    // 一轮 = 各自陈述 + 主持；两轮 = 再加交叉反驳。
-    // ⚠️ 与界面上那个下拉框的选项一一对应；两边对不上就又是"控件说一套、系统做一套"。
-    depths: {
-      "1": ["bull", "bear", "referee"],
-      "2": ["bull", "bear", "bull_rebut", "bear_rebut", "referee"],
-    },
-  },
+  debate: FINANCE_DEBATE,
 
   /** 产出红线:词表 / 正则 / 免责声明全在 gate_rules.ts */
   gate: FINANCE_GATE,
@@ -346,7 +306,7 @@ export const FINANCE_PLUGIN: Plugin = {
    */
   tools: {
     // uiArgs.charts：界面要画净值 / 回撤 / 月度图，回测把逐日序列放进 result.ui_only，不进 Agent 上下文
-    backtest: { label: "回测", module: "backtest.cli", requiresAgent: true, timeoutMs: 300_000, uiArgs: { charts: true } },
+    backtest: { archive: {kind:"note",category:"backtest",sourcePage:"/tasks",sections:["回测问题","回测假设","回测逻辑","回测结果"]}, label: "回测", module: "backtest.cli", requiresAgent: true, timeoutMs: 300_000, uiArgs: { charts: true } },
     // 🔴 让**界面也能调到确定性计算库**，而不是自己再抄一份公式。
     //    此前 desktop 的 api.ts 手写了 PE / CAGR / PEG / 消化年数 ——
     //    于是 `calc/` 里改对了口径，桌面端不会跟着变（"两套事实与计算链路"）。

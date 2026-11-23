@@ -254,6 +254,7 @@ export function costSummary(c: Exclude<CostCompare, { error: string }>): string 
 
 // 回测选项表（backtest/cli.py 的 strategies）里每个参数都要有中文名；Python 测试会核对两边对得上
 const PARAM_LABEL: Record<string, string> = {
+  entry: "突破窗口", exit: "退出窗口", capacity: "组合名额", rules: "固定顺序规则",
   fast: "快线天数", slow: "慢线天数", buy_below: "RSI 低于此值买入", sell_above: "RSI 高于此值卖出", window: "RSI 天数",
   n: "RSRS 回归天数", m: "RSRS 标准化窗口", threshold: "RSRS 阈值",
 };

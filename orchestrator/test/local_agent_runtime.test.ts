@@ -14,6 +14,20 @@ const PLATFORM_ENV: NodeJS.ProcessEnv = process.platform === "win32"
   : {};
 
 import * as localAgentRuntime from "../src/local_agent_runtime.ts";
+
+test("CodeBuddy 临时推理档保留原有工具和会话隔离参数", () => {
+  const args = localAgentRuntime.codeBuddyArgs("system", { type: "object" }, false, undefined, true, "medium");
+  assert.equal(args[args.indexOf("--effort") + 1], "medium");
+  assert.equal(args[args.indexOf("--tools") + 1], "StructuredOutput");
+  assert.ok(args.includes("--strict-mcp-config"));
+  assert.ok(args.includes("--no-session-persistence"));
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "dontAsk");
+  assert.equal(args[args.indexOf("--json-schema") + 1], '{"type":"object"}');
+  assert.equal(localAgentRuntime.codeBuddyArgs("system").includes("--effort"), false);
+  const plain = localAgentRuntime.codeBuddyArgs("system");
+  assert.equal(plain[plain.indexOf("--tools") + 1], "");
+  assert.equal(plain[plain.indexOf("--max-turns") + 1], "1");
+});
 import {
   CodexEventStream, LocalAgentError, claudeArgs, codeBuddyArgs, codexArgs, codexVersionSupported, findExecutable, parseClaudeOutput,
   executableInvocation, normalizeLocalAgentTimeoutMs, parseCodeBuddyOutput, parseCodexLoginStatus, parseCodexVersion,
@@ -567,13 +581,13 @@ process.stdin.resume(); process.stdin.on('end', () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("CodeBuddy 参数关闭工具、MCP、配置、记忆与子代理，正文不进 argv", () => {
+test("CodeBuddy 结构化请求只开放纯数据输出工具，MCP、配置与记忆保持隔离", () => {
   const args = codeBuddyArgs("SYSTEM", { type: "object" });
-  assert.deepEqual(args.slice(args.indexOf("--tools"), args.indexOf("--tools") + 2), ["--tools", ""]);
+  assert.deepEqual(args.slice(args.indexOf("--tools"), args.indexOf("--tools") + 2), ["--tools", "StructuredOutput"]);
   assert.ok(args.includes("--strict-mcp-config"));
   assert.deepEqual(args.slice(args.indexOf("--setting-sources"), args.indexOf("--setting-sources") + 2), ["--setting-sources", "none"]);
   assert.ok(args.includes("--no-session-persistence"));
-  assert.deepEqual(args.slice(args.indexOf("--max-turns"), args.indexOf("--max-turns") + 2), ["--max-turns", "1"]);
+  assert.deepEqual(args.slice(args.indexOf("--max-turns"), args.indexOf("--max-turns") + 2), ["--max-turns", "3"]);
   assert.deepEqual(args.slice(args.indexOf("--agent"), args.indexOf("--agent") + 2), ["--agent", "cli"]);
   assert.equal(args[0], "-p");
   assert.ok(args[1]?.startsWith("--"), "-p 后不得带位置 prompt，否则官方 CLI 会忽略 stdin 里的用户正文");
@@ -1476,7 +1490,20 @@ test("安装文件夹 → 内置 CLI 候选:根目录先查,Squirrel 式 app-<�
   assert.ok(c.every((x) => x.includes("\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy")), "只找 WorkBuddy 内置 CLI 这一个固定位置");
 });
 
-test("找 CodeBuddy:只在 Windows、没用环境变量锁定、固定位置都没有时才问系统;没找到时发起对话 30 秒内不重复问(检测页每次重问),同时多次查找只问一次", async () => {
+// Isolate fixture discovery from WorkBuddy installations on the developer's computer.
+function hideInstalledWorkBuddy(t: TestContext): void {
+  const installed = new Set(workBuddyCliCandidates(PLATFORM_ENV, "win32").map(p => p.toLowerCase()));
+  const access = fs.accessSync;
+  t.mock.method(fs, "accessSync", (file: fs.PathLike, mode?: number) => {
+    if (typeof file === "string" && installed.has(file.toLowerCase())) {
+      throw Object.assign(new Error("WorkBuddy fixture: candidate is absent"), { code: "ENOENT" });
+    }
+    return access(file, mode);
+  });
+}
+
+test("找 CodeBuddy:只在 Windows、没用环境变量锁定、固定位置都没有时才问系统;没找到时发起对话 30 秒内不重复问(检测页每次重问),同时多次查找只问一次", async (t) => {
+  hideInstalledWorkBuddy(t);
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), "vra-locate-"));
   loadSavedAgentPaths(empty);
   const env = { PATH: empty, LOCALAPPDATA: empty };
@@ -1543,6 +1570,7 @@ function reg(args: string[]): void {
 }
 
 test("Windows 实机:WorkBuddy 装在自定义的中文文件夹,从「已安装的程序」登记里找到,订阅卡片显示可用(#50)", { skip: process.platform !== "win32" }, async (t) => {
+  hideInstalledWorkBuddy(t);
   const tmp = fs.mkdtempSync(path.join(realTmp(), "vra-wb-registry-"));
   const root = path.join(tmp, "软件", "WorkBuddy");
   const bin = fakeWorkBuddyInstall(root);
@@ -1568,6 +1596,7 @@ test("Windows 实机:WorkBuddy 装在自定义的中文文件夹,从「已安装
 });
 
 test("Windows 实机:没有登记、但 WorkBuddy 正开着,从正在运行的 WorkBuddy.exe 找到安装文件夹", { skip: process.platform !== "win32" }, async (t) => {
+  hideInstalledWorkBuddy(t);
   const tmp = fs.mkdtempSync(path.join(realTmp(), "vra-wb-process-"));
   const root = path.join(tmp, "工具", "WB");
   const bin = fakeWorkBuddyInstall(root);
@@ -1591,6 +1620,7 @@ test("Windows 实机:没有登记、但 WorkBuddy 正开着,从正在运行的 W
 });
 
 test("Windows 实机:Squirrel 式安装(程序在 app-<版本> 子文件夹),登记里只有 Update.exe 卸载命令也能找到最新版本;手动填安装文件夹同样能找到", { skip: process.platform !== "win32" }, async (t) => {
+  hideInstalledWorkBuddy(t);
   const tmp = fs.mkdtempSync(path.join(realTmp(), "vra-wb-squirrel-"));
   const root = path.join(tmp, "WorkBuddy");
   fakeWorkBuddyInstall(path.join(root, "app-1.9.0"));

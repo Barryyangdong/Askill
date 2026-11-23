@@ -1,3 +1,7 @@
+import {beginProgress} from "./guided_progress.ts";
+import { recordSource } from "./source_health.ts";
+import { documentDossier } from "./debate_documents.ts";
+import {retrievalFocus} from "./retrieval_focus.ts";
 /**
  * 服务层(Phase 1 M3):把数据层与研究运行以纯函数 / 薄封装暴露给 MCP server 与 HTTP API。
  * 约束:输入全部闭合校验(代码白名单 / 市场枚举 / run_id · session 正则 / args 只允许注册表声明的键与原始类型);
@@ -6,7 +10,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
-import { readResearchControl, removeResearchControl, reserveResearch, updateResearchControl, requestResearchCancellation, researchDecision, ResearchControlError, type ResearchControl } from "./research_control.ts";
+import { readResearchControl, readResearchDeletion, removeResearchControl, reserveResearch, updateResearchControl, requestResearchCancellation, researchDecision, ResearchControlError, type ResearchControl } from "./research_control.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,9 +28,9 @@ import { NOFOLLOW_FLAG, nowIso, readJson, readJsonIfExists } from "./fsutil.ts";
 import { ChatError, REPLY_TRUNCATED, applyGate, chatSend as chatSendCore, llmProbe as llmProbeCore, parseHeadlineTranslationReply, prepareHeadlineTranslation, translateHeadlines as translateHeadlinesCore, type ChatTurnResult, type HeadlineTranslationResult, type LlmProbeResult } from "./chat.ts";
 import { DirectTransportError, chatCompletion } from "./engines/direct_transport.ts";
 import { REQUEST_LLM_META_VAR, RUNTIME_KEY_VAR, assertExecutionMode, defaultLlm, requestLlmMeta, resolveDirectProvider, resolveRuntimeProvider, resolveSelectedRuntime, runtimeSourceFingerprint, RuntimeProviderError, templateMatrix, type LlmOverride, type DefaultSourceOptions } from "./runtime_provider.ts";
-import { DebateError, MAX_DEBATE_MESSAGE, DEBATE_TURN_TIMEOUT_MS, advanceDebate, startDebate, type DebateState } from "./debate.ts";
+import { DebateError, MAX_DEBATE_MESSAGE, DEBATE_TURN_TIMEOUT_MS, DEBATE_PREAMBLE, advanceDebate, startDebate, supplementDebate, getDebate, type DebateState, type DebateEvent } from "./debate.ts";
 import { IngestError, MAX_TOTAL_BYTES, ingestFiles as ingestFilesCore, type IngestFileInput, type IngestResult } from "./ingest.ts";
-import { LedgerError, checkRecord as checkLedgerRecord, insertRecords as insertLedgerRecords, kinds as ledgerKindDefs, labels as ledgerLabelDefs, listRecordsChecked, listRecords as listRecordsOf, removeRecord as removeLedgerRecord, replaceRecords as replaceLedgerRecords, upsertRecord as upsertLedgerRecord, type LedgerIssue, type LedgerRecord } from "./ledger.ts";
+import { LedgerError, checkRecord as checkLedgerRecord, insertRecords as insertLedgerRecords, receiptOf, cancelReceipt, kinds as ledgerKindDefs, labels as ledgerLabelDefs, listRecordsChecked, listRecords as listRecordsOf, removeRecord as removeLedgerRecord, replaceRecords as replaceLedgerRecords, upsertRecord as upsertLedgerRecord, type LedgerIssue, type LedgerRecord } from "./ledger.ts";
 import { recallKnowledge, type KnowledgeRecall } from "./knowledge.ts";
 import { loadProductConfig } from "./productConfig.ts";
 import { apiCapabilityOf, apiVerificationOf, loadProviderProfile, withOutputSchema } from "./providers.ts";
@@ -125,7 +129,11 @@ export function assertArgs(ep: EndpointDef, args: unknown): Record<string, unkno
   };
   for (const [k, v] of entries) {
     if (!allowed.has(k)) throw new ServiceError("bad_args", `端点 ${ep.id} 不接受参数 ${show(k)}(允许:${[...allowed].join(", ") || "无"})`);
-    if (Array.isArray(v)) { if (v.length > MAX_ARG_ARR) throw new ServiceError("bad_args", `args.${k} 数组过长`); out[k] = v.map((x) => prim(x, k)); }
+    if (Array.isArray(v)) {
+      const declared=ep.arg_array_limits?.[k];
+      const limit=typeof declared==='number'&&Number.isInteger(declared)&&declared>=1&&declared<=200?declared:MAX_ARG_ARR;
+      if (v.length > limit) throw new ServiceError("bad_args", `args.${k} 数组过长`); out[k] = v.map((x) => prim(x, k));
+    }
     else out[k] = prim(v, k);
   }
   return out;
@@ -254,7 +262,7 @@ export interface FetchResult {
  *
  * 🔴 失败 / 空信封**不写快照**:否则一次网络抖动会被记住,下次打开还是那次失败,而且永远不会自愈。
  */
-export async function fetchEndpoint(
+async function fetchEndpointCore(
   ctx: ServiceContext,
   req: {
     endpoint: string; symbol?: string; args?: Record<string, unknown>; session?: string; timeout_ms?: number;
@@ -335,7 +343,11 @@ export async function fetchEndpoint(
     //    `failed` 或一条证据都没有,就是这次没取到,别让它变成用户下次打开看到的东西。
     const snap = writeSnapshot(ctx.dataRoot, snapKey, { endpoint: ep.id, symbol }, result, (r) => {
       const env = r.envelope as { status?: unknown; evidence?: unknown };
-      return r.exit_code === 0 && env.status !== "failed" && Array.isArray(env.evidence) && env.evidence.length > 0;
+      if (!Array.isArray(env.evidence) || !env.evidence.length) return false;
+      // The Python collector deliberately exits 2 for a usable but incomplete reading.
+      // Only explicitly time-limited sources may reuse that reading, including its missing fields.
+      if (r.exit_code === 2) return env.status === "partial" && ep.cache_partial === true && epMaxAge !== null && epMaxAge > 0;
+      return r.exit_code === 0 && env.status !== "failed";
     });
     return snap ? { ...result, fetched_at: snap.fetched_at } : result;
   })();
@@ -811,50 +823,63 @@ export function listRuns(ctx: ServiceContext, limit = 50): { run_id: string; sta
  * 任何一条证据给不出"已结束"就拒删,而不是"确认它还在跑才拒"(旧版 m==null 时直接删目录):
  *   ① run id 走 assertRunId(防路径穿越);
  *   ② 目录不存在 → 404 语义(deleted:false),不抛;
- *   ③ **清单(manifest.json)缺失** → manifest_missing:没有清单就无从确认这条运行是否结束,
- *      不能删(可能正跑到一半,删了把半截运行连同已烧的额度一起抹掉);
+ *   ③ **清单(manifest.json)缺失** → manifest_missing，除非已登记内核锁协议的控制记录确认失败终态;
  *   ④ **清单损坏**(是文件但 JSON 解析失败)→ manifest_corrupt:同上,数据已不可信,拒删并提示;
- *   ⑤ **清单未结束**(finished_at 缺失或非法时间)→ run_in_progress:还在写盘;
+ *   ⑤ **清单未结束**(finished_at 缺失或非法时间)→ run_in_progress，同样允许上述已确认失败终态;
  *   ⑥ 进程级兜底:control(owner.json)明确未收尾(存在且 finished_at=null)→ run_in_progress;
  *      control 读不出来(损坏 / 路径含链接)→ control_unreadable,同样拒删。
- * 全部通过才删:先删 control 记录,再 rmSync 运行目录(顺序理由见下)。
+ * 全部通过才删:持锁复核终态并保存删除凭据，先删运行目录，再清 control，最后删除凭据。
  * 删除这两步自身失败(EACCES / EBUSY / ENOTEMPTY)→ delete_failed,不让 fs 的 errno 直接变成 500。
  */
 export function deleteRun(ctx: ServiceContext, runId: string): { run_id: string; deleted: boolean } {
   const { id, dir } = runDirOf(ctx, runId);
-  if (!fs.existsSync(dir) || !fs.lstatSync(dir).isDirectory()) return { run_id: id, deleted: false };
+  const runExists = fs.existsSync(dir);
+  if (runExists && !fs.lstatSync(dir).isDirectory()) return { run_id: id, deleted: false };
 
-  const manifestPath = safePath(ctx, "runs", id, "manifest.json");
-  // ③ 清单缺失:无从确认终态,拒删(区别于 404 的"目录不存在")
-  if (!fs.existsSync(manifestPath)) throw new ServiceError("manifest_missing", "该运行没有清单(manifest.json),无法确认是否已结束,未删除;如确认要清理可手动删除该运行目录");
-  // ④ 清单损坏:文件在但不是合法 JSON(可能写到一半),数据不可信,拒删
-  let m: Record<string, unknown>;
-  try { m = readJson<Record<string, unknown>>(manifestPath); }
-  catch { throw new ServiceError("manifest_corrupt", "该运行的清单已损坏(JSON 无法解析),无法确认是否已结束,未删除"); }
-  // ⑤ 清单未结束:finished_at 缺失 / 非字符串 / 非法时间 ⇒ 认为还在跑或没收尾
-  const finished = m.finished_at;
-  if (typeof finished !== "string" || !Number.isFinite(Date.parse(finished)))
-    throw new ServiceError("run_in_progress", "该研究还在进行中(清单未记录结束时间),等它跑完再删");
   // ⑥ 进程级兜底:control(owner.json)比 manifest 更实时,worker 还在就拦住。
   //    读不出来(损坏 / 路径含链接 / 权限)同样拒删:它抛的是 ResearchControlError,不是 ServiceError,
   //    吞掉就等于"少了一条证据照删",而本函数的规矩是任何一条证据给不出"已结束"就不删。
   let control: ResearchControl | null;
-  try { control = readResearchControl(ctx.dataRoot, id); }
+  let deletion: ResearchControl | null;
+  try {
+    deletion = readResearchDeletion(ctx.dataRoot, id);
+    control = readResearchControl(ctx.dataRoot, id) ?? deletion;
+  }
   catch (e) {
     // 只有 ResearchControlError 是"记录本身有问题";EACCES/EMFILE 这类是环境故障,
     // 一律说成"损坏"会把排查引到错的方向,所以非预期异常要留一行根因(拒删的结论不变)
     if (!(e instanceof ResearchControlError)) console.error(`[deleteRun] 读取进程记录异常:${redact(e instanceof Error ? e.message : String(e), 200)}`);
     throw new ServiceError("control_unreadable", "该研究的进程记录读不出来(可能损坏,也可能是权限或路径问题),无法确认它是否还在跑,未删除;如确认这次运行早已结束,可手动删除该运行目录与 .local/research-control/<run-id>");
   }
+  if (!runExists && !control) return { run_id: id, deleted: false };
   if (control && !control.finished_at) throw new ServiceError("run_in_progress", "该研究还在进行中,等它跑完再删");
-  // 先清进程记录再删运行目录:反过来的话这一步失败就只剩孤儿 control(reserveResearch 靠它判 run_exists),
-  // 而且用户已经看到目录没了却收到报错。这个顺序下第一步失败时运行目录还原封不动。
-  // 两步都要接:它们抛的是 fs 的 errno 错误(EACCES/EBUSY/ENOTEMPTY),不是 ServiceError ——
-  // 不接就直接 500 "internal",正好把上面 ⑥ 刚堵住的洞在这里重新开一个。
+  const pendingDeletion = deletion && control?.token === deletion.token;
+  const recoveredFailure = control?.ownership === "sqlite-v1" && control.state === "failed" &&
+    typeof control.finished_at === "string" && Number.isFinite(Date.parse(control.finished_at));
+  const manifestPath = safePath(ctx, "runs", id, "manifest.json");
+  let m: Record<string, unknown> = {};
+  if (!runExists || pendingDeletion) {
+    // A deletion receipt was published only after validating the original
+    // artifacts; retries can finish even after partial removal of those files.
+  } else if (!fs.existsSync(manifestPath)) {
+    if (!recoveredFailure) throw new ServiceError("manifest_missing", "该运行没有清单(manifest.json),无法确认是否已结束,未删除;如确认要清理可手动删除该运行目录");
+  } else {
+    // Corrupt artifacts remain a refusal even when control recovery succeeded.
+    try {
+      m = readJson<Record<string, unknown>>(manifestPath);
+      if (!m || typeof m !== "object" || Array.isArray(m)) throw new Error("manifest shape");
+    }
+    catch { throw new ServiceError("manifest_corrupt", "该运行的清单已损坏(JSON 无法解析),无法确认是否已结束,未删除"); }
+  }
+  const finished = m.finished_at;
+  if (runExists && !pendingDeletion && !recoveredFailure && (typeof finished !== "string" || !Number.isFinite(Date.parse(finished))))
+    throw new ServiceError("run_in_progress", "该研究还在进行中(清单未记录结束时间),等它跑完再删");
+  // Keep terminal evidence until all run files are removed. The independent
+  // receipt also makes a partially removed control directory recoverable.
   try {
-    removeResearchControl(ctx.dataRoot, id);
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeResearchControl(ctx.dataRoot, id, control ?? undefined, () => fs.rmSync(dir, { recursive: true, force: true }));
   } catch (e) {
+    if (e instanceof ResearchControlError && e.code === "worker_exists") throw new ServiceError("run_in_progress", "研究进程尚未退出，请稍后再删除");
     const code = (e as NodeJS.ErrnoException).code ?? "unknown";
     console.error(`[deleteRun] 删除未完成(${code}):${redact(e instanceof Error ? e.message : String(e), 200)}`);
     throw new ServiceError("delete_failed", `删除没能完成(${code}),这次归档可能只删掉了一部分,请检查该运行目录的权限或是否被其他程序占用`);
@@ -882,6 +907,7 @@ export function knowledgeRecall(ctx: ServiceContext, symbol: string, market: str
 
 export interface PageBlockResult {
   id: string; title: string; note?: string;
+  business_date?: string;
   /** 默认收起(界面的事;数据照常取回) */
   collapsed?: boolean;
   /**
@@ -1007,7 +1033,7 @@ export async function pageQuery(
   // 看法(mode)只认垂类声明过的值;这一页不解析上下文时,选什么都没有意义 ⇒ 也拒
   const mode = req.mode === undefined || req.mode === "" ? undefined : req.mode;
   if (mode !== undefined) {
-    const allowed = def.needsContext ? currentPlugin().pageContext?.modes ?? [] : [];
+    const allowed = def.needsContext ? def.modes ?? currentPlugin().pageContext?.modes ?? [] : [];
     if (typeof mode !== "string" || !allowed.includes(mode)) {
       throw new ServiceError("bad_mode", `这一页不支持看法 ${show(mode)}(可选:${allowed.join(", ") || "无"})`);
     }
@@ -1039,8 +1065,10 @@ export async function pageQuery(
     }
   }
 
+  const verifyDate = def.verifyBusinessDate && ctxDef?.verifyBusinessDate;
+  if (def.verifyBusinessDate && !verifyDate) throw new ServiceError("bad_plugin", "缺少业务日期核验规则");
   // ② 各块并发取(single-flight 会把指向同一端点的块合并成一次真取数)
-  const blocks = await Promise.all(
+  const collected = await Promise.all(
     def.blocks.map(async (b): Promise<PageBlockResult> => {
       const used = pickUserArgs(b, req.blockArgs?.[b.id]);
       const head = { id: b.id, title: b.title, ...(b.note ? { note: b.note } : {}), ...(b.collapsed ? { collapsed: true } : {}) };
@@ -1071,30 +1099,50 @@ export async function pageQuery(
         // 一块取不到不该让整屏空白 —— 但也**不能装作没事**:如实标出来
         return { ...head, status: "missing", error: e instanceof Error ? e.message : String(e) };
       } })();
-      if (!b.fallback || primary.status === "ok" || primary.status === "partial") return primary;
-      // 主源没取到 → 换垂类声明的备用端点。备源不吃上下文与用户参数(注册期已禁止同用)
+      if (!b.fallback || (ctxUnavailable && b.injectContext)) return primary;
+      const checkedPrimary = verifyDate ? verifyDate(primary, context) : primary;
+      if (checkedPrimary.status === "ok" || checkedPrimary.status === "partial") return primary;
+      // 备用端点使用固定参数。在需要核验业务日的页面中，只展示通过核验的备用记录。
       const primaryError = primary.error ?? envelopeWhy(primary.envelope);
+      const fallback = b.fallback;
+      const requestedSymbol = b.symbol ?? req.symbol;
+      const asBlock = (r: FetchResult, cached = r.cached): PageBlockResult => ({
+        ...head, status: blockStatusFromEnvelope(r.envelope), fetched_at: r.fetched_at, cached, envelope: r.envelope,
+        via_fallback: { note: fallback.note, primary_status: checkedPrimary.status === "missing" ? "missing" : "failed", ...(primaryError ? { primary_error: primaryError } : {}) },
+      });
+      let closingSnapshot: PageBlockResult | undefined;
       try {
+        if (verifyDate) {
+          const ep = endpointDef(ctx, fallback.endpoint);
+          if (ep.symbol_kind === "none") {
+            const args = assertArgs(ep, fallback.args);
+            const hit = readSnapshot<FetchResult>(ctx.dataRoot, snapshotKey(ep.id, "", args));
+            if (hit) {
+              const candidate = asBlock({ ...hit.payload, fetched_at: hit.fetched_at }, true);
+              const checked = verifyDate(candidate, context);
+              if (checked.status === "ok" || checked.status === "partial") closingSnapshot = candidate;
+            }
+          }
+        }
+        if (closingSnapshot && !req.refresh) return closingSnapshot;
         const r = await fetch(ctx, {
-          endpoint: b.fallback.endpoint,
-          ...(b.symbol ?? req.symbol ? { symbol: b.symbol ?? req.symbol } : {}),
-          args: { ...(b.fallback.args ?? {}) },
+          endpoint: fallback.endpoint,
+          ...(requestedSymbol ? { symbol: requestedSymbol } : {}),
+          args: { ...(fallback.args ?? {}) },
           consistency,
           signal: req.signal,
         });
-        const st = blockStatusFromEnvelope(r.envelope);
-        // 备源也失败 → 仍报主源的状态,另带备源的原因;**不拿一个失败的备源信封顶替**
-        if (st === "failed") return { ...primary, fallback_error: envelopeWhy(r.envelope) ?? "备用来源也没取到" };
-        return {
-          ...head, status: st, fetched_at: r.fetched_at, cached: r.cached, envelope: r.envelope,
-          via_fallback: { note: b.fallback.note, primary_status: primary.status === "missing" ? "missing" : "failed", ...(primaryError ? { primary_error: primaryError } : {}) },
-        };
+        const candidate = asBlock(r);
+        const checked = verifyDate ? verifyDate(candidate, context) : candidate;
+        if (verifyDate ? checked.status === "ok" || checked.status === "partial" : checked.status !== "failed") return candidate;
+        return closingSnapshot ?? { ...checkedPrimary, fallback_error: checked.error ?? envelopeWhy(r.envelope) ?? "备用来源也没取到" };
       } catch (e) {
-        return { ...primary, fallback_error: e instanceof Error ? e.message : String(e) };
+        return closingSnapshot ?? { ...checkedPrimary, fallback_error: e instanceof Error ? e.message : String(e) };
       }
     }),
   );
 
+  const blocks = verifyDate ? collected.map(block => verifyDate(block, context)) : collected;
   const times = blocks.map((b) => b.fetched_at).filter((t): t is string => Boolean(t));
   const days = new Set(times.map((t) => t.slice(0, 10)));
   return {
@@ -1268,7 +1316,7 @@ export function setCredential(ctx: Pick<ServiceContext, "dataRoot">, id: string,
  * ⚠️ 单个端点取失败**不中止**:记进 gaps 一起交给双方("这些没取到,别当它们不存在")。
  *    全部失败才拒开(见 debate.startDebate)。
  */
-export async function debateStart(ctx: ServiceContext, req: { symbol: string; session?: string; depth?: string; llm?: unknown; executionMode?: unknown }, signal?: AbortSignal): Promise<DebateState> {
+export async function debateStart(ctx: ServiceContext, req: { symbol: string; session?: string; depth?: string; previous?: { text: string; at: string }; llm?: unknown; executionMode?: unknown }, signal?: AbortSignal, progress?: (event: DebateEvent) => void): Promise<DebateState> {
   if (signal?.aborted) throw new ServiceError("cancelled", "辩论请求已取消");
   let mode: "agent" | "direct";
   try { mode = assertExecutionMode(req.executionMode); }
@@ -1287,10 +1335,11 @@ export async function debateStart(ctx: ServiceContext, req: { symbol: string; se
 
   const envelopes: { script?: string; evidence?: unknown[] }[] = [];
   const gaps: string[] = [];
-  for (const ep of def.dossierEndpoints) {
+  let loaded = 0;
+  await Promise.all(def.dossierEndpoints.map(async (ep) => {
     if (signal?.aborted) throw new ServiceError("cancelled", "辩论请求已取消");
     try {
-      const r = await fetchEndpoint(ctx, { endpoint: ep, symbol, consistency: { mode: "fresh" }, signal });
+      const r = await fetchEndpoint(ctx, { endpoint: ep, symbol, session: id, timeout_ms: 25000, consistency: { mode: "fresh" }, signal });
       envelopes.push(r.envelope as { script?: string; evidence?: unknown[] });
       // 端点自己的说明在 extra.degraded 里(信封顶层没有这个键)
       const env = r.envelope as { status?: unknown; extra?: { degraded?: unknown } };
@@ -1300,18 +1349,55 @@ export async function debateStart(ctx: ServiceContext, req: { symbol: string; se
       if (signal?.aborted) throw new ServiceError("cancelled", "辩论请求已取消");
       gaps.push(`${ep}:取数失败 — ${redact(e instanceof Error ? e.message : String(e), 120)}`);
     }
+    const alternate = def.fallbackEndpoints?.[ep];
+    let recovered = false;
+    if (alternate && (gaps.some(g => g.startsWith(`${ep}:failed`) || g.startsWith(`${ep}:取数失败`)))) {
+      try {
+        const result = await fetchEndpoint(ctx, { endpoint: alternate, symbol, session: id, timeout_ms: 30000, consistency: { mode: "fresh" }, signal });
+        const alt = result.envelope as { script?: string; evidence?: unknown[]; status?: string };
+        envelopes.push(alt);
+        recovered = Boolean(alt.evidence?.length);
+        gaps.push(recovered ? `${ep}：主来源未完成，本轮使用 ${alternate} 的公开检索线索；不等于事实核实` : `${alternate}：备用检索未返回可用线索`);
+      } catch {
+        signal?.throwIfAborted();
+        gaps.push(`${alternate}：备用检索未完成`);
+      }
+    }
+    progress?.({ type: "dossier", title: ep, ok: recovered || !gaps.some(g => g.startsWith(`${ep}:`)), loaded: ++loaded, total: def.dossierEndpoints.length + (def.documents ? 1 : 0) });
+  }));
+  envelopes.sort((a, b) => def.dossierEndpoints.indexOf(a.script ?? "") - def.dossierEndpoints.indexOf(b.script ?? ""));
+  if (def.documents) {
+    const docs = await documentDossier(envelopes, def.documents, signal);
+    envelopes.push(...docs.envelopes); gaps.push(...docs.gaps);
+    progress?.({ type: "dossier", title: "document_text", ok: docs.envelopes.length > 0, loaded: loaded + 1, total: loaded + 1 });
   }
   try {
     if (signal?.aborted) throw new ServiceError("cancelled", "辩论请求已取消");
-    return startDebate({ id, symbol, envelopes, gaps, sourceFingerprint, ...(req.depth ? { depth: req.depth } : {}) });
+    const previous=latestArchivedComparison(ctx,def,symbol)??req.previous;
+    return startDebate({ id, symbol, envelopes, gaps, sourceFingerprint, previous, ...(req.depth ? { depth: req.depth } : {}) });
   } catch (e) {
     if (e instanceof DebateError) throw new ServiceError(e.code, e.message);
     throw e;
   }
 }
 
+/** Server archives take precedence over a possibly stale browser snapshot. */
+export function latestArchivedComparison(ctx:ServiceContext,def:NonNullable<ReturnType<typeof currentPlugin>["debate"]>,symbol:string):{text:string;at:string}|undefined {
+  const policy=def.archive;const label=def.stages.find(s=>s.id===def.comparisonStage)?.label;
+  if(!policy||!label)return;
+  const records=(ledgerList(ctx,policy.kind)[policy.kind]??[]).filter(r=>r.title===`${policy.title} · ${symbol}`&&r.category===policy.category&&Date.parse(r.created_at)<=Date.now())
+    .sort((a,b)=>Date.parse(b.created_at)-Date.parse(a.created_at));
+  for(const record of records){
+    const lines=String(record.body??"").split(/\r?\n/);const start=lines.findIndex(line=>line.trim()===`## ${label}`);
+    if(start<0)continue;
+    const end=lines.findIndex((line,i)=>i>start&&(/^(?:### |---)/.test(line)));
+    const text=lines.slice(start+1,end<0?undefined:end).join("\n").trim();
+    if(text)return {text:text.slice(0,6000),at:record.created_at};
+  }
+}
+
 /** 跑下一个待跑的阶段(一次一个,界面据此逐段显示) */
-export async function debateAdvance(ctx: ServiceContext, req: { id: string; llm?: unknown; executionMode?: unknown }, signal?: AbortSignal): Promise<DebateState> {
+export async function debateAdvance(ctx: ServiceContext, req: { id: string; llm?: unknown; executionMode?: unknown; stageId?: string }, signal?: AbortSignal, progress?: (event: DebateEvent) => void): Promise<DebateState> {
   let mode: "agent" | "direct";
   try { mode = assertExecutionMode(req.executionMode); }
   catch (error) { throw new ServiceError(error instanceof RuntimeProviderError ? error.code : "bad_execution_mode", error instanceof Error ? error.message : String(error)); }
@@ -1321,10 +1407,12 @@ export async function debateAdvance(ctx: ServiceContext, req: { id: string; llm?
   const sourceFingerprint = sourceFingerprintOf(ctx, llm);
   try {
     return await advanceDebate(
-      { repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python, signal },
-      { id: String(req.id), sourceFingerprint },
-      llm ? async (message, session, signal) => (await chatSendCore(
-        { repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python, persistent: false, maxMessage: MAX_DEBATE_MESSAGE, timeoutMs: DEBATE_TURN_TIMEOUT_MS, signal },
+      { repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python, signal,
+        onState: state => progress?.({ type: "state", state }), onPreview: (stage, text) => progress?.({ type: "preview", stage, text }) },
+      { id: String(req.id), sourceFingerprint, ...(req.stageId ? { stageId: req.stageId } : {}) },
+      llm ? async (message, session, signal, timeoutMs) => (await chatSendCore(
+        { repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python, persistent: false, preambleText: DEBATE_PREAMBLE, thinkingEnabled: false, reasoningEffort: "low", maxMessage: MAX_DEBATE_MESSAGE, timeoutMs: timeoutMs ?? DEBATE_TURN_TIMEOUT_MS, signal,
+          onPreview: text => progress?.({ type: "preview", stage: req.stageId ?? "", text }) },
         { message, session, llm },
       )).reply : undefined,
     );
@@ -1332,6 +1420,86 @@ export async function debateAdvance(ctx: ServiceContext, req: { id: string; llm?
     if (e instanceof DebateError) throw new ServiceError(e.code, e.message);
     throw e;
   }
+}
+
+/** Execute independent stages together, then wait for their declared dependencies. */
+export async function debateRunStream(ctx: ServiceContext, req: Parameters<typeof debateStart>[1], signal: AbortSignal, emit: (event: DebateEvent) => void): Promise<void> {
+  let state = await debateStart(ctx, req, signal, emit);
+  emit({ type: "state", state });
+  const definition = currentPlugin().debate!;
+  const definitions = definition.stages;
+  let supplemented=false;
+  while (!state.done) {
+    signal.throwIfAborted();
+    const policy=definition.supplement;
+    if(!supplemented&&policy&&definition.documents&&policy.afterStages.every(id=>state.stages.some(s=>s.id===id&&s.status==="done"))){
+      supplemented=true;
+      const text=state.stages.filter(s=>policy.afterStages.includes(s.id)).map(s=>s.text).join("\n");
+      const focus=retrievalFocus(text,policy);
+      if(focus.length){
+        emit({type:"dossier",title:"质询关键词补查",ok:true,loaded:0,total:1});
+        try{
+          const fetched=await fetchEndpoint(ctx,{endpoint:definition.documents.endpoint,symbol:req.symbol,session:state.id,timeout_ms:20000,signal});
+          const docs=await documentDossier([fetched.envelope as {script?:string;evidence?:unknown[]}],definition.documents,signal,focus);
+          signal.throwIfAborted();
+          state=supplementDebate(state.id,docs.envelopes,[`质询关键词补查：${focus.join("、")}；仅追加实际提取片段，未命中不代表全文不存在。`,...docs.gaps]);
+          emit({type:"dossier",title:"质询关键词补查",ok:docs.envelopes.length>0,loaded:1,total:1});
+        }catch(error){
+          signal.throwIfAborted();state=supplementDebate(state.id,[],["质询关键词补查未完成，后续判断仍受原资料缺口限制。"]);
+          emit({type:"dossier",title:"质询关键词补查",ok:false,loaded:1,total:1});
+        }
+        emit({type:"state",state});
+      }
+    }
+    const ready = state.stages.filter(stage => stage.status === "pending" &&
+      !definitions.find(d => d.id === stage.id)!.sees.some(id => state.stages.some(s => s.id === id && (s.status === "pending" || s.status === "running"))));
+    if (!ready.length) throw new ServiceError("bad_stage", "Stage dependencies could not be resolved");
+    const batch = new AbortController();
+    const abort = () => batch.abort();
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) batch.abort();
+    try {
+      const results = await Promise.allSettled(ready.map(async stage => {
+        try { return await debateAdvance(ctx, { id: state.id, stageId: stage.id, executionMode: req.executionMode, llm: req.llm }, batch.signal, emit); }
+        catch (error) { batch.abort(); throw error; }
+      }));
+      const failed = results.find(result => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+    } finally { signal.removeEventListener("abort", abort); }
+    state = getDebate(state.id)!;
+  }
+  emit({ type: "done", state });
+}
+
+/** Detached execution archives confirmed output before signalling completion. */
+export async function debateBackground(ctx: ServiceContext, req: Parameters<typeof debateStart>[1], signal: AbortSignal, emit: (event: DebateEvent) => void, jobId?: string) {
+  let latest: DebateState | undefined;
+  try {
+    await debateRunStream(ctx, req, signal, event => {
+      if (event.type === "state" || event.type === "done") latest = event.state;
+      if (event.type !== "done") emit(event);
+    });
+  } finally {
+    const policy = currentPlugin().debate?.archive;
+    if (policy && latest?.stages.some(s => s.status === "done")) {
+      const outcome = signal.aborted ? "cancelled" : latest.outcome;
+      const statusLabel = {running:"未完成",completed:"已完成",completed_with_errors:"部分完成",failed:"未完成",cancelled:"已中止"}[outcome];
+      const body = [`# ${policy.title} · ${latest.symbol}`, "", `状态：${statusLabel}`, `共同资料：${latest.evidence_count}`, ...latest.gaps, "",
+        ...latest.stages.filter(s => s.status === "done").sort((a,b) => Number(b.id === currentPlugin().debate?.comparisonStage) - Number(a.id === currentPlugin().debate?.comparisonStage)).flatMap(s => [
+          `## ${s.label}`, "", s.text, "", "### 数字复核", s.audit ? `数字 ${s.audit.total} 个 · 来源吻合 ${s.audit.bound} · 自算通过 ${s.audit.derived} · 待核对 ${s.audit.loose}` : "未提供复核结果",
+          ...(s.audit?.badMath ?? []).map(b=>`- 算式：${b.raw}；重算结果：${b.recomputed}${b.percent?"%":""}`), "", "---", "",
+        ])].join("\n");
+      const marker = `<!-- run:${latest.id} -->`;
+      if (!(ledgerList(ctx, policy.kind)[policy.kind] ?? []).some(r => String(r.body ?? "").includes(marker))) {
+        const fields = ledgerKinds(ctx)[policy.kind]?.properties;
+        ledgerUpsert(ctx, { kind: policy.kind, record: { category: policy.category, title: `${policy.title} · ${latest.symbol}`, body: body + "\n" + marker,
+          ...(fields?.symbol ? { symbol: latest.symbol } : {}),
+          ...(policy.sourcePage && jobId && fields?.workspace_source ? { workspace_source: { page: policy.sourcePage, job: jobId, symbol: latest.symbol } } : {}) } });
+      }
+    }
+  }
+  if (latest) emit({ type: "done", state: latest });
+  if (latest?.outcome === "failed") throw new Error("Execution did not complete");
 }
 
 /**
@@ -1470,11 +1638,21 @@ export function ledgerCheck(ctx: ServiceContext, kind: string, record: Record<st
 }
 
 /** 一次新增多条:整批校验,有一条不对就一条都不写(见 ledger.insertRecords) */
-export function ledgerInsertMany(ctx: ServiceContext, req: { kind: string; records: readonly Record<string, unknown>[] }): LedgerRecord[] {
+export function ledgerReceipt(ctx: ServiceContext, kind: string, key: string) {
+  const k = ledgerGuard(ctx, kind);
+  try { return receiptOf(ctx.dataRoot, k, key); } catch (e) { asServiceError(e); }
+}
+
+export function ledgerCancelReceipt(ctx: ServiceContext, kind: string, key: string) {
+  const k = ledgerGuard(ctx, kind);
+  try { return cancelReceipt(ctx.dataRoot, k, key); } catch (e) { asServiceError(e); }
+}
+
+export function ledgerInsertMany(ctx: ServiceContext, req: { kind: string; records: readonly Record<string, unknown>[]; receipt?: { key: string; digest: string } }): LedgerRecord[] {
   const k = ledgerGuard(ctx, req.kind);
   if (!Array.isArray(req.records)) throw new ServiceError("bad_record", "records 必须是数组");
   let added: LedgerRecord[];
-  try { added = insertLedgerRecords(ctx.dataRoot, k, req.records); } catch (e) { asServiceError(e); }
+  try { added = insertLedgerRecords(ctx.dataRoot, k, req.records, req.receipt); } catch (e) { asServiceError(e); }
   auditQuietly(ctx, added.map((r) => ledgerSeal(k, r)));
   return added;
 }
@@ -1593,7 +1771,7 @@ export function auditCheckHead(ctx: ServiceContext, saved: unknown): HeadCheck {
  * ⚠️ 这里**只查形状不查语义**：provider 认不认识、key 缺不缺，由 `resolveRuntimeProvider` 给
  *    可行动的错误码 —— 两处各查一半才是漂移的来源。
  */
-function checkLlmShape(llm: unknown): LlmOverride | undefined {
+export function checkLlmShape(llm: unknown): LlmOverride | undefined {
   // 🔴 只有**没传**才算没传。把显式的 `null` 也当没传，等于给"静默换一家去打"留了条后门 ——
   //    上面那条"传了就必须解析"的规矩会被 `{"llm":null}` 原样绕过（Codex 复审 r3）。
   if (llm === undefined) return undefined;
@@ -1748,6 +1926,7 @@ export async function chatSend(
   ctx: ServiceContext,
   req: { session?: string; message: string; llm?: LlmOverride; executionMode?: unknown },
   signal?: AbortSignal,
+  onProgress?: (phase: "waiting" | "tool") => void,
 ): Promise<ChatServiceResult> {
   const llm = checkLlmShape(req.llm);
   let executionMode: "agent" | "direct";
@@ -1853,7 +2032,13 @@ export async function chatSend(
     const chatRequest = { ...req, ...(llm ? { llm } : {}) };
     const turn = executionMode === "direct"
       ? await lightChatTurn(chatOptions, chatRequest)
-      : await assistantTurn({ ...chatOptions, tools: assistantTools(ctx, llm, proposals),
+      : await assistantTurn({ ...chatOptions, tools: assistantTools(ctx, llm, proposals).map(tool => ({ ...tool,
+        run: async (args: never, toolSignal: AbortSignal) => {
+          onProgress?.("tool");
+          try { return await tool.run(args, toolSignal); }
+          finally { onProgress?.("waiting"); }
+        },
+      })),
         sourceKey: runtimeSourceFingerprint(ctx.repoRoot, ctx.dataRoot, llm) }, chatRequest);
     const used = new Set(reportCitations(turn.reply).map((x) => `${x.id}\u0000${x.page ?? "-"}`));
     return {
@@ -2075,11 +2260,12 @@ export async function runToolRequest(
   if (!request || typeof request !== "object" || Array.isArray(request)) {
     throw new ServiceError("bad_tool_request", "工具请求必须是对象");
   }
-  const req = request as { input?: unknown; llm?: unknown; executionMode?: unknown };
-  const extras = Object.keys(request).filter((key) => !["input", "llm", "executionMode"].includes(key));
+  const req = request as { input?: unknown; llm?: unknown; executionMode?: unknown; cachePolicy?: unknown };
+  const extras = Object.keys(request).filter((key) => !["input", "llm", "executionMode", "cachePolicy"].includes(key));
   if (extras.length || !Object.prototype.hasOwnProperty.call(request, "input")) {
-    throw new ServiceError("bad_tool_request", "工具请求必须只包含 input、executionMode 和可选 llm");
+    throw new ServiceError("bad_tool_request", "工具请求必须只包含 input、executionMode 和可选 llm、cachePolicy");
   }
+  if (req.cachePolicy !== undefined && req.cachePolicy !== "prefer" && req.cachePolicy !== "fresh") throw new ServiceError("bad_tool_request", "缓存策略不合法");
   // 旧客户端只发送工具参数，没有任何全局模式信息。把它默认为 Agent 会让直连页面静默绕过开关。
   if (req.executionMode === undefined) throw new ServiceError("bad_execution_mode", "工具请求必须明确提供 executionMode");
   let mode: "agent" | "direct";
@@ -2096,7 +2282,10 @@ export async function runToolRequest(
     }
     assertAgentRuntime(ctx, llm);
   }
-  return await runTool(ctx, name, req.input, signal);
+  const run = () => runTool(ctx, name, req.input, signal);
+  const wrapper = currentPlugin().wrapToolRequest;
+  if (req.cachePolicy && wrapper && spec.requiresAgent === false) return wrapper({ dataRoot: ctx.dataRoot, repoRoot: ctx.repoRoot, python: ctx.python, name, input: req.input, policy: req.cachePolicy, signal, run });
+  return await run();
 }
 
 /** 界面要用的工具清单(名字 + 显示名),由垂类下发 —— 前端不写死一份 */
@@ -2110,6 +2299,8 @@ export async function guidedToolTurn(
   name: string,
   req: { session?: unknown; message?: unknown; llm?: unknown; executionMode?: unknown },
   signal?: AbortSignal,
+  onPhase?: (phase: "catalog"|"plan"|"execute"|"compose")=>void,
+  onOutput?: (value:unknown)=>void,
 ): Promise<GuidedToolReply> {
   const spec = Object.prototype.hasOwnProperty.call(currentPlugin().tools ?? {}, name)
     ? currentPlugin().tools?.[name]
@@ -2121,23 +2312,43 @@ export async function guidedToolTurn(
   if (mode === "direct") {
     throw new ServiceError("agent_required", "这个功能要调用工具并保持任务状态：请先接入 AI；接口调用时 executionMode 要用 agent");
   }
+  const session = String(req.session ?? "");
+  // Progress allocation has the same session contract as the guided runner.
+  // Validate before allocating progress so malformed input keeps its public code.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/.test(session)) throw new ServiceError("bad_session", "会话名不合法");
   const llm = checkLlmShape(req.llm);
   assertAgentRuntime(ctx, llm);
+  const progress=beginProgress(ctx.dataRoot,name,session);
   try {
-    return await guidedToolTurnCore(
+    const reply=await guidedToolTurnCore(
       { repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python, signal },
       {
         name,
         label: spec.label,
-        session: String(req.session ?? ""),
+        session,
         message: String(req.message ?? ""),
         ...(llm ? { llm } : {}),
         ...(spec.uiArgs ? { uiArgs: spec.uiArgs } : {}),
       },
-      { chat: chatSendCore, runTool: (tool, body) => runTool(ctx, tool, body, signal) },
+      { onOutput, onPhase:phase=>{progress(phase);onPhase?.(phase);}, chat: chatSendCore, runTool: (tool, body) => runTool(ctx, tool, body, signal) },
     );
+    progress(reply.status);
+    return reply;
   } catch (e) {
+    progress(signal?.aborted?"cancelled":"failed");
     if (e instanceof GuidedToolError) throw new ServiceError(e.code, e.message);
     throw e;
+  }
+}
+
+export async function fetchEndpoint(ctx: ServiceContext, req: Parameters<typeof fetchEndpointCore>[1]): Promise<FetchResult> {
+  const started = Date.now();
+  try {
+    const result = await fetchEndpointCore(ctx,req);
+    recordSource(ctx.dataRoot,req.endpoint,result.envelope.status !== "failed",result.cached,Date.now()-started);
+    return result;
+  } catch(error) {
+    if (!req.signal?.aborted) recordSource(ctx.dataRoot,String(req.endpoint).slice(0,80),false,false,Date.now()-started);
+    throw error;
   }
 }

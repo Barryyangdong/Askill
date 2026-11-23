@@ -63,6 +63,11 @@ type ApiComplete = (request: ChatRequest) => Promise<ChatReply>;
 type TurnRaw = { raw: string; toolActivity?: ToolReceipt[]; toolTexts?: string[] };
 
 export interface ChatSendOptions {
+  thinkingEnabled?: boolean;
+  /** Optional visible preview; output screening remains in this layer. */
+  onPreview?: (text: string) => void;
+  /** Internal bounded task reasoning; supported CLIs apply it without changing model/account. */
+  reasoningEffort?: RunLocalAgentOptions["reasoningEffort"];
   repoRoot: string;
   dataRoot?: string;
   /** 调用方顺带传的解释器路径;对话本身用不到 */
@@ -262,10 +267,16 @@ async function localAgentTurn(
       };
     }
     const raw = await (opts.localAgentRunner ?? runLocalAgent)(agent, {
+      ...(opts.thinkingEnabled !== undefined ? { thinkingEnabled: opts.thinkingEnabled } : {}),
+      ...(opts.onPreview ? { onText: (text: string) => {
+        const clean = text.replace(/<think(?:[:\s][^>]*)?>[\s\S]*?(?:<\/think[^>]*>|$)/gi, "");
+        if (clean.trim()) opts.onPreview?.(applyGate(scrubKey(clean, "")).reply);
+      } } : {}),
       systemPrompt,
       userPrompt,
       ...(controlledMcp ? { controlledMcp } : {}),
       ...(opts.outputSchema !== undefined ? { outputSchema: opts.outputSchema } : {}),
+      ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
       env,
       timeoutMs,
       signal: controller.signal,

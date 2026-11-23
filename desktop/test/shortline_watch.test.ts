@@ -1,3 +1,4 @@
+import { createElement } from "react";
 // 盯盘两个分页:实时动态、竞价与盘中路径。数据形状照后端 watch.ts / intraday.ts,断言用户看得到什么。
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -33,30 +34,36 @@ const LIVE: WatchView = {
 test("实时动态:盯盘中的状态、异动流带来源;持仓只列现价涨跌和浮动盈亏 %;没取到写「没取到」;非今天的行情标出来", async () => {
   await withRenderer(async (r) => {
     const { LiveView } = await r.load(`${DIR}/LiveTab.tsx`);
+    const { MemoryRouter } = await r.load("react-router-dom");
+    const RoutedLiveView = (props: any) => createElement(MemoryRouter, {}, createElement(LiveView, props));
     const props = { v: LIVE, threshold: 1.5, scope: "all", ladderMin: 1, onThreshold: noop, onScope: noop, onLadderMin: noop, error: null };
-    const html = r.html(LiveView, props);
+    const html = r.html(RoutedLiveView, props);
+    assert.match(html, /aria-label="查看 新华传媒 走势"/);
+    assert.doesNotMatch(html, /aria-label="选中股票走势"/, "未点选时不加载图表");
     const t = textOf(html);
     assert.match(t, /盯盘中 · 上午连续竞价 北京时间 10:01:32 · 每 3 秒刷新/);
     assert.match(t, /10:01:30 封板 新华传媒 600825 触及涨停 8\.8 昨日9板/);
     assert.match(t, /10:01:00 急拉 平安银行 000001 1 分钟 \+2\.0%\(现价 12,今日 \+1\.2%\) 持仓/);
     assert.match(t, /平安银行 000001 12 \+1\.20% \+20\.00%/, "持仓:现价、今日、浮动盈亏");
     assert.match(t, /浦发银行 600000 没取到 —/);
-    assert.match(t, /持仓 只列现价、今日涨跌和浮动盈亏 %;股数和成本在「自选与持仓」页。 名称 现价 今日 浮动盈亏 平安银行/, "持仓表只有这四列");
+    assert.match(t, /名称 现价 今日 浮动盈亏 报价时间 平安银行/, "持仓表保留读数并展示来源报价时间");
+    assert.match(html, /aria-label="持仓排序"/);
+    assert.match(html, /aria-label="筛选持仓"/);
     assert.match(t, /宁德时代 300750 250\.5 非今日/);
     assert.match(t, /昨日梯队\(2026-10-09 涨停 3 只,最高 9 板\)/);
     assert.match(t, /取到今天行情 2\/3 只 · 上涨 1 · 下跌 1 · 封住 1/);
     assert.match(t, /昨日 名称 行业 现价 今日/, "这一列是东财行业,不是题材");
     assert.match(t, /9板 新华传媒 600825 出版 8\.8 \+10\.00% 封住/);
     assert.match(t, /大票涨幅前十\(500 亿以上 378 只\)/);
-    assert.match(t, /跌幅前五 名称 现价 今日 成交额 贵州茅台 600519 1400 -2\.20%/);
-    assert.match(t, /昨日成交额前十\(2026-10-09\) 上一个交易日成交额最大的十只,看今天的表现;成交额是今天的。 # 名称 现价 今日 成交额 1 工业富联 601138 60 \+2\.10% 3\.2 亿/);
+    assert.match(t, /名称 现价 今日 成交额 报价时间 贵州茅台 600519 1400 -2\.20%/);
+    assert.match(t, /# 名称 现价 今日 成交额 报价时间 1 工业富联 601138 60 \+2\.10% 3\.2 亿/);
     assert.match(t, /⚠️ 行情这一轮分 9 批取,1 批没取到/);
     // 红涨绿跌
     assert.match(html, /text-danger">\+1\.20%</);
     assert.match(html, /text-success">-3\.50%</);
     // 取不到时的提示
-    assert.match(textOf(r.html(LiveView, { ...props, error: "超时" })), /这次没取到:超时。先显示上一次的内容,稍后自动重试/);
-    const paused = textOf(r.html(LiveView, { ...props, paused: true }));
+    assert.match(textOf(r.html(RoutedLiveView, { ...props, error: "超时" })), /这次没取到:超时。先显示上一次的内容,稍后自动重试/);
+    const paused = textOf(r.html(RoutedLiveView, { ...props, paused: true }));
     assert.match(paused, /页面在后台,已暂停刷新\(北京时间 \S+ 的读数\);切回来就接着取/, "切到后台要说已暂停");
     assert.doesNotMatch(paused, /盯盘中|每 3 秒刷新/, "暂停时不说在盯");
   });
@@ -65,6 +72,8 @@ test("实时动态:盯盘中的状态、异动流带来源;持仓只列现价涨
 test("异动筛选:幅度只筛急拉急跌,封板开板一直在;「只看持仓与自选」按来源筛;梯队按板位筛", async () => {
   await withRenderer(async (r) => {
     const { LiveView, filterAlerts, ladderStats, liveSummary } = await r.load(`${DIR}/LiveTab.tsx`);
+    const { MemoryRouter } = await r.load("react-router-dom");
+    const RoutedLiveView = (props: any) => createElement(MemoryRouter, {}, createElement(LiveView, props));
     const props = { v: LIVE, threshold: 1.5, scope: "all", ladderMin: 1, onThreshold: noop, onScope: noop, onLadderMin: noop, error: null };
     assert.deepEqual(filterAlerts(LIVE.alerts, 1.5, "all").map((a: { kind: string }) => a.kind), ["封板", "急拉", "急跌"]);
     assert.deepEqual(filterAlerts(LIVE.alerts, 3, "all").map((a: { kind: string }) => a.kind), ["封板"]);
@@ -74,15 +83,15 @@ test("异动筛选:幅度只筛急拉急跌,封板开板一直在;「只看持�
     // 午休 / 休市:后端不说封没封 → 不写 0;今天一只都没取到 → 说下面是哪天的读数,不写「上涨 0 · 下跌 0」
     const noSeal = LIVE.ladder!.rows.map((x) => ({ ...x, at_limit: null }));
     assert.equal(ladderStats(noSeal).sealed, null);
-    assert.match(textOf(r.html(LiveView, { ...props, v: { ...LIVE, ladder: { ...LIVE.ladder!, rows: noSeal } } })), /取到今天行情 2\/3 只 · 上涨 1 · 下跌 1 · 封住 —/);
+    assert.match(textOf(r.html(RoutedLiveView, { ...props, v: { ...LIVE, ladder: { ...LIVE.ladder!, rows: noSeal } } })), /取到今天行情 2\/3 只 · 上涨 1 · 下跌 1 · 封住 —/);
     const weekend = { ...LIVE, date: "2026-10-10", quote_day: "2026-10-09", phase_label: "周末休市", trading_day: false, detecting: false,
       ladder: { ...LIVE.ladder!, rows: noSeal.map((x) => ({ ...x, today: false })) } };
-    const wt = textOf(r.html(LiveView, { ...props, v: weekend }));
+    const wt = textOf(r.html(RoutedLiveView, { ...props, v: weekend }));
     assert.match(wt, /今天还没取到这 3 只的行情,下面是 2026-10-09 的读数\(标「非今日」\)/);
     assert.doesNotMatch(wt, /上涨 0|下跌 0|封住 0/);
     assert.match(liveSummary(weekend), /今天还没取到这 3 只的行情,下面是 2026-10-09 的读数/);
     const base = { v: LIVE, threshold: 5, scope: "mine", ladderMin: 2, onThreshold: noop, onScope: noop, onLadderMin: noop, error: null };
-    const t = textOf(r.html(LiveView, base));
+    const t = textOf(r.html(RoutedLiveView, base));
     assert.match(t, /按当前筛选没有异动\(今天共记下 3 条\)/);
     assert.match(t, /2板 新和成/);
     assert.doesNotMatch(t, /首板 万科A/, "2板以上不列首板");
@@ -92,11 +101,13 @@ test("异动筛选:幅度只筛急拉急跌,封板开板一直在;「只看持�
 test("实时动态:收盘后 / 休市不判断异动,写清原因和刷新间隔", async () => {
   await withRenderer(async (r) => {
     const { LiveView } = await r.load(`${DIR}/LiveTab.tsx`);
+    const { MemoryRouter } = await r.load("react-router-dom");
+    const RoutedLiveView = (props: any) => createElement(MemoryRouter, {}, createElement(LiveView, props));
     const props = { threshold: 1.5, scope: "all", ladderMin: 1, onThreshold: noop, onScope: noop, onLadderMin: noop, error: null };
-    const closed = textOf(r.html(LiveView, { ...props, v: { ...LIVE, phase: "closed", phase_label: "已收盘", detecting: false, poll_ms: 60000, alerts: [] } }));
+    const closed = textOf(r.html(RoutedLiveView, { ...props, v: { ...LIVE, phase: "closed", phase_label: "已收盘", detecting: false, poll_ms: 60000, alerts: [] } }));
     assert.match(closed, /已收盘 北京时间 10:01:32 · 每 60 秒刷新/);
     assert.match(closed, /已收盘,不判断异动;连续竞价时段\(9:30–11:30、13:00–14:57\)页面开着就会盯/);
-    const holiday = textOf(r.html(LiveView, { ...props, v: { ...LIVE, phase_label: "今天休市", trading_day: false, detecting: false, poll_ms: 60000, alerts: [], ladder: null, bigcap: null, turnover: null } }));
+    const holiday = textOf(r.html(RoutedLiveView, { ...props, v: { ...LIVE, phase_label: "今天休市", trading_day: false, detecting: false, poll_ms: 60000, alerts: [], ladder: null, bigcap: null, turnover: null } }));
     assert.match(holiday, /今天休市,不判断异动。/);
     assert.match(holiday, /昨日梯队这次没取到/);
     assert.match(holiday, /大票名单这次没取到/);
@@ -160,7 +171,7 @@ test("竞价与盘中路径:时点状态、09:25 竞价强弱、路径表(09:25 
     assert.match(t, /09:25 已存 09:25:20 存 · 42\/43 只 09:35 没存成 行情只取到 0 只 10:00 已存/);
     assert.match(t, /11:30 没存到 这个时点没存到快照/);
     assert.match(t, /14:00 待存 14:00–14:08 自动存/);
-    assert.match(t, /昨日涨停股 · 今日竞价强弱\(09:25:20 存\) 样本是 2026-10-09 收盘封住的 43 只,取到竞价行情 42 只。口径:当日开盘价 ÷ 昨收。/);
+    assert.match(t, /昨日涨停股 · 今日竞价强弱\(09:25:20 存\) 说明 样本是 2026-10-09 收盘封住的 43 只,取到竞价行情 42 只。口径:当日开盘价 ÷ 昨收。/);
     assert.match(t, /\+1\.20% 中位数\(多数人的体感\) \+1\.50% 均值 60% 高开占比\(25\/42\) 3 低开超 5%/);
     assert.match(t, /3板及以上 \(5 只\) \+5\.10% 高开 80%/);
     assert.match(t, /最高标\(9 板\)· 客观读数 新华传媒 600825 · 出版 \+10\.00%/);

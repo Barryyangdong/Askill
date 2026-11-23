@@ -1,8 +1,10 @@
+import { JourneyLink } from "@/components/JourneyLink";
 /**
  * 情绪复盘 · 情绪历史:六项读数近 N 个交易日的走势,复盘日在历史里排第几,和前一天比哪几项真变了。
  * 「历史统计位置」「今日 vs 昨日」移植自 Vibe AStock v2.0.0 的 StatsView / DiffView,口径说明原样保留;
  * 转热 = 红、转冷 = 绿(和涨跌同一套)。
  */
+import { HistoryTrends } from "./HistoryTrends";
 import { useState } from "react";
 import { ArrowLeftRight, Gauge, Table2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -144,7 +146,7 @@ function SeriesTable({ r }: { r: HistoryResult }) {
             ) : (
               <tr key={ln.row.date} className={cn("border-b border-border/40 last:border-0", ln.row.date === r.date && "bg-primary/5")}>
                 <td className="py-1.5 pr-3 text-muted-foreground">
-                  {ln.row.date}
+                  <JourneyLink context={{date:r.date}} to={`/shortline?date=${encodeURIComponent(ln.row.date)}`} className="text-primary hover:underline" aria-label={`复盘 ${ln.row.date}`}>{ln.row.date}</JourneyLink>
                   {ln.row.settled === false && <span className="ml-1 text-[10px] text-warning">未收盘</span>}
                   {ln.row.status === "partial" && <span className="ml-1 text-[10px] text-warning" title={ln.row.note}>部分</span>}
                 </td>
@@ -189,6 +191,7 @@ export function HistoryView({ r }: { r: HistoryResult }) {
         <StatsView c={r.context} />
         <DiffView d={r.diff} />
       </div>
+      <HistoryTrends r={r} />
       <SeriesTable r={r} />
       <GapsAndSource gaps={safeArray<string>(r.gaps)} source={r.source} />
     </div>

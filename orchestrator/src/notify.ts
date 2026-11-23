@@ -26,7 +26,10 @@ import { ServiceError, type ServiceContext } from "./service.ts";
 
 // ---------------------------------------------------------------- 契约
 
+export interface NotifyContext { type: string; refs: { id: string; date?: string }[] }
 export interface NotifyMessage {
+  /** Local navigation data, persisted with the inbox item; never included in push text. */
+  context?: NotifyContext;
   title: string;
   lines: string[];
   /** 界面内路径(如 `/my-stocks?tab=watch`);推送时前面拼上本机地址 */
@@ -153,7 +156,7 @@ interface State {
   pushed: Record<string, string>;
 }
 
-export interface InboxItem { id: string; at: string; job: string; job_label: string; title: string; lines: string[]; link?: string; read: boolean; kind: "message" | "notice" }
+export interface InboxItem { context?: NotifyContext; id: string; at: string; job: string; job_label: string; title: string; lines: string[]; link?: string; read: boolean; kind: "message" | "notice" }
 
 const INBOX_MAX = 300;
 const DEFAULT_SETTINGS: Settings = {
@@ -275,6 +278,11 @@ function loadInbox(dataRoot: string): InboxItem[] {
   return items as InboxItem[];
 }
 
+/** Exact local snapshot lookup, including items outside the overview page. */
+export function notifyInboxItem(dataRoot: string, id: string): InboxItem | null {
+  return loadInbox(dataRoot).find(item => item.id === id) ?? null;
+}
+
 /** 同一进程内的读改写一律排队,避免收件箱「标已读」和任务写入互相覆盖 */
 let chain: Promise<unknown> = Promise.resolve();
 function serial<T>(fn: () => T | Promise<T>): Promise<T> {
@@ -297,6 +305,15 @@ function addInbox(dataRoot: string, items: InboxItem[]): Promise<void> {
   return serial(() => {
     const all = [...items, ...loadInbox(dataRoot)].slice(0, INBOX_MAX);
     writeJson(fileOf(dataRoot, "inbox"), { version: 1, items: all });
+  });
+}
+
+/** Local-only notices; this does not transmit to configured external channels. */
+export async function localNotice(dataRoot:string, item:Omit<InboxItem,"read"|"kind"|"at">) {
+  await serial(() => {
+    const all=loadInbox(dataRoot);
+    if(all.some(x=>x.id===item.id)) return;
+    writeJson(fileOf(dataRoot,"inbox"),{version:1,items:[{...item,read:false,kind:"message",at:new Date().toISOString()},...all].slice(0,INBOX_MAX)});
   });
 }
 
@@ -529,6 +546,12 @@ function checkResult(r: unknown): JobResult {
       throw new Error("任务返回的消息格式不对");
     }
   }
+  for (const m of r.messages) {
+    if (m.context !== undefined && (!isObj(m.context) || typeof m.context.type !== "string" || !Array.isArray(m.context.refs)
+      || !m.context.refs.every((ref: unknown) => isObj(ref) && typeof ref.id === "string" && (ref.date === undefined || typeof ref.date === "string")))) {
+      throw new Error("任务返回的本地导航数据格式不对");
+    }
+  }
   return r as unknown as JobResult;
 }
 
@@ -538,8 +561,13 @@ const jobEnabled = (s: Settings, j: ScheduledJobDef) => s.jobs[j.id]?.enabled ??
 /** 投递:收件箱必写;推送按静默 / 去重 / 冷却过滤(手动运行和测试不过滤,也不记推送时间 —— 否则当天定时那次会被去重 / 冷却吞掉) */
 async function deliver(ctx: ServiceContext, job: ScheduledJobDef, messages: NotifyMessage[], now: Date, hm: string, manual: boolean, deps: Deps): Promise<string> {
   if (!messages.length) return "";
-  await addInbox(ctx.dataRoot, messages.map((m) => ({
-    id: newId(), at: now.toISOString(), job: job.id, job_label: job.label, title: m.title, lines: m.lines, ...(m.link ? { link: m.link } : {}), read: false, kind: "message" as const,
+  const deliveries = messages.map(m => {
+    const id = newId();
+    const link = m.context && m.link ? (() => { const url = new URL(m.link, "http://local"); url.searchParams.set("message", id); return `${url.pathname}${url.search}${url.hash}`; })() : m.link;
+    return { id, message: { ...m, ...(link ? { link } : {}) } };
+  });
+  await addInbox(ctx.dataRoot, deliveries.map(({ id, message: m }) => ({
+    id, at: now.toISOString(), job: job.id, job_label: job.label, title: m.title, lines: m.lines, ...(m.link ? { link: m.link } : {}), ...(m.context ? { context: m.context } : {}), read: false, kind: "message" as const,
   })));
   const settings = loadSettings(ctx.dataRoot);
   const hasChannel = settings.system || settings.webhooks.some((h) => h.enabled);
@@ -549,7 +577,7 @@ async function deliver(ctx: ServiceContext, job: ScheduledJobDef, messages: Noti
   const notes: string[] = [];
   const sentKeys: string[] = [];
   let pushedAny = false;
-  for (const m of messages) {
+  for (const { message: m } of deliveries) {
     if (!manual) {
       const last = Date.parse(state.sent[m.dedupeKey] ?? "");
       if (Number.isFinite(last) && now.getTime() - last < DEDUPE_MS) { notes.push(`「${m.title}」24 小时内推过,这次不重复推`); continue; }

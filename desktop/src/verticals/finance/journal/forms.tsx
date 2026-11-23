@@ -2,10 +2,11 @@
  * 交易日志的录入和设置表单:记一笔、改标注、改补记、补成交、费率、规矩、账户规模。
  * 🔴 改标注是「整条换掉」:没传的字段会被清空,所以编辑框总是把要保留的字段全部带上。
  */
-import { useState, type ReactNode } from "react";
+import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { Loader2, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { hideIf, maskPrivateText } from "@/lib/privacy";
+import { ApiError } from "@/lib/backend";
 import {
   fillsPayload, parseNum, ruleValueText, sharesText,
   type FeeKey, type FillDraft, type JournalRow, type JournalSettings, type RuleKey,
@@ -17,13 +18,35 @@ export type Act = (body: JournalAction) => Promise<unknown>;
 
 const A_SHARE = /^\d{6}$/;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const PENDING_RECORD = "journal.pending-record.v1";
+const RECORD_LOCK = "journal.record-request.v1";
+
+function pendingRecord(): string | null | undefined {
+  try { return localStorage.getItem(PENDING_RECORD); } catch { return undefined; }
+}
+
+/** 将确认绑定到界面当时显示的请求；确认框打开期间也可能收到其他标签页的写入。 */
+export function confirmPendingTarget(id: string | null | undefined, read: () => string | null | undefined, confirm: () => boolean): "confirmed" | "declined" | "changed" {
+  if (!id || read() !== id) return "changed";
+  if (!confirm()) return "declined";
+  return read() === id ? "confirmed" : "changed";
+}
 
 type Msg = { ok: boolean; text: string } | null;
 
+/** 成交已写入时必须先核对；普通错误允许保留草稿后重试。 */
+export function partialRecordState(locked: boolean, event: { type: "failed"; error: unknown; mode: "fills" | "manual" } | { type: "new" }): boolean {
+  if (event.type === "new") return false;
+  return locked || (event.mode === "fills" && event.error instanceof ApiError && event.error.code === "partial");
+}
+
 function useSubmit() {
   const [busy, setBusy] = useState(false);
+  const inFlight = useRef(false);
   const [msg, setMsg] = useState<Msg>(null);
-  const run = async (fn: () => Promise<unknown>, okText: string): Promise<boolean> => {
+  const run = async (fn: () => Promise<unknown>, okText: string, onError?: (error: unknown) => void): Promise<boolean> => {
+    if (inFlight.current) return false;
+    inFlight.current = true;
     setBusy(true);
     setMsg(null);
     try {
@@ -31,9 +54,11 @@ function useSubmit() {
       setMsg({ ok: true, text: okText });
       return true;
     } catch (e) {
+      onError?.(e);
       setMsg({ ok: false, text: errText(e) });
       return false;
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   };
@@ -130,6 +155,14 @@ export function RecordForm({ today, playbooks, openShares, hide, act }: {
   const [stop, setStop] = useState("");
   const [target, setTarget] = useState("");
   const [fills, setFills] = useState<FillDraft[]>([emptyFill("buy", today)]);
+  const [partial, dispatchPartial] = useReducer(partialRecordState, false);
+  const [pendingId, setPending] = useState(pendingRecord);
+  const pending = pendingId !== null;
+  useEffect(() => {
+    const sync = (e: StorageEvent) => { if (e.key === PENDING_RECORD || e.key === null) setPending(pendingRecord()); };
+    window.addEventListener("storage", sync);
+    return () => window.removeEventListener("storage", sync);
+  }, []);
   const { busy, msg, setMsg, run } = useSubmit();
   const code = symbol.trim();
   const open = A_SHARE.test(code) ? openShares(code) : undefined;
@@ -140,6 +173,7 @@ export function RecordForm({ today, playbooks, openShares, hide, act }: {
   };
 
   const submit = async () => {
+    if (partial || pending || pendingRecord() !== null) return;
     if (!A_SHARE.test(code)) { setMsg({ ok: false, text: "代码要是 6 位数字(交易日志只管 A 股)" }); return; }
     let body: JournalAction;
     try {
@@ -164,14 +198,55 @@ export function RecordForm({ today, playbooks, openShares, hide, act }: {
       setMsg({ ok: false, text: errText(e) });
       return;
     }
-    if (await run(() => act(body), mode === "fills" ? "已记录,成交也进了「我的股票」的交易流水" : "已补记")) reset();
+    const send = async () => {
+    if (mode === "fills" && pendingRecord() !== null) { setPending(pendingRecord()); return; }
+    let requestId: string | undefined;
+    if (mode === "fills") {
+      if (typeof crypto === "undefined" || typeof crypto.randomUUID !== "function") {
+        setMsg({ ok: false, text: "当前浏览器无法生成安全的请求标识，未提交。请使用本机地址或安全连接。" });
+        return;
+      }
+      try {
+        requestId = crypto.randomUUID();
+        localStorage.setItem(PENDING_RECORD, requestId);
+        body = { ...body, request_id: requestId };
+        setPending(requestId);
+      } catch {
+        setMsg({ ok: false, text: "无法保存待核对标记，未提交。请检查浏览器存储后重试。" });
+        return;
+      }
+    }
+    let rejected = false;
+    const ok = await run(() => act(body), mode === "fills" ? "已记录,成交也进了「我的股票」的交易流水" : "已补记", (error) => {
+      rejected = mode === "fills" && error instanceof ApiError && error.code === "record_rejected";
+      dispatchPartial({ type: "failed", error, mode });
+    });
+    if (ok || rejected) {
+      if (mode === "fills") {
+        try {
+          if (localStorage.getItem(PENDING_RECORD) === requestId) localStorage.removeItem(PENDING_RECORD);
+          setPending(pendingRecord());
+        } catch { /* 保持锁定，要求核对 */ }
+      }
+      if (ok) reset();
+    }
+    };
+    if (mode !== "fills") { await send(); return; }
+    if (!navigator.locks) { setMsg({ ok: false, text: "浏览器不支持跨标签页提交保护，未提交。请使用支持 Web Locks 的浏览器。" }); return; }
+    try {
+      await navigator.locks.request(RECORD_LOCK, { ifAvailable: true }, async (lock) => {
+        if (!lock) { setMsg({ ok: false, text: "另一个页面正在提交，请等待后核对。" }); return; }
+        await send();
+      });
+    } catch { setMsg({ ok: false, text: "无法获取提交保护，请检查后核对流水。" }); }
   };
 
   return (
     <div className="space-y-3">
+      <fieldset disabled={busy} className="space-y-3">
       <div role="group" aria-label="记哪一种" className="inline-flex items-center gap-0.5 rounded-lg border border-border bg-card p-0.5">
         {([["fills", "有成交明细"], ["manual", "只记盈亏%"]] as const).map(([k, label]) => (
-          <button key={k} type="button" aria-pressed={mode === k} onClick={() => { setMode(k); setMsg(null); }}
+          <button key={k} type="button" disabled={partial || pending} aria-pressed={mode === k} onClick={() => { setMode(k); setMsg(null); }}
             className={cn("rounded-md px-2.5 py-1 text-[12px]", mode === k ? "bg-primary/15 font-medium text-primary" : "text-muted-foreground hover:text-foreground")}>
             {label}
           </button>
@@ -222,9 +297,33 @@ export function RecordForm({ today, playbooks, openShares, hide, act }: {
         </>
       )}
       <div className="flex flex-wrap items-center gap-3">
-        <SubmitBtn busy={busy} onClick={submit}>记录</SubmitBtn>
+        <SubmitBtn busy={busy || partial || pending} onClick={() => submit()}>记录</SubmitBtn>
         <MsgLine m={msg} hide={hide} />
       </div>
+      {(partial || pending) && <div role="alert" className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
+        上次提交的结果需要核对。请先刷新并检查下方交易记录和「我的股票」流水，确认成交是否写入及标注是否完整，再开始新记录。
+        <button type="button" className={cn(BTN_GHOST, "ml-2")} onClick={async () => {
+          const id = pendingId;
+          const confirmation = confirmPendingTarget(id, pendingRecord, () => window.confirm("请确认已核对流水及标注。开始新记录会清空当前输入。继续吗？"));
+          if (confirmation === "changed") { setMsg({ ok: false, text: "待核对标记已变化，请刷新页面。" }); return; }
+          if (confirmation === "declined" || !id) return;
+          if (!navigator.locks) { setMsg({ ok: false, text: "浏览器不支持跨标签页核对保护，无法解除锁定。" }); return; }
+          try {
+            await navigator.locks.request(RECORD_LOCK, { ifAvailable: true }, async (lock) => {
+              if (!lock) { setMsg({ ok: false, text: "另一个页面仍在提交，请等待结果。" }); return; }
+              if (localStorage.getItem(PENDING_RECORD) !== id) { setMsg({ ok: false, text: "待核对标记已变化，请刷新页面。" }); return; }
+              const status = await act({ action: "record_cancel", request_id: id }) as { state?: string };
+              if (status.state !== "recorded" && status.state !== "cancelled") { setMsg({ ok: false, text: "无法确认这次请求的状态，请稍后重试。" }); return; }
+              if (status.state === "recorded" && !window.confirm("服务端确认此请求曾写入成交（流水可能后来被修改或删除）。请核对流水及标注；确认后开始新记录。")) return;
+              if (localStorage.getItem(PENDING_RECORD) !== id) { setMsg({ ok: false, text: "待核对标记已变化，请刷新页面。" }); return; }
+              localStorage.removeItem(PENDING_RECORD);
+              reset(); dispatchPartial({ type: "new" }); setPending(null);
+              setMsg({ ok: true, text: status.state === "cancelled" ? "原请求已取消，可开始新记录。" : "已确认原请求曾写入，可开始新记录。" });
+            });
+          } catch { setMsg({ ok: false, text: "无法核对提交状态，请稍后重试。" }); }
+        }}>清空并开始新记录</button>
+      </div>}
+      </fieldset>
     </div>
   );
 }

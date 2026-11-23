@@ -6,7 +6,7 @@
 import type { ReactNode } from "react";
 import { CalendarClock, Flame, Layers, TrendingUp, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Caliber } from "./Caliber";
+import { ContextHelp } from "@/components/ui/ContextHelp";
 import { coverageNote, finite, ladderNote, ladderRows, pctColor, plain, rate, safeArray, safeRecord, signed, trendColor } from "./format";
 import type { ConsecPremium, EmotionCycle, LadderGap, MoneyEffect, Promotion, PromotionTier } from "./types";
 
@@ -18,13 +18,12 @@ export function Card({ icon: Icon, title, hint, caliber, available, reason, chil
   available?: boolean; reason?: string; children: ReactNode;
 }) {
   return (
-    <div className="glass p-4">
-      <div className="mb-1 flex items-center gap-1.5">
+    <div className="glass emotion-card p-4">
+      <div className="mb-4 flex flex-wrap items-center gap-2">
         <Icon className="h-4 w-4 text-primary" />
         <h3 className="text-sm font-semibold">{title}</h3>
-        {caliber && <Caliber text={caliber} />}
+        <ContextHelp label="口径">{hint}{caliber && <p className="mt-2 whitespace-pre-line">{plain(caliber)}</p>}</ContextHelp>
       </div>
-      <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>
       {available ? children : (
         <p className="text-[13px] text-muted-foreground">这一项没算出来{reason ? `:${plain(reason)}` : ""}</p>
       )}
@@ -50,7 +49,7 @@ function Partial({ c }: { c?: Parameters<typeof coverageNote>[0] }) {
 export function MoneyEffectCard({ me }: { me: MoneyEffect }) {
   return (
     <Card
-      icon={Flame} title="赚钱效应"
+      icon={Flame} title="昨日涨停股表现"
       hint="昨日涨停股今天的表现。中位数代表「多数人的体感」,均值会被少数大涨拉高"
       caliber={"样本 = 昨日涨停池全部个股(含一字板、含各涨跌幅制度,连板与首板同权)。\n" +
         "涨跌幅 = 今日收盘价相对昨日收盘价,不是相对今日开盘。\n" +
@@ -107,7 +106,7 @@ export function PromotionCard({ pr }: { pr: Promotion }) {
 export function ConsecPremiumCard({ cp }: { cp: ConsecPremium }) {
   return (
     <Card
-      icon={Layers} title="连板溢价"
+      icon={Layers} title="昨日连板股溢价"
       hint="昨日 2 板以上个股今天的表现;仅描述该样本的涨跌,不能单凭溢价判断承接"
       caliber={"样本 = 昨日收盘时 2 板及以上的个股,口径同赚钱效应(收盘对收盘)。\n" +
         "它和赚钱效应的差值就是「高位比整体更抗跌还是更惨」。\n" +
@@ -157,7 +156,7 @@ export function CycleCard({ cy }: { cy: EmotionCycle }) {
   const series = safeArray<NonNullable<EmotionCycle["series"]>[number]>(cy.series);
   return (
     <Card
-      icon={CalendarClock} title="情绪周期"
+      icon={CalendarClock} title="涨停池周期位置"
       hint="窗口内情绪分最低的那天视为本轮起点"
       caliber={"情绪分 = 涨停家数、最高连板、炸板率三项在窗口内归一化后的平均,只用涨停池算。\n" +
         "炸板率是「越高越冷」,所以取反后再平均 —— 三项都指向同一个方向,分越高越热。\n" +
@@ -169,7 +168,7 @@ export function CycleCard({ cy }: { cy: EmotionCycle }) {
     >
       <div className="flex items-end gap-6">
         <Stat label={`起点 ${cy.trough_date ?? "—"}`} value={`第 ${cy.day_n ?? "—"} 天`} />
-        <Stat label="当前情绪分" value={finite(cy.current_score) != null ? finite(cy.current_score)!.toFixed(2) : "—"} valueClass={trendColor(cy.trend)} />
+        <Stat label="涨停池周期分" value={finite(cy.current_score) != null ? finite(cy.current_score)!.toFixed(2) : "—"} valueClass={trendColor(cy.trend)} />
       </div>
       <p className="mt-2 rounded-md bg-muted/40 px-2.5 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
         ⚠️ 启发式,不是精确周期划分。全市场压成一个数,而不同题材可能同时处在启动 / 高潮 / 退潮。

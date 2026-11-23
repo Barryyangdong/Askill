@@ -240,6 +240,20 @@ _BOARD_FS = {"industry": "m:90+t:2", "concept": "m:90+t:3", "region": "m:90+t:1"
 _BOARD_PERIOD = {"today": ("f62", "f62", "f184", "f3", "f204"), "5d": ("f164", "f164", "f165", "f109", "f257"), "10d": ("f174", "f174", "f175", "f160", None)}
 
 
+def _closing_quote_day(item: dict) -> str:
+    """Only a dated provider quote at or after the exchange close attests a closing snapshot."""
+    stamp = item.get("f124")
+    if not isinstance(stamp, (float, int)) or not 0 < stamp < 4102444800:
+        return ""
+    instant = datetime.fromtimestamp(stamp, TZ_SH)
+    return instant.date().isoformat() if instant.hour >= 15 else ""
+
+
+def _common_close_day(items: list) -> str:
+    days = {_closing_quote_day(item) for item in items}
+    return days.pop() if len(days) == 1 else ""
+
+
 def board_fund_flow(board_type: str = "industry", period: str = "today", top_n: int = 20) -> dict:
     """板块资金流向排名(主力净额降序);main_net 元,main_pct %;today 另有四档净额。"""
     if board_type not in _BOARD_FS:
@@ -247,7 +261,7 @@ def board_fund_flow(board_type: str = "industry", period: str = "today", top_n: 
     if period not in _BOARD_PERIOD:
         raise ValueError(f"period 须为 {list(_BOARD_PERIOD)}")
     fid, f_main, f_pct, f_chg, f_leader = _BOARD_PERIOD[period]
-    fields = ["f12", "f14", f_chg, f_main, f_pct] + ([f_leader] if f_leader else []) + (["f66", "f72", "f78", "f84"] if period == "today" else [])
+    fields = ["f12", "f14", "f124", f_chg, f_main, f_pct] + ([f_leader] if f_leader else []) + (["f66", "f72", "f78", "f84"] if period == "today" else [])
     base = {"pz": "200", "po": "1", "np": "1", "fltt": "2", "invt": "2", "fid": fid, "fs": _BOARD_FS[board_type], "fields": ",".join(dict.fromkeys(fields))}
 
     def page(pn: int):
@@ -280,7 +294,7 @@ def board_fund_flow(board_type: str = "industry", period: str = "today", top_n: 
         if period == "today":
             row.update({"super_large_net": it.get("f66", 0), "large_net": it.get("f72", 0), "medium_net": it.get("f78", 0), "small_net": it.get("f84", 0)})
         rows.append(row)
-    return {"board_type": board_type, "period": period, "total": total, "expected": expected, "rows": rows[:top_n]}
+    return {"board_type": board_type, "period": period, "total": total, "expected": expected, "rows": rows[:top_n], "source_close_date": _common_close_day(items[:top_n])}
 
 
 DRAGON_PAGE_SIZE = 500
@@ -777,7 +791,7 @@ def market_turnover_rank(top_n: int = 20) -> dict:
        导致"净流出最多"那一栏里全是净流入的板块)。
     """
     base = {"pz": "100", "po": "1", "np": "1", "fltt": "2", "invt": "2", "fid": "f6",
-            "fs": _A_SHARE_FS, "fields": "f12,f14,f2,f3,f6,f20,f21,f100"}
+            "fs": _A_SHARE_FS, "fields": "f12,f14,f2,f3,f6,f20,f21,f100,f124"}
 
     def page(pn: int):
         d = _push2_json("/api/qt/clist/get", params={**base, "pn": str(pn)}, headers={"User-Agent": UA}, timeout=15).get("data") or {}
@@ -800,7 +814,7 @@ def market_turnover_rank(top_n: int = 20) -> dict:
              "mcap": it.get("f20"), "float_cap": it.get("f21"), "industry": it.get("f100", "")}
             for i, it in enumerate(items[:top_n])]
     # 中途空页 / 短页:少于 min(top_n, total) 就是半份,映射层标 partial
-    return {"total": max(total, len(items)), "returned": len(rows), "expected": min(top_n, total) if total else None, "rows": rows}
+    return {"total": max(total, len(items)), "returned": len(rows), "expected": min(top_n, total) if total else None, "rows": rows, "source_close_date": _common_close_day(items[:top_n])}
 
 
 # ---------- 复盘:全市场涨跌分布 / 三所家数与成交额 / 主要指数中长线 / 全市场两融 ----------
@@ -846,6 +860,7 @@ def market_breadth() -> dict:
         data, ref_fb = {}, None
     q = str(data.get("qdate") or "")
     day = f"{q[:4]}-{q[4:6]}-{q[6:8]}" if len(q) == 8 and q.isdigit() else ""
+    distribution_day = day
     buckets: list[dict] = []
     for item in data.get("fenbu") or []:
         for k, v in (item or {}).items():
@@ -858,7 +873,7 @@ def market_breadth() -> dict:
     buckets.sort(key=lambda b: -b["key"])
     num = lambda x: x if isinstance(x, (int, float)) and not isinstance(x, bool) else None  # noqa: E731  fltt=2 时缺值是 "-"
     try:
-        u = _push2_json("/api/qt/ulist.np/get", params={"fltt": "2", "secids": ",".join(s for s, _, _ in _BREADTH_SECIDS), "fields": "f12,f104,f105,f106,f6"},
+        u = _push2_json("/api/qt/ulist.np/get", params={"fltt": "2", "secids": ",".join(s for s, _, _ in _BREADTH_SECIDS), "fields": "f12,f104,f105,f106,f6,f124"},
                         headers={"User-Agent": UA}, timeout=15)
         ref_u = last_raw_ref()
         by_code = {str(it.get("f12")): it for it in ((u.get("data") or {}).get("diff") or []) if isinstance(it, dict)}
@@ -867,7 +882,7 @@ def market_breadth() -> dict:
             it = by_code.get(secid.split(".")[1])
             if it:
                 row = {"market": mkt, "label": label, "up": num(it.get("f104")), "down": num(it.get("f105")), "flat": num(it.get("f106")),
-                       "amount": num(it.get("f6")), "source": "eastmoney", "_raw": ref_u}
+                       "amount": num(it.get("f6")), "source": "eastmoney", "_raw": ref_u, "source_close_date": _closing_quote_day(it)}
                 # 盘前 / 接口异常时各字段都是 "-":这一行等于没取到,不能当成取到了(否则下游既没数、也不报缺口)
                 if all(row[k] is None for k in ("up", "down", "flat", "amount")):
                     blank.append(label)
@@ -888,7 +903,8 @@ def market_breadth() -> dict:
                 amt = num((tq.get(code) or {}).get("amount_wan"))
                 # 腾讯行情缺字段时是 None;一个交易所整天成交额也不可能是 0 ⇒ 两种都当没取到,不写「0 亿」
                 if amt:
-                    exchanges.append({"market": mkt, "label": label, "up": None, "down": None, "flat": None, "amount": amt * 1e4, "source": "tencent", "_raw": ref_t})
+                    close_day = f"{qt[:4]}-{qt[4:6]}-{qt[6:8]}" if len(qt) >= 14 and qt[:14].isdigit() and qt[8:12] >= "1500" else ""
+                    exchanges.append({"market": mkt, "label": label, "up": None, "down": None, "flat": None, "amount": amt * 1e4, "source": "tencent", "_raw": ref_t, "source_close_date": close_day})
         except Exception as e2:  # noqa: BLE001
             notes.append(f"腾讯行情也没取到({type(e2).__name__})")
     if not buckets and not exchanges:
@@ -901,7 +917,7 @@ def market_breadth() -> dict:
             notes.append(f"上游没给数据日,按交易所日历标为 {day}")
         except Exception as e:  # noqa: BLE001
             notes.append(f"上游没给数据日,交易所日历也没取到({type(e).__name__})")
-    return {"date": day, "buckets": buckets, "exchanges": exchanges, "notes": notes}
+    return {"date": day, "distribution_date": distribution_day, "buckets": buckets, "exchanges": exchanges, "notes": notes}
 
 
 # 中长线看的几条主要指数;两市成交额用上证指数 + 深证综指(都是整个交易所的成交额)

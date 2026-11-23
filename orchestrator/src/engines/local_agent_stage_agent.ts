@@ -77,6 +77,7 @@ const SYSTEM_PROMPT = `
 宿主 Shell、任意文件读写、浏览器、网络和子 Agent 都不可用。
 只使用显式提供的 VRA MCP 工具：list_run_files、read_run_file、calculate、write_stage、write_report。
 用户消息里若有 shell 命令示例，它们只表达要完成的操作；必须翻译成上述受控工具，不得尝试执行命令。
+产物检查禁止的表达也不能出现在摘要、免责声明或自我说明中；只写中性事实、缺口与修正结果，不复述或列举被禁止的表达。
 严格完成当前阶段产物，最后按给定 JSON Schema 汇报。`.trim();
 
 /** 续跑会话的提示词:原阶段任务 + 收工检查的问题清单 */

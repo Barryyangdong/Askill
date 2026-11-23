@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { Link, Navigate, useSearchParams } from "react-router-dom";
+import { Navigate, useSearchParams } from "react-router-dom";
 import { FlaskConical, Play, FileText, Loader2, CandlestickChart, Share2, Swords, Star, Check } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { FormActions, FormField, FormToolbar } from "@/components/ui/FormToolbar";
 import { PageTabs } from "@/components/ui/PageTabs";
 import { SegmentedToggle } from "@/components/ui/SegmentedToggle";
 import { GlassCard } from "@/components/ui/GlassCard";
@@ -12,6 +13,9 @@ import { backend, ApiError, type RunListItem, type ResearchStatus } from "@/lib/
 import { api, type Quote } from "@/lib/api";
 import { addWatch as addToWatch, loadWatch } from "@/lib/watchlist";
 import { ResearchReport } from "../components/ResearchReport";
+import { JourneyLink } from "../components/JourneyLink";
+import { SaveNoteButton } from "../components/ui/SaveNoteButton";
+import { ResearchProgress } from "../components/ResearchProgress";
 import { KlineCard } from "../components/KlineCard";
 import { EarningsBriefCard } from "../components/EarningsBriefCard";
 import { EventStudyCard, type EventStudyData } from "../components/EventStudyCard";
@@ -87,6 +91,8 @@ export function Research() {
   const pickTab = (t: Tab) => setQuery({ tab: t === "overview" ? null : t }, true);
 
   const [runs, setRuns] = useState<RunListItem[]>([]);
+  const [runsLoaded, setRunsLoaded] = useState(false);
+  const openedFromQuery = useRef<string | null>(null);
   /** 页头搜索框里的字（还没选定的输入）；选定以后换成规范代码 */
   const [symbol, setSymbol] = useState(chartSymbol);
   useEffect(() => { setSymbol(chartSymbol); }, [chartSymbol]);
@@ -98,7 +104,7 @@ export function Research() {
     const c = normalizeMarketSymbol(raw);
     if (!c) { setPickErr("请输入 A 股 6 位代码、港股代码（如 00700）或美股代码（如 AAPL），或在下拉里选一个"); return; }
     setPickErr("");
-    if (c !== chartSymbol) { pickSeq.current += 1; setQuery({ symbol: c }, false); }
+    if (c !== chartSymbol) { pickSeq.current += 1; setQuery({ symbol: c, run: null }, false); }
   };
   /** 下拉里选中的那只(规范代码)。手敲的字母代码要先报出公司名、再按一次才开始 */
   const pickedCode = useRef<string | null>(null);
@@ -172,7 +178,7 @@ export function Research() {
 
   const loadRuns = () =>
     backend.runs(30)
-      .then((r) => { setRuns(r); setRunsErr(null); })
+      .then((r) => { setRuns(r); setRunsErr(null); setRunsLoaded(true); })
       // 🔴 不写成空数组 —— 空数组会被读成"确实一次都没跑过"
       .catch((e) => setRunsErr(e instanceof ApiError ? e.message : String(e)));
   useEffect(() => {
@@ -326,6 +332,8 @@ export function Research() {
   };
 
   const openReport = async (id: string) => {
+    openedFromQuery.current = id;
+    setQuery({ run: id, tab: "research" }, true);
     setErr("");
     const generation = ++watchGeneration.current;
     if (timer.current) window.clearInterval(timer.current);
@@ -350,6 +358,31 @@ export function Research() {
     }
   };
 
+  const requestedRun = params.get("run");
+  useEffect(() => {
+    if (!runsLoaded || !requestedRun || openedFromQuery.current === requestedRun) return;
+    const match = runs.find(r => r.run_id === requestedRun);
+    if (!match) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(requestedRun)) { setErr("研究运行编号无效；未打开其他运行。"); return; }
+      const ctl = new AbortController();
+      void fetch(`/api/runs/${encodeURIComponent(requestedRun)}/manifest`, {signal:ctl.signal}).then(async response => {
+        if (!response.ok) throw new Error("原研究运行不存在或无法读取");
+        const manifest: unknown = await response.json();
+        if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) throw new Error("原研究运行信息无效");
+        const m=manifest as {symbol?:unknown;market?:unknown};
+        const symbol=typeof m.symbol === "string" ? normalizeMarketSymbol(m.symbol) : null;
+        if (!symbol || (chartSymbol && chartSymbol!==symbol)) throw new Error("原研究运行与当前股票不匹配");
+        setRuns(previous=>previous.some(r=>r.run_id===requestedRun)?previous:[{run_id:requestedRun,symbol,market:typeof m.market==='string'?m.market:null,name:null,status:null,started_at:null,finished_at:null,stages_done:null,stages_total:null,test_scenario:false},...previous]);
+      }).catch(e=>{if(!ctl.signal.aborted)setErr(`${e instanceof Error?e.message:"原研究运行无法读取"}；未打开其他运行。`);});
+      return () => ctl.abort();
+    }
+    openedFromQuery.current = requestedRun;
+    if (chartSymbol && normalizeMarketSymbol(match.symbol) !== chartSymbol) { setErr("原研究运行与股票不匹配；未打开其他运行。"); return; }
+    void openReport(requestedRun);
+    // 路由身份变化才重新定位；打开过程有自己的序号隔离。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedRun, runsLoaded, runs]);
+
   useAiPage({
     key: `research:${chartSymbol || "none"}`,
     title: chartSymbol ? `个股深挖 · ${stockName || chartSymbol}` : "个股深挖",
@@ -372,9 +405,6 @@ export function Research() {
   }, tabParam !== "debate");
 
   const currentRun = report ? runs.find((r) => r.run_id === report.run_id) ?? null : null;
-  const stagesToShow = active
-    ? (active.stages.length ? active.stages : Object.keys(STAGE_CN).map((s) => ({ stage: s, status: "pending" })))
-    : [];
 
   const researchBusy = RUNNING.includes(active?.status ?? "");
   const mineRuns = chartSymbol ? runs.filter((r) => normalizeMarketSymbol(r.symbol) === chartSymbol) : runs;
@@ -393,14 +423,13 @@ export function Research() {
     <div>
       <PageHeader
         title="个股深挖"
-        subtitle="选一只股票：走势、财报、事件回看直接看；要完整研究再切到「深度研究」。A 股、港股、美股都支持"
+        subtitle="个股概览与深度研究" description="选一只股票：走势、财报、事件回看直接看；要完整研究再切到「深度研究」。A 股、港股、美股都支持"
       />
 
       {/* 选股：只在这里选一次，两个分页共用 */}
       <GlassCard className="mb-4">
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="space-y-1.5">
-            <span className="block text-xs text-muted-foreground">代码 / 名称 / 拼音</span>
+        <FormToolbar>
+          <FormField label="代码 / 名称 / 拼音">
             <SymbolSearch
               value={symbol}
               onChange={(v) => { setSymbol(v); setConfirm(null); }}
@@ -411,34 +440,36 @@ export function Research() {
               ariaLabel="股票代码"
               className="w-56"
             />
-          </div>
-          <button onClick={() => choose(symbol)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted/40">
-            <CandlestickChart className="h-4 w-4" /> 看这只
-          </button>
-          {chartSymbol && (
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 pb-1.5 text-sm">
-              <span className="font-semibold">{stockName || chartSymbol}</span>
-              {stockName && <span className="font-mono text-xs text-muted-foreground">{chartSymbol}</span>}
-              {market && <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">{MARKET_CN[market]}</span>}
-              {q?.price != null && (
-                <span className={cn("font-mono text-xs", q.change_pct == null ? "text-muted-foreground" : q.change_pct > 0 ? "text-danger" : q.change_pct < 0 ? "text-success" : "text-muted-foreground")}>
-                  {q.price}{q.change_pct != null && ` ${q.change_pct > 0 ? "+" : ""}${q.change_pct}%`}
-                </span>
-              )}
-              <button onClick={addWatch} disabled={inWatch}
-                className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-0.5 text-xs text-muted-foreground hover:text-primary disabled:hover:text-muted-foreground">
-                {inWatch ? <><Check className="h-3 w-3" /> 已在自选</> : <><Star className="h-3 w-3" /> 加入自选</>}
-              </button>
-              {market === "CN" && (
-                <Link to={`/debate?symbol=${encodeURIComponent(chartSymbol)}`} title="同一份数据，多方与空方各自立论、互相质疑"
-                  className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-0.5 text-xs text-muted-foreground hover:text-primary">
-                  <Swords className="h-3 w-3" /> 多空辩论
-                </Link>
-              )}
-            </div>
-          )}
-        </div>
+          </FormField>
+          <FormActions>
+            <button onClick={() => choose(symbol)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted/40">
+              <CandlestickChart className="h-4 w-4" /> 看这只
+            </button>
+            {chartSymbol && (
+              <div className="form-toolbar-summary text-sm">
+                <span className="font-semibold">{stockName || chartSymbol}</span>
+                {stockName && <span className="font-mono text-xs text-muted-foreground">{chartSymbol}</span>}
+                {market && <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">{MARKET_CN[market]}</span>}
+                {q?.price != null && (
+                  <span className={cn("font-mono text-xs", q.change_pct == null ? "text-muted-foreground" : q.change_pct > 0 ? "text-danger" : q.change_pct < 0 ? "text-success" : "text-muted-foreground")}>
+                    {q.price}{q.change_pct != null && ` ${q.change_pct > 0 ? "+" : ""}${q.change_pct}%`}
+                  </span>
+                )}
+                <button onClick={addWatch} disabled={inWatch}
+                  className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-0.5 text-xs text-muted-foreground hover:text-primary disabled:hover:text-muted-foreground">
+                  {inWatch ? <><Check className="h-3 w-3" /> 已在自选</> : <><Star className="h-3 w-3" /> 加入自选</>}
+                </button>
+                {market === "CN" && (
+                  <JourneyLink to={`/debate?symbol=${encodeURIComponent(chartSymbol)}`} title="同一份数据，多方与空方各自立论、互相质疑"
+                    className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-0.5 text-xs text-muted-foreground hover:text-primary">
+                    <Swords className="h-3 w-3" /> 多空辩论
+                  </JourneyLink>
+                )}
+              </div>
+            )}
+          </FormActions>
+        </FormToolbar>
         {pickErr && <p role="alert" className="mt-2 text-xs text-destructive">{pickErr}</p>}
         {/* 字母既可能是美股代码也可能是拼音（gzmt）：查不到这只的行情时说出来，别让下面一排卡片各报各的错 */}
         {chartSymbol && q === null && market !== "CN" && (
@@ -492,10 +523,9 @@ export function Research() {
           <FlaskConical className="h-4 w-4 text-primary" />
           <h3 className="font-semibold">跑一次研究{chartSymbol && <span className="ml-1.5 font-normal text-muted-foreground">· {stockName ? `${stockName}（${chartSymbol}）` : chartSymbol}</span>}</h3>
         </div>
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="space-y-1.5">
-            <span className="block text-xs text-muted-foreground">取数范围</span>
-            <select
+        <FormToolbar>
+          <FormField label="取数范围">
+            <select aria-label="取数范围"
               value={scope}
               onChange={(e) => setScope(e.target.value as "core" | "full")}
               className="rounded-lg border border-border bg-background/60 px-3 py-2 text-sm"
@@ -503,22 +533,24 @@ export function Research() {
               <option value="core">核心（快，够形成判断）</option>
               <option value="full">完整（含适用的扩展数据，较慢）</option>
             </select>
-          </label>
-          <button
-            onClick={() => void start()}
-            disabled={!chartSymbol || starting || active?.status === "running" || active?.status === "cancelling" || active?.status === "finalizing"}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary ring-1 ring-primary/30 hover:bg-primary/25 disabled:opacity-50"
-          >
-            {starting || active?.status === "running" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-            开始
-          </button>
-          {(active?.status === "running" || active?.status === "cancelling") && (
-            <button onClick={() => void cancel()} disabled={cancelling || active.status === "cancelling"}
-              className="rounded-lg border border-border px-4 py-2 text-sm disabled:opacity-50">
-              {cancelling || active.status === "cancelling" ? "正在取消，等待后台停止…" : "取消研究"}
+          </FormField>
+          <FormActions>
+            <button
+              onClick={() => void start()}
+              disabled={!chartSymbol || starting || active?.status === "running" || active?.status === "cancelling" || active?.status === "finalizing"}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary ring-1 ring-primary/30 hover:bg-primary/25 disabled:opacity-50"
+            >
+              {starting || active?.status === "running" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              开始
             </button>
-          )}
-        </div>
+            {(active?.status === "running" || active?.status === "cancelling") && (
+              <button onClick={() => void cancel()} disabled={cancelling || active.status === "cancelling"}
+                className="rounded-lg border border-border px-4 py-2 text-sm disabled:opacity-50">
+                {cancelling || active.status === "cancelling" ? "正在取消，等待后台停止…" : "取消研究"}
+              </button>
+            )}
+        </FormActions>
+        </FormToolbar>
         {!chartSymbol && <p className="mt-2.5 text-xs text-primary">先在页头选一只股票。</p>}
         {researchBusy && activeCode !== chartSymbol && (
           <p className="mt-2.5 text-xs text-warning">下面还在跑的是 {activeCode ?? "另一只股票"} 的研究；它结束后才能为当前这只开始。</p>
@@ -545,19 +577,7 @@ export function Research() {
             {active.calculation_count !== null && <span className="text-xs text-muted-foreground">计算 {active.calculation_count} 项</span>}
           </div>
           {/* 阶段逐个显示 —— 用户要知道它在哪一步，而不是看一个转圈 */}
-          <div className="research-stages" aria-label="研究阶段索引">
-            {stagesToShow.map((s, index) => (
-              <span
-                key={s.stage}
-                data-status={s.status}
-                className="research-stage min-w-0 rounded-b text-xs"
-              >
-                <span className="mb-2 block font-mono text-[10px] text-primary">{String(index + 1).padStart(2, "0")}</span>
-                <span className="block font-medium">{STAGE_CN[s.stage] ?? s.stage}</span>
-                <span className="mt-1 block text-[10px] text-muted-foreground">{STATUS_CN[s.status] ?? s.status}</span>
-              </span>
-            ))}
-          </div>
+          <ResearchProgress run={active} labels={STAGE_CN} statuses={STATUS_CN} />
           {active.failure && <ResearchFailureNotice failure={active.failure} />}
         </GlassCard>
       )}
@@ -573,6 +593,7 @@ export function Research() {
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <FileText className="h-4 w-4 text-primary" />
             <h3 className="font-semibold">{report.run_id} 的报告</h3>
+            {report.availability === "ready" && report.report && <SaveNoteButton kind="研究报告" title={`研究报告 · ${report.run_id}`} content={report.report} context={{symbol: chartSymbol}} />}
             {/* 分享卡只给通过最终校验的报告(后端同一个判据,也会拒) */}
             {report.availability === "ready" && <button type="button" onClick={() => setSharing((v) => !v)} aria-expanded={sharing}
               className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-border/60 px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground">

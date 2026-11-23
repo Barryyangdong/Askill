@@ -55,6 +55,7 @@ const apiProxy: Record<string, ProxyOptions> = {
     rewrite: (p) => p.replace(/^\/api/, ""),
     configure(proxy) {
       proxy.on("proxyReq", (proxyReq) => {
+        if (lan || remote) proxyReq.setHeader("x-askill-remote", "1");
         // LAN / 远程请求已经通过前置同源检查，此处才归一化为后端认可的回环 Origin。
         if (lan || remote) proxyReq.setHeader("origin", `http://127.0.0.1:${uiPort}`);
         // 访问 cookie 只给页面服务器看，不往后端带。
@@ -107,6 +108,8 @@ export default defineConfig({
   //    我们把它整套放进 verticals/finance/,别名这么指,上游代码一行都不用改。
   resolve: { alias: { "@": path.resolve(here, "src/verticals/finance") } },
   server: {
+    fs: { allow: [here, path.join(repoRoot, "orchestrator/src/finance/readContestDay.js"),
+      path.join(repoRoot, "orchestrator/src/finance/contest_page_script.ts")] },
     // 🔴 必须写死 IPv4:默认 localhost 在本机解析成 [::1],而后端绑的是 127.0.0.1,对不上会 502
     host: lan ? "0.0.0.0" : "127.0.0.1",
     port: uiPort,

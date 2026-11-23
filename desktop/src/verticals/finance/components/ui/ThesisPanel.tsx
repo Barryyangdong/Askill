@@ -1,8 +1,13 @@
+import { ObservationEvidence } from "./ObservationEvidence";
 import { useEffect, useRef, useState } from "react";
 import { Target, CalendarClock, ShieldAlert, Plus } from "lucide-react";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { backend, ApiError, type LedgerRecord } from "@/lib/backend";
 import { THESIS_STATUS_LABEL, verdictLabel } from "@/lib/verdicts";
+import { useLocation } from "react-router-dom";
+import { usePrivacyMode } from "@/hooks/usePrivacyMode";
+import { maskPrivateText } from "@/lib/privacy";
+import { ContextHelp } from "@/components/ui/ContextHelp";
 
 /**
  * 某只标的的**论点 → 判据 → 下一个数据日**。
@@ -30,6 +35,9 @@ function daysLeft(due: string): number | null {
 }
 
 export function ThesisPanel({ symbol, name }: { symbol: string; name?: string }) {
+  const { on: hide } = usePrivacyMode();
+  const { hash } = useLocation();
+  const shown = (value: unknown) => hide ? maskPrivateText(String(value ?? "")) : String(value ?? "");
   /** `null` = 还没取回 / 取不到；`[]` = 这个主体确实没有记录。**两者不能混** */
   const [theses, setTheses] = useState<LedgerRecord[] | null>(null);
   const [criteria, setCriteria] = useState<LedgerRecord[] | null>(null);
@@ -49,6 +57,7 @@ export function ThesisPanel({ symbol, name }: { symbol: string; name?: string })
   const seq = useRef(0);
   /** 同步的保存锁。`saving` 那个 state 在同一轮事件里读到的还是旧值,拦不住双击 */
   const savingRef = useRef(false);
+  const mounted = useRef(true);
 
   /**
    * 🔴 换主体时**先清空再取**，取回后还要核对是不是当前这个。
@@ -76,7 +85,14 @@ export function ThesisPanel({ symbol, name }: { symbol: string; name?: string })
       });
   };
   // 换主体先让在途请求全部作废(序号 +1),再取新的
-  useEffect(() => { seq.current += 1; void load(symbol); }, [symbol]);
+  useEffect(() => { mounted.current = true; seq.current += 1; void load(symbol); return () => { mounted.current = false; seq.current += 1; }; }, [symbol]);
+  useEffect(() => {
+    if (!theses || !hash.startsWith("#observation-")) return;
+    let id: string;
+    try { id = decodeURIComponent(hash.slice(1)); } catch { return; }
+    const element = document.getElementById(id);
+    if (element) { element.scrollIntoView({ block: "center" }); element.focus({ preventScroll: true }); }
+  }, [theses, hash]);
 
   const save = async () => {
     // 🔴 用 ref 不用 state:同一轮事件里连点两次,`saving` 读到的都还是 false —— 拦不住
@@ -113,6 +129,23 @@ export function ThesisPanel({ symbol, name }: { symbol: string; name?: string })
       savingRef.current = false;
       setSaving(false);
     }
+  };
+
+  const updateThesis = async (record: LedgerRecord, patch: Record<string, string>): Promise<boolean> => {
+    if (savingRef.current || !mounted.current) return false;
+    savingRef.current = true; setSaving(true); setErr(""); setSavedNote("");
+    try {
+      const saved = await backend.ledgerSave("thesis", {
+        id: record.id, symbol, title: record.title, statement: record.statement ?? "",
+        review_by: record.review_by ?? "", status: record.status ?? "active", note: record.note ?? "", ...patch,
+      });
+      if (!mounted.current) return false;
+      ++seq.current;
+      setTheses(previous => previous?.map(t => t.id === saved.id ? saved : t) ?? [saved]);
+      setSavedNote("已保存");
+      return true;
+    } catch (e) { if (mounted.current) setErr(e instanceof Error ? e.message : String(e)); return false; }
+    finally { savingRef.current = false; if (mounted.current) setSaving(false); }
   };
 
   if (!symbol) return null;
@@ -155,16 +188,7 @@ export function ThesisPanel({ symbol, name }: { symbol: string; name?: string })
         </p>
       ) : (
         <div className="mb-3 space-y-3">
-          {(theses ?? []).map((t) => (
-            <div key={t.id} className="rounded-lg bg-muted/20 p-3">
-              <div className="flex flex-wrap items-baseline gap-2">
-                <span className="font-medium">{String(t.title ?? "")}</span>
-                <span className="rounded bg-muted/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">{THESIS_STATUS_LABEL[String(t.status ?? "")] ?? String(t.status ?? "")}</span>
-                {fmtDate(t.review_by) && <span className="text-xs text-muted-foreground">复核 {fmtDate(t.review_by)}</span>}
-              </div>
-              {t.statement ? <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{String(t.statement)}</p> : null}
-            </div>
-          ))}
+          {(theses ?? []).map((t) => <ThesisRecordView key={t.id} record={t} hide={hide} disabled={saving || !ready} onUpdate={patch => updateThesis(t, patch)} />)}
 
           {points.length > 0 && (
             <div>
@@ -172,7 +196,7 @@ export function ThesisPanel({ symbol, name }: { symbol: string; name?: string })
               {points.map((c) => (
                 <div key={c.id} className="flex flex-wrap items-baseline gap-2 border-b border-border/30 py-1.5 text-sm last:border-0">
                   <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1">{String(c.statement ?? "")}</span>
+                  <span className="min-w-0 flex-1">{shown(c.statement)}</span>
                   <span className="font-mono text-xs text-muted-foreground">{fmtDate(c.due) || "未定日期"}</span>
                   <span className="rounded bg-muted/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">{verdictLabel(c.type, c.status)}</span>
                 </div>
@@ -187,7 +211,7 @@ export function ThesisPanel({ symbol, name }: { symbol: string; name?: string })
               {falsifiers.map((c) => (
                 <div key={c.id} className="flex flex-wrap items-baseline gap-2 border-b border-border/30 py-1.5 text-sm last:border-0">
                   <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-destructive/80" />
-                  <span className="min-w-0 flex-1">{String(c.statement ?? "")}</span>
+                  <span className="min-w-0 flex-1">{shown(c.statement)}</span>
                   <span className="rounded bg-muted/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">{verdictLabel(c.type, c.status)}</span>
                 </div>
               ))}
@@ -196,7 +220,7 @@ export function ThesisPanel({ symbol, name }: { symbol: string; name?: string })
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2">
+      {!hide && <div className="flex flex-wrap gap-2">
         <button onClick={() => { setAdding("thesis"); setErr(""); }}
           className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs hover:bg-muted/40">
           <Plus className="h-3.5 w-3.5" /> 写论点
@@ -205,9 +229,9 @@ export function ThesisPanel({ symbol, name }: { symbol: string; name?: string })
           className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs hover:bg-muted/40">
           <Plus className="h-3.5 w-3.5" /> 加判据
         </button>
-      </div>
+      </div>}
 
-      {adding && (
+      {adding && !hide && (
         <div className="mt-3 space-y-2 rounded-lg border border-border/60 p-3">
           {adding === "thesis" && (
             <input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })}
@@ -244,4 +268,34 @@ export function ThesisPanel({ symbol, name }: { symbol: string; name?: string })
       {err && <p className="mt-2 text-xs text-destructive">{err}</p>}
     </GlassCard>
   );
+}
+
+export function ThesisRecordView({ record: t, hide, disabled = false, onUpdate }: { record: LedgerRecord; hide: boolean; disabled?: boolean; onUpdate?: (patch: Record<string, string>) => Promise<boolean> }) {
+  const shown = (value: unknown) => hide ? maskPrivateText(String(value ?? "")) : String(value ?? "");
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({ title: "", statement: "", note: "", review_by: "" });
+  const field = "w-full rounded border border-border bg-background px-3 py-2 text-sm";
+  const button = "rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:text-primary disabled:opacity-40";
+  return <article id={`observation-${t.id}`} tabIndex={-1} className="scroll-mt-20 rounded border border-border bg-muted/20 p-3 focus:outline focus:outline-1 focus:outline-primary">
+    <div className="flex flex-wrap items-baseline gap-2">
+      <span className="font-medium">{shown(t.title)}</span>
+      <span className="rounded bg-muted/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">{THESIS_STATUS_LABEL[String(t.status ?? "")] ?? shown(t.status)}</span>
+      {fmtDate(t.review_by) && <span className="text-xs text-muted-foreground">复核 {fmtDate(t.review_by)}</span>}
+    </div>
+    {t.statement ? <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed text-muted-foreground">{shown(t.statement)}</p> : null}
+    {t.note ? <ContextHelp label="观察依据"><ObservationEvidence text={shown(t.note)} hide={hide}/></ContextHelp> : null}
+    {!hide && onUpdate && <div className="mt-3 flex flex-wrap gap-2">
+      <button type="button" disabled={disabled} className={button} onClick={() => { setDraft({ title: String(t.title ?? ""), statement: String(t.statement ?? ""), note: String(t.note ?? ""), review_by: fmtDate(t.review_by) }); setEditing(true); }}>编辑观察</button>
+      {t.status !== "closed" && <button type="button" disabled={disabled} className={button} onClick={() => void onUpdate({ status: t.status === "paused" ? "active" : "paused" })}>{t.status === "paused" ? "继续观察" : "暂停观察"}</button>}
+      <button type="button" disabled={disabled} className={button} title="只更改观察状态，保留关联判据与回看记录" onClick={() => void onUpdate({ status: t.status === "closed" ? "active" : "closed" })}>{t.status === "closed" ? "重新启用" : "结束观察"}</button>
+    </div>}
+    {editing && !hide && onUpdate && <form className="mt-3 space-y-2" onSubmit={async e => { e.preventDefault(); if (draft.title.trim() && await onUpdate({ ...draft, title: draft.title.trim(), statement: draft.statement.trim(), note: draft.note.trim() })) setEditing(false); }}>
+      <input aria-label="编辑观察标题" required maxLength={120} className={field} value={draft.title} onChange={e => setDraft({ ...draft, title: e.target.value })} />
+      <textarea aria-label="编辑观察理由" maxLength={4000} rows={4} className={field} value={draft.statement} onChange={e => setDraft({ ...draft, statement: e.target.value })} />
+      <textarea aria-label="编辑观察依据" maxLength={1000} className={field} value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} />
+      <label className="flex items-center gap-2 text-xs">复核日期<input type="date" className={field} value={draft.review_by} onChange={e => setDraft({ ...draft, review_by: e.target.value })} /></label>
+      <button type="submit" disabled={disabled || !draft.title.trim()} className={button}>{disabled ? "保存中…" : "保存修改"}</button>
+      <button type="button" disabled={disabled} className={button} onClick={() => setEditing(false)}>取消编辑</button>
+    </form>}
+  </article>;
 }

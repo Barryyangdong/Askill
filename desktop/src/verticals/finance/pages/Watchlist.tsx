@@ -1,3 +1,4 @@
+import { StockDetail } from "@/components/StockDetail";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Loader2, Plus, X, RefreshCw, Star } from "lucide-react";
@@ -13,6 +14,7 @@ import {
 } from "@/lib/symbolSearch";
 import { useLiveQuotes, isTradingHours } from "@/hooks/useLiveQuotes";
 import { AbnormalCard } from "@/components/AbnormalCard";
+import { ObservationCards } from "@/components/ObservationCards";
 import { KlineCard } from "@/components/KlineCard";
 import { SortTh } from "@/components/ui/SortTh";
 import { useTableSort } from "@/hooks/useTableSort";
@@ -99,6 +101,7 @@ export function Watchlist({ tabs }: { tabs?: ReactNode } = {}) {
   // 按行情排着时，行情回来之前先不画（不然先画原顺序第一只、行情一到又换一只）
   const [picked, setPicked] = useState<string | null>(null);
   const quotesSettled = settled !== null;
+  const [previewOpen, setPreviewOpen] = useState(false);
   const current = picked && codes.includes(picked) ? picked : quotesSettled || !sort ? shown[0] ?? null : null;
   useEffect(() => { if (quotesSettled && current && current !== picked) setPicked(current); }, [quotesSettled, current, picked]);
 
@@ -207,7 +210,7 @@ export function Watchlist({ tabs }: { tabs?: ReactNode } = {}) {
     <div>
       <PageHeader
         title="自选股"
-        subtitle="批量添加、一屏总览你关注的标的。数据只存本地、不上传。"
+        subtitle="自选行情" description="批量添加、一屏总览你关注的标的。数据只存本地、不上传。"
         actions={
           <div className="flex items-center gap-2">
             <button
@@ -242,7 +245,7 @@ export function Watchlist({ tabs }: { tabs?: ReactNode } = {}) {
         <label className="mb-1.5 block text-xs text-muted-foreground">
           批量添加 —— 代码、中文名、拼音首字母都行，支持 A 股、港股、美股（逗号 / 空格 / 换行分隔）
         </label>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-start gap-2">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -251,7 +254,7 @@ export function Watchlist({ tabs }: { tabs?: ReactNode } = {}) {
             }}
             rows={2}
             placeholder={"如：600519 茅台 AAPL 腾讯\n000858, gzmt, 09988.HK"}
-            className="flex-1 resize-y rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
+            className="min-w-0 flex-[1_1_240px] resize-y rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
           />
           <button
             onClick={() => void add()}
@@ -299,6 +302,7 @@ export function Watchlist({ tabs }: { tabs?: ReactNode } = {}) {
         )}
       </GlassCard>
 
+      <div className={cn("stock-list-detail", current && previewOpen && "stock-list-detail-open")}>
       <GlassCard glow className="mb-4">
         <div className="mb-2 flex items-center justify-between">
           <h3 className="flex items-center gap-1.5 font-semibold">
@@ -354,13 +358,13 @@ export function Watchlist({ tabs }: { tabs?: ReactNode } = {}) {
                   const sel = c === current;
                   // 整行可点：点哪行，下面的 K 线换成哪只。名称是个真按钮，键盘和读屏都能用（读屏会念出「已按下」）
                   return (
-                    <tr key={c} aria-current={sel ? "true" : undefined} title="点一下，在下面看这只的 K 线"
-                      onClick={() => setPicked(c)}
+                    <tr key={c} aria-current={sel ? "true" : undefined} title="点击打开走势预览"
+                      onClick={e => { e.currentTarget.querySelector("button")?.focus(); setPicked(c); setPreviewOpen(true); }}
                       className={cn("cursor-pointer border-b border-border/30 transition-colors hover:bg-muted/40",
                         sel && "bg-primary/10 shadow-[inset_2px_0_0_hsl(var(--primary))] hover:bg-primary/15")}>
                       <td className="px-2 py-2.5 font-medium">
-                        <button type="button" aria-pressed={sel} onClick={(e) => { e.stopPropagation(); setPicked(c); }}
-                          title={`在下面看 ${watchDisplayName(c, q?.name)} 的 K 线`}
+                        <button type="button" aria-pressed={sel} onClick={(e) => { e.stopPropagation(); setPicked(c); setPreviewOpen(true); }}
+                          title={`查看 ${watchDisplayName(c, q?.name)} 的 K 线`}
                           className={cn("rounded text-left outline-none focus-visible:ring-1 focus-visible:ring-primary/60", sel && "text-primary")}>{watchDisplayName(c, q?.name)}</button>
                         {held?.has(c) && <span className="ml-1.5 rounded bg-primary/15 px-1 py-0.5 text-[10px] font-normal text-primary">持有</span>}
                       </td>
@@ -390,15 +394,20 @@ export function Watchlist({ tabs }: { tabs?: ReactNode } = {}) {
             </table>
           </div>
         )}
-        {codes.length > 0 && <p className="mt-2 text-[11px] text-muted-foreground/70">点一行，在下面看它的 K 线；点表头排序（再点反过来，第三下恢复）。</p>}
+        {codes.length > 0 && <p className="mt-2 text-[11px] text-muted-foreground/70">点一行查看详情，列表位置保持不变；点表头排序（再点反过来，第三下恢复）。</p>}
         {heldErr && codes.length > 0 && <p className="mt-2 text-[11px] text-muted-foreground/70">没取到持仓，「持有」标记暂缺。</p>}
       </GlassCard>
 
-      {current && (
-        <KlineCard symbol={normalizeMarketSymbol(current) ?? current} title={quotes[current]?.name || watchNameOf(current) || undefined}
+      {current && previewOpen && (
+        <StockDetail title={quotes[current]?.name || current} onClose={() => setPreviewOpen(false)}>
+        <KlineCard compact symbol={normalizeMarketSymbol(current) ?? current} title={quotes[current]?.name || watchNameOf(current) || undefined}
           action={<Link to={`/research?symbol=${encodeURIComponent(current)}`} title="在个股页看财报、事件回看和研究"
             className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-primary hover:underline">个股页<ArrowRight className="h-3.5 w-3.5" /></Link>} />
+        <ObservationCards symbol={normalizeMarketSymbol(current) ?? current} />
+        </StockDetail>
       )}
+
+      </div>
 
       <AbnormalCard codes={codes} onData={setAbnormal} />
 

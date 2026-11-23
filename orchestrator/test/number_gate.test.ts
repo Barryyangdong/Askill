@@ -250,7 +250,7 @@ test("对话:系统提示词里给过的数也算出处", async () => {
 });
 
 test("服务层:用户对话的三条路都开闸门,提示词里先说明会核对", () => {
-  const src = (f: string) => fs.readFileSync(path.join(REPO, "orchestrator", "src", f), "utf8");
+  const src = (f: string) => fs.readFileSync(path.join(REPO, "orchestrator", "src", f), "utf8").replaceAll("\r\n", "\n");
   const service = src("service.ts");
   assert.match(service, /numberGate: true,/, "普通对话和 Agent 共用的 chatOptions 要开闸门");
   assert.match(service, /gateNumbers\(redLine\.reply, \[contextText \?\? "", message\]\)/, "模型直连那条路自己核对");

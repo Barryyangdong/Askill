@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import "../src/finance/register.ts";
-import { DebateError, advanceDebate, getDebate, renderDossier, resetDebates, startDebate, type ChatFn } from "../src/debate.ts";
+import { DebateError, advanceDebate, getDebate, renderDossier, resetDebates, startDebate, supplementDebate, type ChatFn } from "../src/debate.ts";
 import { currentPlugin } from "../src/plugin.ts";
 import fs from "node:fs";
 import os from "node:os";
@@ -11,6 +11,79 @@ import { fileURLToPath } from "node:url";
 import { ChatError, chatSend } from "../src/chat.ts";
 
 const ENV = (evidence: Record<string, unknown>[]) => ({ script: "t", evidence });
+test('invalid references are corrected once, never fed to later stages as valid output',async()=>{
+ resetDebates();startDebate({id:'bad-reference',symbol:'600825',depth:'1',envelopes:[ENV([{id:'ev-real',value:1}])],gaps:[]});
+ let calls=0;
+ const state=await advanceDebate({repoRoot:process.cwd()},{id:'bad-reference',stageId:'bull'},async()=>{calls++;return '虚构材料支持当前结论 [ev-invented]';});
+ assert.equal(calls,2);assert.equal(state.stages[0]?.status,'failed');assert.equal(state.stages[0]?.text,'');
+ assert.match(state.stages[0]?.error??'',/不存在的证据/);
+});
+
+test("shared supplement reaches both later roles without rewriting prior output",async()=>{
+ resetDebates();const id='supplement-shared';
+ startDebate({id,symbol:'600825',depth:'2',envelopes:[ENV([{id:'ev-original',value:1}])],gaps:[]});
+ for(const stageId of ['bull','bear','bull_rebut','bear_rebut'])await advanceDebate({repoRoot:process.cwd()},{id,stageId},async()=> '原始陈述保持不变');
+ const state=supplementDebate(id,[ENV([{id:'ev-added',field:'excerpt',value:'追加公共证据独有片段'}])],['仅部分材料']);
+ assert.equal(state.stages[0]!.text,'原始陈述保持不变');assert.equal(state.evidence_count,2);
+ for(const stageId of ['bull_reply','bear_reply'])await advanceDebate({repoRoot:process.cwd()},{id,stageId},async message=>{assert.match(message,/追加公共证据独有片段/);return '依据追加片段修正观点';});
+});
+
+test("完整交锋：回应读到对方质询与自身原观点，综合者看到真实修正", async () => {
+  resetDebates();
+  const id = "dialogue-correction";
+  startDebate({ id, symbol: "600825", depth: "2", envelopes: [ENV([{ id: "ev-a", value: 1 }])], gaps: [], previous: { text: "上次独有判断基线", at: "2026-11-15T10:00:00Z" } });
+  const answers: Record<string, string> = { bull: "多方原观点：改善具有持续性", bear: "空方原观点：单期不足", bull_rebut: "多方问题：反证是什么", bear_rebut: "空方质询：累计改善是否掩盖单季亏损", bull_reply: "多方修正：撤回持续性主张", bear_reply: "空方回应：仍须核实单季口径", referee: "综合判断：累计改善成立，持续性证据不足" };
+  const opts = { repoRoot: process.cwd() };
+  await assert.rejects(advanceDebate(opts, { id, stageId: "bull_reply" }, async () => "不应调用"), /required stage/);
+  for (const stage of getDebate(id)!.stages) {
+    await advanceDebate(opts, { id, stageId: stage.id }, async message => {
+      if (stage.id === "referee") assert.match(message, /上次独有判断基线/);
+      else assert.doesNotMatch(message, /上次独有判断基线/);
+      if (stage.id === "bull_reply") {
+        assert.match(message, /多方原观点：改善具有持续性/);
+        assert.match(message, /空方质询：累计改善是否掩盖单季亏损/);
+      }
+      if (stage.id === "referee") assert.match(message, /多方修正：撤回持续性主张/);
+      return answers[stage.id]!;
+    });
+  }
+  assert.equal(getDebate(id)!.outcome, "completed");
+});
+
+test("来源配额避免长来源挤掉后续材料，省略的数字不进入复核", () => {
+  const report = renderDossier([
+    { script: "long", evidence: Array.from({ length: 300 }, (_, i) => ({ id: `ev-${i}`, field: "value", value: i, note: "长文本".repeat(90) })) },
+    { script: "later", evidence: [{ id: "ev-last", field: "fact", value: 987654321, source: "official" }] },
+  ]);
+  assert.ok(report.truncated);
+  assert.match(report.text, /ev-last/);
+  assert.match(report.text, /来源:official/);
+  assert.ok(report.values.includes(987654321));
+  assert.equal(report.count, report.values.length);
+  assert.ok(report.text.length < 36000);
+});
+
+test("独立陈述可以同时运行，依赖阶段必须等待；每段开始和完成立即发状态", async () => {
+  resetDebates();
+  const id = "concurrent-visible";
+  startDebate({ id, symbol: "600825", depth: "1", envelopes: [ENV([{ id: "ev-a", value: 1 }])], gaps: [] });
+  const states: string[] = [];
+  const finish: Array<(text: string) => void> = [];
+  const opts = { repoRoot: process.cwd(), onState: (s: any) => states.push(s.stages.map((x: any) => `${x.id}:${x.status}`).join(",")) };
+  const chat: ChatFn = async () => new Promise(resolve => finish.push(resolve));
+  const bull = advanceDebate(opts, { id, stageId: "bull" }, chat);
+  const bear = advanceDebate(opts, { id, stageId: "bear" }, chat);
+  assert.equal(finish.length, 2);
+  assert.match(states[1]!, /bull:running,bear:running/);
+  await assert.rejects(advanceDebate(opts, { id, stageId: "referee" }, chat), /required stage/);
+  await assert.rejects(advanceDebate(opts, { id, stageId: "bull" }, chat), /unavailable/);
+  finish[1]!("现有资料不足以确认该观点。"); await bear;
+  assert.equal(getDebate(id)?.done, false);
+  finish[0]!("现有资料存在支持与限制。"); await bull;
+  const final = await advanceDebate(opts, { id, stageId: "referee" }, async () => "双方分歧需要后续事实验证。");
+  assert.equal(final.outcome, "completed");
+  assert.ok(final.stages.every(s => s.started_at && s.finished_at));
+});
 
 test("中文辩论草稿最多重试一次，失败正文不展示也不传给主持", async () => {
   resetDebates();
@@ -44,7 +117,7 @@ test("中文辩论保留英文术语与大量证据引用，取消不触发格�
   resetDebates();
   const init = (id: string) => startDebate({ id, symbol: "600519", depth: "1", envelopes: [ENV([{ id: "ev-a", value: 1 }])], gaps: [] });
   init("language-ids");
-  const valid = "资料不足，需核实 EPS 与 PE。" + " [ev-abcdef123456]".repeat(40);
+  const valid = "资料不足，需核实 EPS 与 PE。" + " [ev-a]".repeat(40);
   let calls = 0;
   const ok = await advanceDebate({ repoRoot: process.cwd() }, { id: "language-ids" }, async () => { calls++; return valid; });
   assert.equal(calls, 1);
@@ -61,7 +134,7 @@ test("中文辩论保留英文术语与大量证据引用，取消不触发格�
 });
 
 for (const agent of ["claude", "codebuddy"] as const) {
-  test(`${agent} 经真实聊天路由跑完五阶段辩论，不混用来源`, async (t) => {
+  test(`${agent} 经真实聊天路由跑完七阶段辩论，不混用来源`, async (t) => {
     resetDebates();
     const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vra-debate-local-"));
     t.after(() => fs.rmSync(dataRoot, { recursive: true, force: true }));
@@ -70,7 +143,7 @@ for (const agent of ["claude", "codebuddy"] as const) {
     startDebate({ id, symbol: "300308", sourceFingerprint: agent,
       envelopes: [ENV([{ id: "ev-test", field: "sample", value: 1 }])], gaps: ["合成测试，不代表真实行情"] });
     let count = 0;
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 7; i++) {
       const state = await advanceDebate(opts, { id, sourceFingerprint: agent }, async (message, session, signal) =>
         (await chatSend({ ...opts, signal, persistent: false, localAgentRunner: async (actual, local) => {
           assert.equal(actual, agent);
@@ -81,7 +154,7 @@ for (const agent of ["claude", "codebuddy"] as const) {
         } }, { message, session, llm: { provider: `cli-${agent}` } })).reply);
       assert.equal(state.stages[i]!.status, "done");
     }
-    assert.equal(count, 5);
+    assert.equal(count, 7);
     assert.equal(getDebate(id)?.outcome, "completed");
   });
 }
@@ -229,9 +302,9 @@ test("🔴 契约:sees 只能指向排在自己前面的阶段", () => {
   assert.deepEqual(bear?.sees, [], "空方陈述阶段不该看到任何前置产出");
 });
 
-test("裁判要看得到四段全部 —— 少看一段就成了偏听", () => {
+test("综合者必须看到全部六段立论、质询与回应", () => {
   const ref = currentPlugin().debate!.stages.find((x) => x.id === "referee");
-  assert.deepEqual([...(ref?.sees ?? [])].sort(), ["bear", "bear_rebut", "bull", "bull_rebut"]);
+  assert.deepEqual([...(ref?.sees ?? [])].sort(), ["bear", "bear_rebut", "bear_reply", "bull", "bull_rebut", "bull_reply"]);
 });
 
 /**
@@ -347,7 +420,7 @@ print(json.dumps({'script':ep,'status':'partial','extra':{'degraded':'复权因�
     const { debateStart } = await import("../src/service.ts");
     const dataRoot = path.join(repo, ".local");
     fs.mkdirSync(dataRoot);
-    const st = await debateStart({ repoRoot: repo, dataRoot, python: process.env.VRA_PYTHON ?? "python3", node: process.execPath },
+    const st = await debateStart({ repoRoot: repo, dataRoot, python: process.env.VRA_PYTHON ?? (process.platform === "win32" ? "python" : "python3"), node: process.execPath },
       { symbol: "300308", llm: { provider: "cli-claude" }, executionMode: "agent" });
     // 资料包里另有几个独立脚本端点(假仓库里没有,取数失败照记),只看走取数服务的那些
     const partial = st.gaps.filter((g) => g.includes(":partial"));

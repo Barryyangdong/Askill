@@ -87,6 +87,60 @@ test("板位、规矩的写法和行状态", () => {
 
 /* ---------------- 交易记录 ---------------- */
 
+test("交易备注的正文和悬停提示都遵循隐私模式", async () => {
+  const v = { ...VIEW, rows: VIEW.rows.map((row, i) => i === 0 ? { ...row, note: "买入100股，占用12000元" } : row) };
+  const hidden = await render("RecordsTab.tsx", "RecordsTab", { v, env: done(ENV), hide: true, act: noop });
+  assert.doesNotMatch(hidden.html, /100股|12000元/);
+  assert.match(hidden.html, /买入••••股，占用••••元/);
+  const visible = await render("RecordsTab.tsx", "RecordsTab", { v, env: done(ENV), hide: false, act: noop });
+  assert.match(visible.html, /买入100股，占用12000元/);
+});
+
+test("成交已写入的部分失败锁住当前表单，普通失败仍可重试", async () => {
+  await withRenderer(async (r) => {
+    const { partialRecordState } = await r.load("/src/verticals/finance/journal/forms.tsx");
+    const { ApiError } = await r.load("/src/verticals/finance/lib/backend.ts");
+    const partial = new ApiError("成交已记上，标注没写", 500, "partial");
+    assert.equal(partialRecordState(false, { type: "failed", error: partial, mode: "fills" }), true);
+    assert.equal(partialRecordState(true, { type: "failed", error: new Error("网络"), mode: "fills" }), true);
+    assert.equal(partialRecordState(false, { type: "failed", error: new Error("网络"), mode: "fills" }), false);
+    assert.equal(partialRecordState(false, { type: "failed", error: partial, mode: "manual" }), false);
+    assert.equal(partialRecordState(true, { type: "new" }), false);
+  });
+});
+
+test("刷新后待核对标记仍阻止录入，存储不可用时也保持锁定", async () => {
+  const prior = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  try {
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: () => "request-id" } });
+    const locked = await render("forms.tsx", "RecordForm", { today: VIEW.today, playbooks: VIEW.playbooks, hide: false, act: noop, openShares: () => undefined });
+    assert.match(locked.text, /上次提交的结果需要核对/);
+    assert.match(locked.html, /disabled/);
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: () => { throw new Error("blocked"); } } });
+    const blocked = await render("forms.tsx", "RecordForm", { today: VIEW.today, playbooks: VIEW.playbooks, hide: false, act: noop, openShares: () => undefined });
+    assert.match(blocked.text, /上次提交的结果需要核对/);
+  } finally {
+    if (prior) Object.defineProperty(globalThis, "localStorage", prior);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
+test("待核对请求在确认前或确认期间变化时不能继续取消", async () => {
+  await withRenderer(async (r) => {
+    const { confirmPendingTarget } = await r.load("/src/verticals/finance/journal/forms.tsx");
+    let stored = "B";
+    let prompts = 0;
+    const confirm = () => { prompts++; return true; };
+    assert.equal(confirmPendingTarget("A", () => stored, confirm), "changed");
+    assert.equal(prompts, 0);
+    stored = "A";
+    assert.equal(confirmPendingTarget("A", () => stored, () => { stored = "B"; return true; }), "changed");
+    assert.equal(stored, "B");
+    stored = "A";
+    assert.equal(confirmPendingTarget("A", () => stored, () => true), "confirmed");
+  });
+});
+
 test("交易记录:体检读数、分组表、逐笔里的情绪和板位都画出来,红涨绿跌", async () => {
   const { html, text } = await render("RecordsTab.tsx", "RecordsTab", { v: VIEW, env: done(ENV), hide: false, act: noop });
   assert.match(text, /自我体检/);
@@ -194,6 +248,15 @@ test("复查:收件箱的标记、慢视图的加载和没数据", async () => {
   assert.match(text, /最大浮盈浮亏加载中…/);
   assert.match(text, /最近还没有对完账的验证条件/);
   assert.match(text, /2 笔那天前一晚没写验证条件/);
+});
+
+test("复查收件箱备注在隐私模式下遮住金额和股数", async () => {
+  assert.equal(VIEW.inbox.available, true);
+  if (!VIEW.inbox.available) return;
+  const inbox = { ...VIEW.inbox, items: VIEW.inbox.items.map((item, i) => i === 0 ? { ...item, note: "买入100股，占用12000元" } : item) };
+  const { text } = await render("ReviewTab.tsx", "ReviewTab", { inbox, hide: true, excursion: { state: "loading" }, attribution: { state: "loading" } });
+  assert.doesNotMatch(text, /100股|12000元/);
+  assert.match(text, /备注:••••/);
 });
 
 test("模式卡:版本表、样本不足不比较", async () => {

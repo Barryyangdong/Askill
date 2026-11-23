@@ -256,7 +256,7 @@ test("迁移:旧持有记录转成期初持仓流水;先备份原样文件;数�
   assert.deepEqual(fs.readdirSync(dir).sort(), ["README.md", "position.json", "trade.json"]);
   assert.ok(fs.readFileSync(path.join(dir, "position.json")).equals(posBefore), "备份是迁移前的原样字节");
   assert.ok(fs.readFileSync(path.join(dir, "trade.json")).equals(tradeBefore));
-  assert.match(fs.readFileSync(path.join(dir, "README.md"), "utf8"), /恢复:先退出 Vibe AStock/);
+  assert.match(fs.readFileSync(path.join(dir, "README.md"), "utf8"), /恢复:先退出 短线王/);
   assert.deepEqual(result.migrated.map((m) => [m.symbol, m.position_id]), [["600519", a.id], ["00700.HK", b.id]]);
   assert.deepEqual(result.failed, []);
 
@@ -386,10 +386,16 @@ test("持仓视图:成本法可选、写错报参数错误;动作写错报错;�
 }));
 
 test("收益率:服务端读台账流水交给收益率工具;手改坏的流水不送、只送计算要的字段", withRoot(async (ctx) => {
-  // 假 Python:把收到的参数和 stdin 原样记下来,回一个合法结果 —— 只验「送了什么」,收益率本身在 backtest/tests 里验
+  // 假 Python 模块记录 stdin；收益率本身由 backtest/tests 验证。
   const seen = path.join(ctx.dataRoot, "seen.json");
-  const fake = path.join(ctx.dataRoot, "fake-python.sh");
-  fs.writeFileSync(fake, `#!/bin/sh\nprintf '%s ' "$@" > '${seen}.args'\ncat > '${seen}'\necho '{"ok":true,"result":{"groups":[]}}'\n`, { mode: 0o755 });
+  const fakeRepo = path.join(ctx.dataRoot, "fake-repo");
+  const fakePackage = path.join(fakeRepo, "backtest");
+  fs.mkdirSync(fakePackage, { recursive: true });
+  fs.writeFileSync(path.join(fakePackage, "portfolio_perf.py"), `from pathlib import Path
+import sys
+Path(${JSON.stringify(seen)}).write_bytes(sys.stdin.buffer.read())
+print('{"ok":true,"result":{"groups":[]}}')
+`);
   ledgerUpsert(ctx, { kind: "trade", record: { symbol: "600519", name: "贵州茅台", type: "buy", date: "2025-01-02", shares: 100, price: 10, fee: 5, note: "备注不送" } });
   ledgerUpsert(ctx, { kind: "trade", record: { symbol: "00700.HK", type: "split", date: "2025-02-02", ratio: 5 } });
   ledgerUpsert(ctx, { kind: "trade", record: { symbol: "AAPL", type: "dividend", date: "2025-03-02", amount: 3 } });
@@ -397,9 +403,9 @@ test("收益率:服务端读台账流水交给收益率工具;手改坏的流水
   const doc = JSON.parse(fs.readFileSync(file, "utf8")) as { records: Record<string, unknown>[] };
   doc.records[2]!.amount = "3";   // 手改坏
   fs.writeFileSync(file, JSON.stringify(doc));
-  const out = await holdingsPerf({ ...ctx, python: fake }, {}, sig);
+  const python = process.env.VRA_PYTHON ?? (process.platform === "win32" ? "python" : "python3");
+  const out = await holdingsPerf({ ...ctx, repoRoot: fakeRepo, python }, {}, sig);
   assert.deepEqual(out, { ok: true, result: { groups: [] } });
-  assert.equal(fs.readFileSync(`${seen}.args`, "utf8").trim(), "-m backtest.portfolio_perf");
   const sent = JSON.parse(fs.readFileSync(seen, "utf8")) as { charts: boolean; trades: Record<string, unknown>[] };
   assert.equal(sent.charts, true);
   assert.deepEqual(sent.trades.map((t) => t.symbol), ["600519", "00700.HK"]);
@@ -520,7 +526,9 @@ test("接口:GET /view/holdings 读、POST /view/holdings 迁移;没有写动作
     assert.deepEqual([noAct.status, ((await noAct.json()) as { error: string }).error], [400, "bad_request"]);
     const form = await fetch(`${base}/view/holdings`, { method: "POST", headers: { authorization: headers.authorization, "content-type": "text/plain" }, body: "{}" });
     assert.equal(form.status, 415, "写动作与台账写入同一套防护:非 JSON 拒");
-  } finally { server.close(); }
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
 }));
 
 test("🔴 已转过期初、旧记录后来被改成 0 股:确认转换要当场拒绝,原来那笔期初不能先被删掉(审计 B3)", withRoot(async (ctx) => {

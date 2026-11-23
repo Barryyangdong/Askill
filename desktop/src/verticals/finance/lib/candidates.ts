@@ -34,6 +34,8 @@ export type UniverseId = (typeof UNIVERSES)[number]["id"];
 
 /** 和后端 METRICS 同序同名同单位(后端测试逐项核对) */
 export const METRICS = [
+  { id: "change_pct", label: "涨跌幅", unit: "%", hint: "按报价所属交易日" },
+  { id: "volume_ratio", label: "量比", unit: "倍", hint: "盘中读数；缺失不会按零处理" },
   { id: "pe_ttm", label: "市盈率(TTM)", unit: "倍", hint: "亏损的市盈率是负数" },
   { id: "pb", label: "市净率", unit: "倍", hint: "" },
   { id: "market_cap", label: "总市值", unit: "亿元", hint: "" },

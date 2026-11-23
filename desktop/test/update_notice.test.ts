@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
+import {withRenderer} from "./helpers/render.ts";
 import { backend } from "../src/verticals/finance/lib/backend.ts";
 import { announceUpdate, onUpdateChanged, updateStatusText, upgradeSteps, type UpdateInfo } from "../src/verticals/finance/lib/update.ts";
 
@@ -56,8 +57,14 @@ test("新版提示:接口调用 GET /update 与 POST /update {action, version}",
 });
 
 test("新版提示界面:顶部提示条只在有新版时出现、查失败不打扰;设置页能重新打开并看到原因", () => {
+  // SSR cannot show the banner before its effect loads update state. Verify the
+  // layout mounts it in the workspace, independent of intervening navigation.
   const layout = src("components/layout/Layout.tsx");
-  assert.match(layout, /<\/header>\n\s*<UpdateBanner \/>\n\s*<main /, "提示条在顶栏和正文之间");
+  assert.match(layout, /import\s*\{\s*UpdateBanner\s*\}\s*from\s*["']\.\/UpdateBanner["']/);
+  const headerEnd = layout.indexOf("</header>");
+  const bannerMount = layout.indexOf("<UpdateBanner />", headerEnd);
+  const mainStart = layout.indexOf("<main ", headerEnd);
+  assert.ok(headerEnd >= 0 && bannerMount > headerEnd && mainStart > bannerMount, "新版提示挂在工作区顶栏之后、正文之前");
   const banner = src("components/layout/UpdateBanner.tsx");
   assert.match(banner, /if \(hidden \|\| !info\?\.update_available \|\| !latest\) return null;/);
   assert.match(banner, /\.catch\(\(\) => \{ \/\* 只是提示/);
@@ -91,4 +98,8 @@ test("新版提示:一边改了开关就广播,另一边收到同一份状态;�
   } finally {
     if (had) g.window = prev; else delete g.window;
   }
+});
+
+test("新版提示初次加载前不误报有更新",async()=>{
+ await withRenderer(async r=>{const {UpdateBanner}=await r.load("/src/verticals/finance/components/layout/UpdateBanner.tsx");assert.equal(r.html(UpdateBanner,{}),"");});
 });

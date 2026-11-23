@@ -1,3 +1,4 @@
+import { JourneyLink as Link } from "@/components/JourneyLink";
 import { useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { CalendarDays, Gavel, RefreshCw, RotateCcw, Zap } from "lucide-react";
@@ -6,12 +7,14 @@ import { PageTabs, type PageTab } from "@/components/ui/PageTabs";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { cn } from "@/lib/utils";
 import { LiveTab } from "@/shortline/LiveTab";
+import { MonitorStatus } from "@/components/MonitorStatus";
+import { MarketCoverage } from "@/components/MarketCoverage";
 import { IntradayTab } from "@/shortline/IntradayTab";
 
 type Tab = "live" | "intraday";
 const TABS: PageTab<Tab>[] = [
   { key: "live", label: "实时动态", icon: Zap },
-  { key: "intraday", label: "竞价与盘中路径", icon: Gavel },
+  { key: "intraday", label: "竞价与盘中", icon: Gavel },
 ];
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -29,28 +32,32 @@ export function Watch() {
   const date = picked && ISO_DAY.test(picked) ? picked : null;
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [monitorOpen, setMonitorOpen] = useState(false);
 
   const setDate = (d: string | null) => setParams((prev) => {
     const next = new URLSearchParams(prev);
     if (d) next.set("date", d); else next.delete("date");
     return next;
   });
-  const pickTab = (t: Tab) => navigate({ pathname: t === "live" ? "/watch" : `/watch/${t}`, search: t === "intraday" && params.toString() ? `?${params}` : "" });
+  const pickTab = (t: Tab) => navigate({ pathname: t === "live" ? "/watch" : `/watch/${t}`, search: params.toString() ? `?${params}` : "" });
 
   return (
     <div>
+
       <PageHeader
         title="盯盘"
-        subtitle={tab === "live"
+        subtitle={tab === "live" ? "行情池 · 盘中异动" : "竞价承接 · 快照路径"}
+        description={tab === "live"
           ? "持仓与自选、昨日梯队、大票的当下读数和盘中异动 · 页面开着就自动刷新,实际时效以行情时间为准"
           : "昨日涨停股的竞价强弱、全天几个时点的情绪路径、昨晚验证条件的盘中读数"}
         actions={tab === "intraday" ? (
           <>
+            {date && <Link to={`/shortline?date=${encodeURIComponent(date)}`} className="rounded border border-border px-2.5 py-1 text-xs text-primary hover:bg-primary/5">同日复盘</Link>}
             <label className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 px-2.5 py-1 text-xs text-muted-foreground">
               <CalendarDays className="h-3.5 w-3.5" />
               <span className="sr-only">看哪一天</span>
               <input type="date" aria-label="看哪一天" value={date ?? ""} onChange={(ev) => setDate(ev.target.value || null)}
-                className="bg-transparent text-foreground outline-none [color-scheme:dark]" />
+                className="bg-transparent text-foreground outline-none" />
             </label>
             {date && (
               <button type="button" onClick={() => setDate(null)}
@@ -65,9 +72,16 @@ export function Watch() {
           </>
         ) : null}
       />
+      <details className="mb-3 text-xs" onToggle={(event) => setMonitorOpen(event.currentTarget.open)}><summary className="cursor-pointer text-muted-foreground">后台监测状态</summary>{monitorOpen && <MonitorStatus />}</details>
+      {tab === 'live' && <CoverageDetails />}
       <PageTabs label="盯盘的分页" value={tab} onChange={pickTab} options={TABS} />
       {tab === "live" ? <LiveTab /> : <IntradayTab key={date ?? "today"} date={date} refreshNonce={refreshNonce} onBusy={setBusy} />}
       <Disclaimer />
     </div>
   );
+}
+
+function CoverageDetails() {
+  const [open, setOpen] = useState(false);
+  return <details className="mb-3 text-xs" onToggle={(event) => setOpen(event.currentTarget.open)}><summary className="cursor-pointer text-muted-foreground">行情覆盖与采集记录</summary>{open && <div className="mt-2"><MarketCoverage /></div>}</details>;
 }

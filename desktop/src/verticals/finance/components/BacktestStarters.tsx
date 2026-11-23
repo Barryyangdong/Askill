@@ -1,0 +1,11 @@
+const presets=[
+ {name:'留出验证',rule:'固定同一参数，分开检查开发区间与后续验证区间。',question:'我想做固定参数留出验证。先问清股票、策略参数、整体日期、holdout_start 验证起始日和假设资金，再调用正式工具。前后每段保留最低样本和预热要求，不自动挑最优参数，不拼接两段收益；若我看过验证结果再调参，请提醒该段已不是未见样本。',tag:'分段对照'},
+ {name:'规则组合',rule:'区间突破优先，均线趋势补充；去重后最多 3 个名额，空缺留现金。',question:'验证 rule_combination 日线组合，capacity=3，rules 按顺序为 [{"strategy":"range_breakout","params":{"entry":20,"exit":10}},{"strategy":"ma_cross","params":{"fast":20,"slow":60}}]。先问清固定股票样本、区间与资金假设。解释按规则和代码顺序分配名额、每日再分配、次根开盘成交及选样偏差，再调用正式工具，报告成本和基准对照。这不是历史全市场龙头筛选。',tag:'组合实验'},
+ {name:'区间突破',rule:'收盘突破此前 20 根最高价；跌破此前 10 根最低价退出。',question:'验证 range_breakout 区间突破，参数 entry=20、exit=10，使用日线。信号在下一根开盘尝试成交，保留市场约束和实际费用。先问清我想测的股票、区间及资金假设，再调用正式工具。',tag:'新增 · 可执行'},
+ {name:'均线趋势',rule:'MA20 在 MA60 上方持有，下方空仓。',question:'验证 ma_cross，fast=20、slow=60，用日线。请先补问股票、区间和资金假设，再运行正式工具，比较基准、回撤和成本。',tag:'可执行'},
+ {name:'RSI 回归',rule:'RSI14 低于 30 建立模拟持仓，高于 70 退出。',question:'验证 rsi_reversion，window=14、buy_below=30、sell_above=70，用日线。请先补问股票、区间和资金假设，解释震荡和单边走势下的局限，再运行正式工具。',tag:'可执行'},
+ {name:'买入持有对照',rule:'等权持有选定标的，作为其他规则的历史参照。',question:'使用 buy_and_hold 建立历史对照。先问清股票、区间和资金假设，运行正式工具并报告收益、回撤、费用和未平仓状态。',tag:'基准实验'},
+];
+export function BacktestStarters({onChoose,disabled=false}:{onChoose:(text:string)=>void;disabled?:boolean}){
+ return <section aria-label="回测实验预设" className="space-y-3"><div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold">从一个明确规则开始</h2><span className="text-xs text-muted-foreground">选择规则 → 补齐实验范围 → 正式回测 → 对照结果</span></div><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{presets.map(p=><button key={p.name} disabled={disabled} onClick={()=>onChoose(p.question)} className="rounded border border-border bg-card p-4 text-left hover:border-primary disabled:opacity-50"><span className="text-[10px] text-primary">{p.tag}</span><strong className="my-2 block text-sm">{p.name}</strong><span className="block text-xs leading-5 text-muted-foreground">{p.rule}</span><span className="mt-3 block text-xs text-primary">带入实验草稿 →</span></button>)}</div><details className="text-xs text-muted-foreground"><summary className="cursor-pointer">龙头、首板、弱转强为什么还不能直接跑？</summary><p className="mt-2">这些模式还需要当时的题材身份、连板与封板状态、入选范围及成交规则。当前未具备完整历史覆盖，不能用今天的身份回填。现有预设是日线规则实验，不是这些战法的替代品，也不代表盈利有效。</p></details></section>;
+}

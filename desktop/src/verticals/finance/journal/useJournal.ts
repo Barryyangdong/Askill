@@ -55,7 +55,7 @@ export function useJournal() {
       setRevision((n) => n + 1);
       return r.result;
     } catch (e) {
-      if (e instanceof ApiError && e.code === "partial") reload();
+      if (body.action === "record" || (e instanceof ApiError && e.code === "partial")) reload();
       throw e;
     }
   }), [reload]);

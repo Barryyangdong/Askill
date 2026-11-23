@@ -14,11 +14,16 @@ import { ServiceError, type ServiceContext } from "./service.ts";
 export interface ViewDef {
   id: string;
   label: string;
+  maxActionBytes?: number;
   run(ctx: ServiceContext, query: Record<string, string>, signal: AbortSignal): Promise<unknown>;
   act?(ctx: ServiceContext, body: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
 
 const views = new Map<string, ViewDef>();
+
+export function viewActionBodyLimit(id: string): number | undefined {
+  return views.get(id)?.maxActionBytes;
+}
 
 export function registerView(def: ViewDef): void {
   if (!/^[a-z][a-z0-9_-]{0,39}$/.test(def.id)) throw new Error(`视图名不合法:${def.id}`);

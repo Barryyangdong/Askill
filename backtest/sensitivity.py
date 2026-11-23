@@ -51,6 +51,9 @@ def _axes(key: str, params: Dict[str, Any]) -> Optional[Tuple[str, List[Any], st
     if key == "ma_cross":
         fast, slow = int(params.get("fast", 20)), int(params.get("slow", 60))
         return "fast", _int_axis(fast, 2), "slow", _int_axis(slow, 3), {}
+    if key == "range_breakout":
+        entry, exit = int(params.get("entry", 20)), int(params.get("exit", 10))
+        return "entry", [v for v in _int_axis(entry, 3) if v <= 250], "exit", [v for v in _int_axis(exit, 2) if v < 250], {}
     if key == "rsi_reversion":
         buy, sell = float(params.get("buy_below", 30)), float(params.get("sell_above", 70))
         # 买入线不小于卖出线的格子由 run_grid 标成 invalid，不靠裁剪取值去躲

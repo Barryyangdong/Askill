@@ -70,15 +70,18 @@ test("统一 Deep 任务上下文只从当前子进程环境进入 RunConfig，�
 });
 
 test("makeConfig 默认值、run-id 形态、解释器根、取数子进程环境与日志脱敏清单", () => {
-  const cfg = makeConfig({ symbol: "600519", repoRoot: "/tmp/repo", python: "/home/u/.venv/bin/python" });
+  const repoRoot = path.resolve(os.tmpdir(), "repo");
+  const venvRoot = path.resolve(os.tmpdir(), ".venv");
+  const python = path.join(venvRoot, process.platform === "win32" ? "Scripts" : "bin", "python");
+  const cfg = makeConfig({ symbol: "600519", repoRoot, python });
   assert.match(cfg.runId, /^\d{8}-\d{6}-600519$/);
-  assert.equal(cfg.runDir, "/tmp/repo/.local/runs/" + cfg.runId);
-  assert.equal(cfg.constitutionPath, "/tmp/repo/methodology/constitution.md");
+  assert.equal(cfg.runDir, path.join(repoRoot, ".local", "runs", cfg.runId));
+  assert.equal(cfg.constitutionPath, path.join(repoRoot, "methodology", "constitution.md"));
   assert.equal(cfg.engine, "none", "makeConfig 不替调用方选大脑");
   assert.equal(cfg.maxRetries, 2);
   assert.equal(cfg.turnTimeoutMs, 30 * 60_000);
   assert.ok(cfg.forbiddenPathPatterns.includes("交接资料") && !cfg.forbiddenPathPatterns.includes("/Users/"));
-  assert.ok(cfg.allowedPathPrefixes.includes("/tmp/repo") && cfg.allowedPathPrefixes.includes("/home/u/.venv"));
+  assert.ok(cfg.allowedPathPrefixes.includes(repoRoot) && cfg.allowedPathPrefixes.includes(venvRoot));
   assert.equal(interpreterRoot("python3"), "");
   assert.match(defaultRunId("000001", new Date("2026-08-21T16:00:00Z")), /^20260822-000000-000001$/); // UTC 16:00 = 北京 次日 00:00
   // 取数子进程:白名单 + 调用方显式给的;密钥类变量一律不透传
@@ -190,15 +193,12 @@ test("请求级 WorkBuddy 订阅进入 local_agent,不带模型 API 端点、模
 
 test("订阅 Agent 探测为未登录时仍建立 runner，由真实运行写出明确终态", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-run-unauthed-"));
-  const bin = path.join(root, "claude");
-  fs.writeFileSync(bin, `#!/bin/sh
-case "$1" in
-  --version) echo "test-claude" ;;
-  --help) echo "--safe-mode --tools --strict-mcp-config --no-session-persistence --output-format --system-prompt --json-schema" ;;
-  auth) echo '{"loggedIn":false}' ;;
-esac
-`);
-  fs.chmodSync(bin, 0o700);
+  const bin = path.join(root, process.platform === "win32" ? "claude.ps1" : "claude");
+  const source = `const a=process.argv[2];if(a==='--version')console.log('test-claude');if(a==='--help')console.log('--safe-mode --tools --strict-mcp-config --no-session-persistence --output-format --system-prompt --json-schema');if(a==='auth')console.log('{"loggedIn":false}');`;
+  if (process.platform === "win32") {
+    fs.writeFileSync(path.join(root, "claude.cjs"), `#!/usr/bin/env node\n${source}`);
+    fs.writeFileSync(bin, `#!/usr/bin/env pwsh\n$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\n& "node$exe" "$basedir/claude.cjs" $args\nexit $LASTEXITCODE\n`);
+  } else fs.writeFileSync(bin, `#!${process.execPath}\n${source}`, { mode: 0o700 });
   try {
     const env = { CLAUDE_BIN: bin, PATH: "/usr/bin:/bin" };
     const cfg = configFromArgs({ symbol: "300308", "repo-root": REPO }, {

@@ -162,7 +162,14 @@ def tencent_kline_map(result, ctx: dict) -> dict:
                   stamp if minute else _d(stamp), record_key=f"{code}:{period}:{stamp}", note=note, as_of=_d(stamp), adjustment=adj)
     evs.append(_count(c, "kline_points", len(rows), "根", _span(rows, dk), note=f"{code} {period}"))
     cols = {"date": dk, "open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume"}
-    return out(evs, extra={"code": code, "period": period, "adjust": adj, "rows": len(rows), "last3": rows[-3:], "calc_hint": _hint(cols)})
+    extra = {"code": code, "period": period, "adjust": adj, "rows": len(rows), "last3": rows[-3:], "calc_hint": _hint(cols)}
+    start, end = ctx["args"].get("start"), ctx["args"].get("end")
+    if period == "day" and start and end:
+        extra["close_series"] = [
+            {"date": str(r["date"])[:10], **{field: r.get(field) for field in ("open", "high", "low", "close")}}
+            for r in rows if str(start) <= str(r.get("date", ""))[:10] <= str(end)
+        ][-120:]
+    return out(evs, extra=extra)
 
 
 def tdx_daily_package_map(result, ctx: dict) -> dict:

@@ -23,6 +23,8 @@ import { NOFOLLOW_FLAG, atomicWrite, readJsonIfExists, writeJson } from "./fsuti
 import { readTurnContext } from "./turn_context.ts";
 import { currentPlugin } from "./plugin.ts";
 import { calcRecordSchema, validateStageOutput } from "./schemas.ts";
+import { stageComplianceErrors } from "./stage_gate.ts";
+import { complianceGate } from "./gate.ts";
 
 export const MAX_READ_CHARS = 1_000_000;
 const CALC_FILE_RE = /^\d{2}_[a-z0-9][a-z0-9_]{0,80}\.json$/;
@@ -198,6 +200,9 @@ export function writeStageOutput(ctx: RunToolsContext, stageOutput: Record<strin
   if (stageOutput.stage !== stage) throw new RunToolsError("wrong_stage", `当前阶段是 ${stage}，不能写 ${String(stageOutput.stage)}`);
   const errors = validateStageOutput(stage, stageOutput);
   if (errors.length) throw new RunToolsError("stage_schema_invalid", errors.slice(0, 8).join("; "));
+  if (stageComplianceErrors(stage, stageOutput).length) {
+    throw new RunToolsError("stage_output_blocked", "产物文本未通过边界检查，未写入。只保留中性事实与缺口，删除动作性措辞及在摘要、免责声明中的否认式复述，然后重新提交；不要把本错误信息写进产物。");
+  }
   writeJson(path.join(stagesDir, `${stage}.json`), stageOutput);
   return { written: `stages/${stage}.json`, stage };
 }
@@ -208,6 +213,7 @@ export function writeReport(ctx: RunToolsContext, markdown: string, stageOutput?
   const reportStage = currentPlugin().reportStage;
   if (stage !== reportStage) throw new RunToolsError("wrong_stage", `只有 ${reportStage} 阶段可以写报告`);
   if (!markdown.trim() || markdown.length > 2_000_000) throw new RunToolsError("bad_report", "报告为空或超过 2,000,000 字符");
+  if (!complianceGate(markdown).ok) throw new RunToolsError("report_output_blocked", "报告文本未通过边界检查，未写入。删除动作性措辞和否认式复述后重新提交，只保留事实、证据、缺口与限制。");
   const stageRel = `stages/${reportStage}.json`;
   if (stageOutput) writeStageOutput(ctx, stageOutput);
   else {

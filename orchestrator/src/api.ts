@@ -1,4 +1,10 @@
 #!/usr/bin/env node
+import {progressOf} from "./guided_progress.ts";
+import {startGuidedJob} from "./guided_background.ts";
+import {currentPlugin} from "./plugin.ts";
+import { preference, savePreference, preferenceBackup, restorePreferences } from "./local_preferences.ts";
+import { sourceHealth } from "./source_health.ts";
+import { startBackgroundServices } from "./background_services.ts";
 /**
  * 薄 HTTP API(Phase 1 M3):默认只绑 127.0.0.1(非回环地址绑定需显式 VRA_API_TOKEN 且关闭 cookie 登录,见 isLoopbackHost);**每个请求都要鉴权**:Bearer token(VRA_API_TOKEN 或自动生成写入 .local/api.token)对所有路由有效,
  * 回环下 /login?token= 换来的 cookie 只放行 COOKIE_GET_ROUTES 白名单里的只读 GET;拒绝非本机 Origin / 跨站 / 非 JSON POST(防浏览器 CSRF);同一 service 层;返回只含相对路径,错误脱敏。
@@ -15,6 +21,8 @@ import { cancelResearch, confirmChatResearch } from "./service.ts";
 import path from "node:path";
 
 import crypto from "node:crypto";
+import { BackgroundJobs } from "./background_jobs.ts";
+import { debateBackground } from "./service.ts";
 
 import { IMPORT_MAX_TOTAL_BYTES, ServiceError, auditCheckHead, auditRegister, auditVerify, chatSend, compareRuns, llmProbe, translateHeadlines, evidenceAlerts, guidedToolTurn, listTools, runToolRequest, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, localAgents, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, assertGenericLedgerWrite, pageQuery, getEvidence, credentialStatus, setCodeBuddyLocation, setCredential, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, reportDelete, reportDownload, reportPreview, reportUpload, reportsList, researchStatus, safePath, serviceContext, deleteRun, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
 import { REPORT_MAX_BYTES } from "./report_library.ts";
@@ -23,7 +31,7 @@ import { NOFOLLOW_FLAG, restrictPrivateFile } from "./fsutil.ts";
 import { resumeUnifiedTask, runUnifiedTask } from "./task_service.ts";
 import { deepTargetResolverFor } from "./deep_target_registry.ts";
 import { notifyAction, notifyOverview, startScheduler } from "./notify.ts";
-import { runView, runViewAction } from "./views.ts";
+import { runView, runViewAction, viewActionBodyLimit } from "./views.ts";
 
 
 // **composition root**:插件在入口注册,Core 模块一律不 import 它
@@ -31,8 +39,10 @@ import { runView, runViewAction } from "./views.ts";
 import "./finance/register_tasks.ts";
 import { VIEWER_CSP } from "./viewer.ts";
 import { loadSavedAgentPaths } from "./local_agent_runtime.ts";
+import { beginChatProgress, readChatProgress } from "./chat_progress.ts";
 import { updateAction, updateStatus } from "./update_check.ts";
 import { API_COOKIE, API_PORT, PRODUCT_NAME } from "./brand.ts";
+import { debateRunStream } from "./service.ts";
 const MAX_BODY = 256 * 1024;
 
 function send(res: http.ServerResponse, code: number, body: unknown, type = "application/json; charset=utf-8", htmlCsp = HTML_CSP): void {
@@ -183,7 +193,8 @@ async function withRequestAbort<T>(
 export function createApiServer(ctx: ServiceContext, opts: { token: string; cookieLogin?: boolean }): http.Server {
   if (!opts.token || opts.token.length < 16) throw new Error("API token 必须 ≥ 16 字符(默认随机生成并写入 .local/api.token)");
   const cookieLogin = opts.cookieLogin !== false;  // 非本机绑定(明文 HTTP)时由 main 关闭:cookie 会被网络观察者截获
-  return http.createServer(async (req, res) => {
+  const jobs = new BackgroundJobs(ctx.dataRoot);
+  const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
       const cs = crossSiteReject(req);
@@ -201,7 +212,34 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       if (req.method === "GET" && url.pathname === "/ui") return send(res, 200, uiIndex(ctx), "text/html; charset=utf-8", UI_CSP);
       if (req.method === "GET" && /^\/ui\/runs\/[^/]+$/.test(url.pathname)) { const t = uiRun(ctx, decodeURIComponent(url.pathname.split("/")[3])); return t === null ? send(res, 404, { error: "no such run" }) : send(res, 200, t, "text/html; charset=utf-8", UI_CSP); }
       const parts = url.pathname.split("/").filter(Boolean);
+      const extension = currentPlugin().apiRoute?.(ctx, req.method ?? "", parts, (maxBytes = 32_768) => readBody(req, Math.min(MAX_BODY, maxBytes)));
+      if (extension !== undefined) return send(res, 200, await extension);
       const q = Object.fromEntries(url.searchParams.entries());
+      if (url.pathname === "/preference-backup" && req.method === "GET") return send(res,200,preferenceBackup(ctx.dataRoot));
+      if (url.pathname === "/preference-backup" && req.method === "POST") return send(res,200,restorePreferences(ctx.dataRoot,await readBody(req)));
+      if (req.method === "GET" && url.pathname === "/source-health") return send(res,200,sourceHealth(ctx.dataRoot));
+      if (parts[0] === "preferences" && parts.length === 2) {
+        if (req.method === "GET") return send(res,200,preference(ctx.dataRoot,parts[1]));
+        if (req.method === "POST") {
+          const b=await readBody(req);
+          try { return send(res,200,savePreference(ctx.dataRoot,parts[1],b.value,Number(b.revision))); }
+          catch { return send(res,409,{error:"设置保存失败或版本已变化，请重新载入。"}); }
+        }
+      }
+      if (req.method === "GET" && url.pathname === "/background-jobs") return send(res, 200, jobs.list());
+      if (req.method === "GET" && parts[0] === "background-jobs" && parts.length === 2) {
+        const job = jobs.get(parts[1], Math.max(0, Number(q.after) || 0));
+        return send(res, job ? 200 : 404, job ?? { error: "任务不存在" });
+      }
+      if (req.method === "POST" && parts[0] === "background-jobs" && parts[2] === "cancel") return send(res, 200, { requested: jobs.cancel(parts[1]) });
+      if (req.method === "POST" && url.pathname === "/background-jobs") {
+        const b = await readBody(req);
+        if (b.kind !== "debate" || !/^[A-Za-z0-9.]{1,20}$/.test(String(b.symbol ?? ""))) return send(res, 400, { error: "任务参数无效" });
+        const symbol = String(b.symbol);
+        const previous = b.previous && typeof b.previous === "object" && "text" in b.previous && "at" in b.previous && typeof b.previous.text === "string" && typeof b.previous.at === "string" ? { text: b.previous.text.slice(0,6000), at: b.previous.at.slice(0,32) } : undefined;
+        const id = jobs.start(`debate:${symbol}`, symbol, (signal, emit) => debateBackground(ctx, { symbol, depth: String(b.depth ?? "2"), previous, llm: b.llm, executionMode: b.executionMode }, signal, emit, id));
+        return send(res, 202, { id });
+      }
       if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { ok: true, version: productVersion() });
       // 设置页要看的有效配置。**只读** —— 不提供任何写入密钥的入口(见 service.productInfo)
       if (req.method === "GET" && url.pathname === "/product") return send(res, 200, productInfo(ctx));
@@ -244,10 +282,47 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
         });
       }
       // 对话式工具：Agent 负责补问和组参数；条件齐备后仍由上面的同一条工具执行链真实运行。
+      if(req.method === "GET" && parts[0] === "guided-progress" && parts.length === 3) {
+        return send(res,200,progressOf(ctx.dataRoot,parts[1]!,parts[2]!));
+      }
       if (req.method === "POST" && parts[0] === "guided-tool" && parts[1] && parts.length === 2) {
         return await withRequestAbort(req, res, async (signal) => {
           const b = await readBody(req);
           return send(res, 200, await guidedToolTurn(ctx, parts[1], b as never, signal));
+        });
+      }
+      if (req.method === "POST" && parts[0] === "guided-job" && parts[1] && parts.length === 2) {
+        const b=await readBody(req),name=parts[1];
+        const spec=Object.hasOwn(currentPlugin().tools??{},name)?currentPlugin().tools?.[name]:undefined;
+        if(!spec?.archive)return send(res,400,{error:"此工具不支持后台任务"});
+        if(typeof b.message!=="string"||!b.message.trim()||b.message.length>24000)return send(res,400,{error:"消息内容无效"});
+        const id:string=startGuidedJob(jobs,name,String(b.session??""),String(b.turn??""),spec.label,
+          (signal,phase,output)=>guidedToolTurn(ctx,name,b,signal,phase,output),
+          (reply,marker)=>{
+            const p=spec.archive!;
+            const tag=`<!-- task:${marker} -->`;
+            if((ledgerList(ctx,p.kind)[p.kind]??[]).some(r=>String(r.body??"").includes(tag)))return;
+            const body=[`# ${reply.title}`,"",`## ${p.sections[0]}`,reply.question,"",`## ${p.sections[1]}`,reply.hypothesis,"",`## ${p.sections[2]}`,...(reply.logic??[]).map(v=>`- ${v}`),"",`## ${p.sections[3]}`,reply.report,"",`[查看完整工具结果与图表](/tasks?job=${id})`,"",tag].join("\n");
+            ledgerUpsert(ctx,{kind:p.kind,record:{category:p.category,title:reply.title,body,...(p.sourcePage&&ledgerKinds(ctx)[p.kind]?.properties.workspace_source?{workspace_source:{page:p.sourcePage,job:id}}:{})}});
+          });
+        return send(res,202,{id});
+      }
+      if (req.method === "POST" && url.pathname === "/debate/stream") {
+        return await withRequestAbort(req, res, async signal => {
+          const b = await readBody(req);
+          res.writeHead(200, { ...SECURITY_HEADERS, "Content-Type": "application/x-ndjson; charset=utf-8", "X-Accel-Buffering": "no" });
+          res.flushHeaders();
+          const emit = (event: unknown) => {
+            if (res.destroyed || res.writableEnded) return;
+            if (res.writableLength > 1024 * 1024) { res.destroy(); return; }
+            res.write(JSON.stringify(event) + "\n");
+          };
+          const heartbeat = setInterval(() => emit({ type: "heartbeat" }), 5000);
+          try {
+            await debateRunStream(ctx, { symbol: String(b.symbol ?? ""), depth: String(b.depth ?? "2"), previous: b.previous && typeof b.previous === "object" && "text" in b.previous && "at" in b.previous && typeof b.previous.text === "string" && typeof b.previous.at === "string" ? { text: b.previous.text.slice(0,6000), at: b.previous.at.slice(0,32) } : undefined, llm: b.llm, executionMode: b.executionMode }, signal, emit);
+          } catch (error) {
+            emit({ type: "error", message: error instanceof ServiceError ? redact(error.message, 200) : "连接中断或生成未完成；已完成的内容仍保留，请重试。" });
+          } finally { clearInterval(heartbeat); if (!res.destroyed) res.end(); }
         });
       }
       if (req.method === "POST" && url.pathname === "/debate") {
@@ -299,12 +374,24 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
         const b = await readBody(req);
         return send(res, 200, confirmChatResearch(ctx, b));
       }
+      if (req.method === "GET" && url.pathname.startsWith("/chat/progress/")) {
+        return send(res, 200, readChatProgress(ctx.dataRoot, url.pathname.slice("/chat/progress/".length)));
+      }
       if (req.method === "POST" && url.pathname === "/chat") {
         // body 里可带 `llm`(界面上选的模型 + 用户自己的 key)。
         // 🔴 key 只在这一次请求的内存里流转 —— 不写配置、不进日志、不入账本。
         return await withRequestAbort(req, res, async (signal) => {
           const b = await readBody(req);
-          return send(res, 200, await chatSend(ctx, b as never, signal));
+          let progress: ReturnType<typeof beginChatProgress> | undefined;
+          if (b.progress_id !== undefined) {
+            try { progress = beginChatProgress(ctx.dataRoot, b.progress_id); }
+            catch { throw new ServiceError("bad_progress_id", "任务状态编号无效或已占用"); }
+          }
+          try {
+            const result = await chatSend(ctx, b as never, signal, progress);
+            progress?.("complete");
+            return send(res, 200, result);
+          } catch (error) { progress?.("failed"); throw error; }
         });
       }
       // 外部 RSS 标题翻译：与自由对话分开，后端固定 developer 指令、schema 与一次性线程。
@@ -393,11 +480,15 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       }
 
       // ---- 垂类视图(views.ts):按名字要一屏整理好的只读数据 ----
+      if (parts[0]==="view" && parts[1]==="player_sync" &&
+          (req.headers["x-askill-remote"] || !["127.0.0.1","::1","::ffff:127.0.0.1"].includes(req.socket.remoteAddress??""))) {
+        return send(res,403,{error:"local_only",message:"请从本机工作台管理比赛浏览器和定时同步。"});
+      }
       if (req.method === "GET" && parts[0] === "view" && parts[1] && parts.length === 2) {
         return await withRequestAbort(req, res, async (signal) => send(res, 200, await runView(ctx, parts[1], q, signal)));
       }
       if (req.method === "POST" && parts[0] === "view" && parts[1] && parts.length === 2) {
-        const b = await readBody(req);
+        const b = await readBody(req, viewActionBodyLimit(parts[1]));
         return await withRequestAbort(req, res, async (signal) => send(res, 200, await runViewAction(ctx, parts[1], b, signal)));
       }
 
@@ -461,6 +552,17 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       return send(res, 500, { error: "internal" });
     }
   });
+  let stopServices: (()=>void) | undefined;
+  server.once("listening",()=>{stopServices=startBackgroundServices(ctx);});
+  server.once("close",()=>{
+    try {stopServices?.();}
+    catch (error) {
+      const details = error instanceof AggregateError ? error.errors.map(String).join("; ") : String(error);
+      console.error(`[api] 后台服务停止失败:${redact(details, 200)}`);
+    }
+    finally {jobs.close();}
+  });
+  return server;
 }
 
 /** token:VRA_API_TOKEN 优先;否则随机生成并写入 <dataRoot>/api.token(0600),客户端从该文件读 */

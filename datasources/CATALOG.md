@@ -1,4 +1,4 @@
-# 数据源端点目录(registry v1.0.0,共 182 个)
+# 数据源端点目录(registry v1.0.0,共 193 个)
 
 由 `datasources/gen_catalog.py` 从 `registry.json` 生成,勿手改。调用方式:`.venv/bin/python .agents/skills/data-access/scripts/fetch_endpoint.py --endpoint <id> --symbol <代码> [--args '<JSON>'] --out-dir <运行目录>`;legacy 端点为 Phase 0 的独立脚本。合规级:cn-public = 国内公开网页接口;S = 官方政府数据;B = 非官方 / 个人研究;C = 仅个人研究(CBOE 条款);rss-public = 公开 RSS。
 symbol_kind:cn6 = A 股 6 位码;us = 美股 ticker;hk = 港股 5 位;global = 美股 / 港股自动判别;raw = 原样透传(指数 / 关键词 / 期权标的);none = 不需要标的。
@@ -22,13 +22,14 @@ symbol_kind:cn6 = A 股 6 位码;us = 美股 ticker;hk = 港股 5 位;global = �
 | `st_stock_list` | ST / *ST 股票名单(沪深京) | CN | eastmoney | cn-public | none | - | 东财名单不可用时上游自动改用 baostock(只覆盖沪深,结果标 partial 并写明原因)。上游 a-stock-data §6 |
 | `em_main_business` | 主营构成(按行业 / 产品 / 地区;收入 / 占比 / 毛利率) | CN | eastmoney | cn-public | cn6 | profile:optional | 收入占比 / 毛利率是源给的小数(0.86 = 86%) |
 
-## 1 行情(11)
+## 1 行情(15)
 
 | id | 标题 | 市场 | 源 | 合规 | symbol_kind | 阶段 | 鉴权 / 备注 |
 |---|---|---|---|---|---|---|---|
 | `fetch_quote` | 实时行情 / 估值快照(含僵尸报价判定) | CN | tencent | cn-public | cn6 | profile:required | 关键 |
 | `fetch_trade_calendar` | 交易日历(参考报价日 / 盘前盘后) | CN | baostock | cn-public | none | profile:required |  |
 | `fetch_kline` | 日 K 前复权序列 | CN | tencent | cn-public | cn6 | risk:optional |  |
+| `cn_review_index_minutes` | 上证指数分时点位与成交额 | CN | tencent | cn-public | none | - | 仅返回所选交易日的分钟点位与累计成交额差分。 |
 | `tx_quote` | 腾讯实时行情(个股 / 指数 / ETF / 北交所,含僵尸报价判定) | CN | tencent | cn-public | raw | - | 指数 / ETF 请带前缀(sh000001 / sh510050);fetch_quote 仍是阶段必需的主行情脚本 |
 | `tx_quotes_batch` | 腾讯批量行情(默认 A股四大指数 + 美股道指纳指 + 港股恒生与恒生科技) | CN/US/HK | tencent | cn-public | none | - |  |
 | `sina_adjust_factor` | 新浪复权因子(qfq / hfq) | CN | sina | cn-public | cn6 | - |  |
@@ -37,6 +38,9 @@ symbol_kind:cn6 = A 股 6 位码;us = 美股 ticker;hk = 港股 5 位;global = �
 | `tdx_daily_package` | 通达信官网盘后包(某交易日全市场日线含成交额,沪深京) | CN | tdx | cn-public | none | - | HTTP 下载约 2.7MB 压缩包(不是失效的 TCP 行情命令);date 缺省 = 最近一个 17 点后已收盘的交易日;codes 缺省 = 主要指数(sh999999 上证 / sz399001 / sz399006 / sh000300 / sh000688 / bj899050),逗号分隔、可带 sh/sz/bj 前缀;全市场原表在 raw 压缩包里。个股成交量是股、指数为通达信原值。上游 a-stock-data §1.3 |
 | `tx_ticks` | 腾讯当日逐笔成交(沪深个股 / ETF,最近一个交易日) | CN | tencent | cn-public | cn6 | - | 替代 2026-09 起失效的通达信逐笔;一页 70 笔逐页翻到底;15:31 以后才核对盘后定价段(之前取到的标 partial);成交量是手(科创板也是);不支持北交所 / 指数。上游 a-stock-data §1.4 |
 | `bse_quote_backup` | 北交所官网行情快照(单只:开高低收 + 量额 + 五档) | CN | bse | cn-public | cn6 | - | 只接受北交所代码(920 / 4 / 8 开头);官网当前快照,trade_date 缺省 = 今天(交易日)或最近一个交易日,快照日期对不上时上游直接报错、不冒充别的日子;成交量是股。上游 a-stock-data §12 官方备胎 |
+| `cn_market_inventory` | 沪深京 A 股名单分页（新浪） | CN | sina | cn-public | none | - | 代码稳定排序分页；逐页去重及总数核验，名单不包含实时价格。 |
+| `cn_market_quotes_backup` | 新浪股票报价备源（逐股时间戳） | CN | sina | cn-public | none | - | 最多100只；仅在主源缺失时补采；缺涨跌停价，不用于封板判断。 |
+| `cn_market_quotes` | 全市场扫描批量报价（腾讯） | CN | tencent | cn-public | none | - | 仅该端点允许最多200只；严格市场前缀代码、保留源时间戳及逐行证据；不改变其他端点限制。 |
 
 ## 2 研报(5)
 
@@ -56,7 +60,7 @@ symbol_kind:cn6 = A 股 6 位码;us = 美股 ticker;hk = 港股 5 位;global = �
 | `cninfo_announcements` | 巨潮公告(全文检索,动态 orgId) | CN | cninfo | cn-public | cn6 | risk:optional |  |
 | `exchange_announcements` | 公告备源(深市深交所 / 沪市北交所东财 np-anotice,带 PDF 直链) | CN | szse+eastmoney | cn-public | cn6 | - |  |
 
-## 3 信号(11)
+## 3 信号(14)
 
 | id | 标题 | 市场 | 源 | 合规 | symbol_kind | 阶段 | 鉴权 / 备注 |
 |---|---|---|---|---|---|---|---|
@@ -66,7 +70,10 @@ symbol_kind:cn6 = A 股 6 位码;us = 美股 ticker;hk = 港股 5 位;global = �
 | `em_lockup_expiry` | 限售解禁(历史 + 未来 90 天) | CN | eastmoney | cn-public | cn6 | risk:optional |  |
 | `em_industry_comparison` | 行业板块涨跌排名 | CN | eastmoney | cn-public | none | - |  |
 | `em_board_fund_flow` | 板块资金流向(行业 / 概念 / 地域 × 今日 / 5 日 / 10 日) | CN | eastmoney | cn-public | none | - |  |
+| `cn_review_industry_members` | 复盘日沪深 A 股证监会行业成分 | CN | baostock | cn-public | none | - | 按指定日期查询历史行业归属，剔除发布日期晚于所选日的记录。 |
+| `cn_review_industry_close` | 申万一级行业收盘资金净额高低各八 | CN | yyqyx | cn-public | none | - | 按申万一级汇总有数据成分股的大单和超大单净额，来源为大波浪收盘后二次统计，只收录净额最高与最低各八个行业。 |
 | `sina_board_flow` | 板块资金流·新浪(行业 / 概念,当日;东财板块资金流的备源) | CN | sina | cn-public | none | - | 口径是新浪的「流入 − 流出」、板块是新浪自己的分类(行业约 48 个),和东财「主力净额」不能互相比较或接起来画趋势;只有当日。 |
+| `cn_review_dragon` | 龙虎榜公开披露与席位明细 | CN | eastmoney | cn-public | none | - |  |
 | `em_daily_dragon_tiger` | 全市场龙虎榜 | CN | eastmoney | cn-public | none | - |  |
 | `ths_hot_reason` | 同花顺当日强势股 + 题材归因 | CN | ths | cn-public | none | - | --args {"date":"YYYY-MM-DD"} |
 | `ths_hsgt_realtime` | 沪深股通分钟累计净买入(亿元) | CN | ths | cn-public | none | - |  |
@@ -89,26 +96,18 @@ symbol_kind:cn6 = A 股 6 位码;us = 美股 ticker;hk = 港股 5 位;global = �
 | `em_top10_holders` | 十大股东(最近两期;持股数 / 占总股本 / 较上期变动) | CN | eastmoney | cn-public | cn6 | - |  |
 | `em_top10_free_holders` | 十大流通股东(最近两期;持股数 / 占流通股本 / 股东性质) | CN | eastmoney | cn-public | cn6 | risk:optional |  |
 
-## 5 新闻(6)
+## 8 打板(19)
 
 | id | 标题 | 市场 | 源 | 合规 | symbol_kind | 阶段 | 鉴权 / 备注 |
 |---|---|---|---|---|---|---|---|
-| `em_stock_news` | 东财个股新闻 | CN | eastmoney | cn-public | cn6 | risk:optional |  |
-| `em_global_news` | 东财全球财经资讯 7x24 | CN | eastmoney | cn-public | none | - |  |
-| `cls_telegraph` | 财联社电报(全市场快讯) | CN | cls | cn-public | none | - |  |
-| `rss_news` | RSS 新闻雷达(106 个 tier-1 策展源 × 12 行业,红线关键词标记) | CN/US/HK | rss(investment-news) | rss-public | none | - | --args {"industry":"semiconductor"} 或 {"sources":["OpenAI"]};行业 key 见 rss_sources.json |
-| `wscn_lives` | 华尔街见闻 7×24 快讯 | CN | wallstreetcn | cn-public | none | - | channel 例 global-channel / a-stock-channel / us-stock-channel;cursor 翻页(上一页的 next_cursor);快讯常无标题,证据取正文前 300 字。上游 a-stock-data §5 |
-| `cctv_news` | 新闻联播文字稿(标题 + 正文) | CN | cctv | cn-public | none | - | 每天都播(含节假日);date 缺省 = 北京时间 20 点后取今天、否则昨天;只陈述原文,不做政策解读。上游 a-stock-data §5 |
-
-## 8 打板(16)
-
-| id | 标题 | 市场 | 源 | 合规 | symbol_kind | 阶段 | 鉴权 / 备注 |
-|---|---|---|---|---|---|---|---|
+| `cn_review_board_metrics` | 打板指标收盘汇总 | CN | eastmoney | cn-public | none | - |  |
 | `em_zt_pool` | 东财涨停池 | CN | eastmoney | cn-public | none | - | --args {"date":"YYYYMMDD"} 指定交易日,默认北京时间当天 |
 | `em_zb_pool` | 东财炸板池 | CN | eastmoney | cn-public | none | - | --args {"date":"YYYYMMDD"} 指定交易日,默认北京时间当天 |
 | `em_dt_pool` | 东财跌停池 | CN | eastmoney | cn-public | none | - | --args {"date":"YYYYMMDD"} 指定交易日,默认北京时间当天 |
 | `em_yzt_pool` | 东财昨日涨停池(今日表现) | CN | eastmoney | cn-public | none | - | --args {"date":"YYYYMMDD"} 指定交易日,默认北京时间当天 |
 | `em_limit_up_sentiment` | 打板三池计数(涨停 / 炸板 / 跌停;炸板率等由 calc 算) | CN | eastmoney | cn-public | none | - |  |
+| `cn_review_abnormal` | 复盘严重异常波动与监控 | CN | eastmoney | cn-public | none | - |  |
+| `cn_review_broken_pool` | 复盘炸板池 | CN | eastmoney | cn-public | none | - |  |
 | `em_stock_monitor` | 东财重点监控池 | CN | eastmoney | cn-public | none | - |  |
 | `em_price_anomaly` | 日内严重异常波动明细 | CN | eastmoney | cn-public | none | - |  |
 | `em_price_anomaly_count` | 异常波动统计(按标的聚合) | CN | eastmoney | cn-public | none | - |  |
@@ -121,7 +120,18 @@ symbol_kind:cn6 = A 股 6 位码;us = 美股 ticker;hk = 港股 5 位;global = �
 | `cn_shortline_board_ladder` | 短线连板天梯(某天收盘时每个高度的涨停股:首封 / 末封时间、开板次数、封单、涨停原因;前一交易日低一档今天没接上的票去向 —— 炸板 / 跌停 / 没涨停及当天涨跌幅;每一档的晋级数) | CN | eastmoney+ths+calc | cn-public | none | - | 计算型端点:取数层确定性计算(非 calc DAG);信封 extra.result 是完整结构化结果、extra.text 是给模型读的文字版、extra.computation 记参数供复算。板位按东财连板数(反包票连板数是 1,标「N天M板」),晋级按昨天这一档的票今天还在涨停池里,与情绪四项同口径;最高标断板那一档今天没人也留一行。没接上的票当天涨跌幅先用定稿记录(东财昨日涨停池),缺了再看炸板 / 跌停池。涨停原因来源同 cn_shortline_themes,取不到时天梯照出、标 partial。已收盘的日子长期缓存;没收盘的那一天一律 partial |
 | `cn_shortline_theme_rotation` | 短线题材轮动(近 N 个交易日每个事件题材每天的涨停只数与当天名次、连续几天有涨停、几天进前三、隔几天回流;昨天还有今天没有的也列出) | CN | eastmoney+ths+calc | cn-public | none | - | 计算型端点:取数层确定性计算(非 calc DAG);信封结构同 cn_shortline_themes。题材按涨停原因串里的标签归组(滤掉国企改革、破净等属性词),同义不同名的标签分开算。某天涨停池或原因没取到按缺数(None)处理、标 partial,不当 0;东财涨停池只留约一个月,更早的日子会缺。days 3–10,默认 5(约 2×days 次请求)。已收盘的日子长期缓存;没收盘的那一天一律 partial |
 
-## 10 情绪(15)
+## 5 新闻(6)
+
+| id | 标题 | 市场 | 源 | 合规 | symbol_kind | 阶段 | 鉴权 / 备注 |
+|---|---|---|---|---|---|---|---|
+| `em_stock_news` | 东财个股新闻 | CN | eastmoney | cn-public | cn6 | risk:optional |  |
+| `em_global_news` | 东财全球财经资讯 7x24 | CN | eastmoney | cn-public | none | - |  |
+| `cls_telegraph` | 财联社电报(全市场快讯) | CN | cls | cn-public | none | - |  |
+| `rss_news` | RSS 新闻雷达(106 个 tier-1 策展源 × 12 行业,红线关键词标记) | CN/US/HK | rss(investment-news) | rss-public | none | - | --args {"industry":"semiconductor"} 或 {"sources":["OpenAI"]};行业 key 见 rss_sources.json |
+| `wscn_lives` | 华尔街见闻 7×24 快讯 | CN | wallstreetcn | cn-public | none | - | channel 例 global-channel / a-stock-channel / us-stock-channel;cursor 翻页(上一页的 next_cursor);快讯常无标题,证据取正文前 300 字。上游 a-stock-data §5 |
+| `cctv_news` | 新闻联播文字稿(标题 + 正文) | CN | cctv | cn-public | none | - | 每天都播(含节假日);date 缺省 = 北京时间 20 点后取今天、否则昨天;只陈述原文,不做政策解读。上游 a-stock-data §5 |
+
+## 10 情绪(16)
 
 | id | 标题 | 市场 | 源 | 合规 | symbol_kind | 阶段 | 鉴权 / 备注 |
 |---|---|---|---|---|---|---|---|
@@ -131,6 +141,7 @@ symbol_kind:cn6 = A 股 6 位码;us = 美股 ticker;hk = 港股 5 位;global = �
 | `cninfo_irm` | 互动易问答(投资者提问 + 公司回复) | CN | cninfo | cn-public | cn6 | risk:optional |  |
 | `em_turnover_rank` | 全市场成交额榜(沪深京 A 股) | SH/SZ/BJ | eastmoney | cn-public | none | - | 客观公开榜单(东财行情中心同款),只做客观展示 —— 非推荐、非预测、不评分。 |
 | `sina_turnover_rank` | 全市场成交额榜·新浪(沪深京 A 股,东财成交额榜的备源) | SH/SZ/BJ | sina | cn-public | none | - | 东财列表接口取不到时用。字段名、单位与 em_turnover_rank 相同(市值已由万元换成元);新浪不给行业。客观公开榜单,非推荐、非预测。 |
+| `cn_market_breadth_history` | 交易日沪深京 A 股收盘涨跌分布与交易所统计 | SH/SZ/BJ | tdx | cn-public | none | - | 按 date 取沪深京有成交、有昨收的 A 股，按涨跌幅分 21 档。当地已有日期核验通过的东财盘后 23 档时，分布保留东财原口径，各交易所家数和成交额仍从日包计算。 |
 | `em_market_breadth` | 全市场涨跌分布 + 沪深京三所涨跌家数与成交额(当日) | SH/SZ/BJ | eastmoney | cn-public | none | - | 只有当日(盘中是实时快照),上游不认日期。分布 23 档:涨停 / 涨超 9% 未涨停 / 每 1% 一档 / 平盘 / … / 跌停;分布合计与三所家数合计口径不同,不互相凑。 |
 | `cn_shortline_emotion` | 短线情绪四项(赚钱效应 / 晋级率 / 连板溢价 / 梯队断层;按所选交易日与前一交易日的东财池子算) | CN | eastmoney+calc | cn-public | none | - | 计算型端点:取数层确定性计算(非 calc DAG),移植自 Vibe AStock v2.0.0 duanxian;信封 extra.result 是完整结构化结果、extra.text 是给模型读的文字版、extra.computation 记参数供复算。已收盘的日子结果不变可长期缓存;没收盘的那一天一律 partial(取数服务不缓存 partial,免得盘中的数被冻住)。约 8 次东财请求,串行限流下约 10–20 秒 |
 | `cn_shortline_cycle` | 短线情绪周期(近 N 个交易日涨停数 / 最高连板 / 炸板率合成的窗口内相对分、距低点天数与走向) | CN | eastmoney+calc | cn-public | none | - | 计算型端点:取数层确定性计算(非 calc DAG),移植自 Vibe AStock v2.0.0 duanxian;信封 extra.result 是完整结构化结果、extra.text 是给模型读的文字版、extra.computation 记参数供复算。已收盘的日子结果不变可长期缓存;没收盘的那一天一律 partial(取数服务不缓存 partial,免得盘中的数被冻住)。每个交易日 2 次东财请求(默认 10 天 ≈ 20 次),最慢,所以和当天四项分开;lookback 3–30 |

@@ -11,7 +11,8 @@
  * 只读,不写盘(快照是取数服务自己写的)。
  */
 import { localClock } from "../../notify.ts";
-import { fetchEndpoint, ServiceError, type ServiceContext } from "../../service.ts";
+import { fetchEndpoint, ServiceError, type FetchResult, type ServiceContext } from "../../service.ts";
+import { readSnapshot, snapshotKey } from "../../snapshot.ts";
 import { klineBars } from "../abnormal.ts";
 import { SCHEDULE_TZ, failedNote, pool } from "../schedule.ts";
 
@@ -197,16 +198,60 @@ export const noteOf = (e: unknown) => e instanceof ServiceError && e.code === "n
  * 那天和它之前 days−1 个交易日(升序)。交易日 = 上证A股指数日 K 里早于那天的日子 + 那天本身
  * (那天是不是交易日由各端点判,不是就取不到并说明)。日 K 取不到时只有那天,gap 说明。
  */
-export async function tradeWindow(ctx: ServiceContext, date: string, days: number, signal: AbortSignal): Promise<{ window: string[]; gap: string | null }> {
-  if (days <= 1) return { window: [date], gap: null };
+export async function tradeWindow(ctx: ServiceContext, date: string, days: number, signal: AbortSignal): Promise<{ window: string[]; gap: string | null; targetPresent: boolean }> {
+  if (days <= 1) return { window: [date], gap: null, targetPresent: false };
   let before: string[] = [];
+  let targetPresent = false;
   try {
     const k = await fetchEndpoint(ctx, { endpoint: "tx_kline", symbol: "sh000002", args: { count: 100 }, consistency: { mode: "prefer_cache", max_age_ms: KLINE_MAX_AGE_MS }, signal });
-    before = klineBars(ctx, k.envelope, k.out_dir).map((b) => b.date).filter((d) => d < date).slice(-(days - 1));
+    const dates = klineBars(ctx, k.envelope, k.out_dir).map(b => b.date);
+    before = dates.filter(d => d < date).slice(-(days - 1));
+    targetPresent = dates.includes(date);
   } catch (e) {
     if (signal.aborted) throw e;
   }
-  return { window: [...before, date], gap: before.length ? null : "上证A股指数日 K 没取到,列不出之前的交易日,只看这一天" };
+  return { window: [...before, date], gap: before.length ? null : "上证A股指数日 K 没取到,列不出之前的交易日,只看这一天", targetPresent };
+}
+
+export async function shortlineLimitTrend(ctx: ServiceContext, query: Record<string, string>, signal: AbortSignal, now = new Date()) {
+  const date = query.date ?? "";
+  const clock = localClock(now, SCHEDULE_TZ);
+  if (!validDate(date) || date > clock.day) throw new ServiceError("bad_query", "请指定有效的复盘日期。");
+  if (query.refresh !== undefined && query.refresh !== "1") throw new ServiceError("bad_query", "refresh 只能是 1");
+  const { window, targetPresent } = await tradeWindow(ctx, date, 15, signal);
+  if (!targetPresent) return { date, series: [] };
+  const oldest = retentionFloor(now);
+  const series = await pool(window, CONCURRENCY, async day => {
+    const missing = { date: day, up: null, down: null };
+    if (day === clock.day && clock.hm < "15:05") return missing;
+    const endpoint = "em_limit_up_sentiment";
+    const args = { date: day.replace(/-/g, "") };
+    const cutoff = Date.parse(day + "T15:00:00+08:00");
+    const parse = (result: FetchResult) => {
+      if (result.envelope.status !== "ok" || !(Date.parse(result.fetched_at) >= cutoff)) return null;
+      const evidence = result.envelope.evidence as { period?: string; field?: string; value?: unknown }[] | undefined;
+      const numberOf = (field: string) => {
+        const value = evidence?.find(e => e.field === field && e.period === day)?.value;
+        return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+      };
+      const up = numberOf("limit_up_count");
+      return up === null ? null : { date: day, up, down: numberOf("limit_down_count") };
+    };
+    const stored = readSnapshot<FetchResult>(ctx.dataRoot, snapshotKey(endpoint, "", args));
+    const cached = stored && parse(stored.payload);
+    const refresh = query.refresh === "1" && day === date;
+    if (cached && !refresh) return cached;
+    if (day < oldest) return cached || missing;
+    try {
+      // An intraday cache entry cannot be used as the daily closing count.
+      const result = await fetchEndpoint(ctx, { endpoint, args, consistency: { mode: "fresh" }, signal });
+      return parse(result) ?? cached ?? missing;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return cached || missing;
+    }
+  });
+  return { date, series };
 }
 
 /**

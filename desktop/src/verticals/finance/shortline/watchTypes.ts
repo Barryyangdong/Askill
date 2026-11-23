@@ -9,6 +9,8 @@ export interface WatchAlert { ts: string; code: string; name: string; kind: Aler
 export interface WatchRow { code: string; name: string; price: number | null; pct: number | null; amount_yuan: number | null; quote_time: string | null; today: boolean }
 export interface LadderWatchRow extends WatchRow { boards: number; label: string; sector: string; at_limit: boolean | null }
 export interface WatchView {
+  updating?: boolean;
+  snapshot_at?: string;
   date: string; clock: string; phase: Phase; phase_label: string;
   trading_day: boolean | null;
   detecting: boolean; poll_ms: number;

@@ -27,6 +27,8 @@ export interface EndpointDef {
   /** 算进 core 作用域(与 legacy 脚本同列);没有 legacy 脚本的区域靠它组最小计划 */
   core?: boolean;
   args?: Record<string, unknown>;
+  /** Trusted per-argument collection bounds; omitted arguments retain the service default. */
+  arg_array_limits?: Record<string, number>;
   auth_env?: string;
   mapper?: string;
   mapper_module?: string;
@@ -45,6 +47,8 @@ export interface EndpointDef {
    *    (Codex 架构评审 arch-r1 §B)。
    */
   cache_max_age_sec?: number | null;
+  /** Reuse evidenced partial readings within the endpoint's finite freshness window. */
+  cache_partial?: boolean;
   /**
    * 这个端点给谁看。缺省 `ui`(界面和 agent 都能用)。
    * `agent` = **界面不展示、只让 AI 调用**(如管制与准入、名单核查)——

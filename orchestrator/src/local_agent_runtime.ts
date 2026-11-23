@@ -13,6 +13,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { StringDecoder } from "node:string_decoder";
+import { LocalTextStream } from "./local_text_stream.ts";
 import { settleOwnedProcessGroup } from "./research_process.ts";
 
 const execFileAsync = promisify(execFile);
@@ -739,6 +741,9 @@ export function isWorkBuddyBundledCli(bin: string): boolean {
 }
 
 interface CodeBuddyRuntime {
+  supportsSettings?: boolean;
+  supportsPartial?: boolean;
+  supportsEffort: boolean;
   login: CodeBuddyLogin | null;
   legacyEphemeralHome: boolean;
   /** `--help` 列出了 `--port`：执行时传 `--port 0`，不去抢 ~/.codebuddy 记下的固定端口（#28）。 */
@@ -916,7 +921,7 @@ async function inspectCodeBuddy(bin: string, env: NodeJS.ProcessEnv): Promise<{ 
   }
   // 只认独立的参数名（前后是空白、逗号、等号或尖括号），不把 `--port-xxx` 一类别的参数当成它。
   const ephemeralPort = /(?:^|[\s,[])--port(?=[\s=,<\]]|$)/m.test(help);
-  return { version, runtime: { login, legacyEphemeralHome, ephemeralPort } };
+  return { version, runtime: { login, legacyEphemeralHome, ephemeralPort, supportsSettings: /(?:^|\s)--settings(?:\s|$)/m.test(help), supportsPartial: help.includes("--include-partial-messages"), supportsEffort: /(?:^|\s)--effort(?:\s|$)/m.test(help) } };
 }
 
 /**
@@ -1007,7 +1012,7 @@ export async function probeCodeBuddy(
       provider: "cli-codebuddy", name: "WorkBuddy / CodeBuddy", installed: true, authenticated, custom_path, saved_path,
       available: authenticated, version, status: authenticated ? "ready" : "not_authenticated",
       detail: authenticated
-        ? "CodeBuddy CLI 已登录，可使用本机 WorkBuddy / CodeBuddy 账号"
+        ? "已检测到 CodeBuddy CLI 账号；真实对话测试通过后才完成接入"
         : "已安装；请先运行 codebuddy 并完成登录",
     };
   } catch (error) {
@@ -1286,6 +1291,11 @@ export class CodexEventStream {
 const IMAGE_EXTENSIONS: Record<string, string> = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif" };
 
 export interface RunLocalAgentOptions {
+  /** Per-process synthesis mode; never changes the user's saved CLI preferences. */
+  thinkingEnabled?: boolean;
+  /** Completed visible paragraphs only; the caller must still apply its output policy. */
+  onText?: (text: string) => void;
+  reasoningEffort?: "low" | "medium" | "high";
   systemPrompt: string;
   userPrompt: string;
   /**
@@ -1360,7 +1370,7 @@ export function claudeArgs(systemPrompt: string, outputSchema?: unknown,
 
 /** CodeBuddy 的 `--print` 不携位置 prompt，因此只从 stdin 取用户正文，不进 argv / 进程列表。 */
 export function codeBuddyArgs(systemPrompt: string, outputSchema?: unknown, legacyEphemeralHome = false,
-  controlledMcp?: RunLocalAgentOptions["controlledMcp"], ephemeralPort = false): string[] {
+  controlledMcp?: RunLocalAgentOptions["controlledMcp"], ephemeralPort = false, reasoningEffort?: RunLocalAgentOptions["reasoningEffort"]): string[] {
   const isolation = codeBuddyIsolationArgs(legacyEphemeralHome);
   if (controlledMcp) {
     isolation[isolation.indexOf("--tools") + 1] = `NoDefer(mcp__${controlledMcp.serverName}__*)`;
@@ -1370,8 +1380,15 @@ export function codeBuddyArgs(systemPrompt: string, outputSchema?: unknown, lega
         args: controlledMcp.args, env: controlledMcp.env, alwaysLoad: true, defer_loading: false },
     } });
   }
+  // --json-schema is implemented by CodeBuddy's pure-data StructuredOutput
+  // tool. With all tools disabled its stop hook repeatedly asks for output
+  // that it cannot capture. No other built-in tool is enabled here.
+  if (outputSchema !== undefined && !controlledMcp) {
+    isolation[isolation.indexOf("--tools") + 1] = "StructuredOutput";
+  }
   const args = [
     "-p",
+    ...(reasoningEffort ? ["--effort", reasoningEffort] : []),
     // 不传时 CLI 去绑 ~/.codebuddy 里记下的固定端口；那个端口被开着的交互会话或并发的另一个请求占着，
     // CLI 就 EADDRINUSE 直接退出，表现为「检测通过、提问没回答」（#28）。0 = 让系统给一个空闲端口。
     // 只在 `--help` 列出这个参数时才传，老版本不认识的参数不往里塞。
@@ -1384,7 +1401,7 @@ export function codeBuddyArgs(systemPrompt: string, outputSchema?: unknown, lega
     // 因为同一组 argv 已经把内建工具全关，并用 strict-mcp-config 只留一个本产品 MCP。
     "--permission-mode", controlledMcp ? "bypassPermissions" : legacyEphemeralHome ? "default" : "dontAsk",
     "--subagent-permission-mode", legacyEphemeralHome ? "default" : "dontAsk",
-    "--max-turns", String(controlledMcp?.maxTurns ?? 1),
+    "--max-turns", String(controlledMcp?.maxTurns ?? (outputSchema !== undefined ? 3 : 1)),
     "--output-format", "json",
     "--system-prompt", systemPrompt,
   ];
@@ -1556,7 +1573,7 @@ export async function runLocalAgent(
     throw cancelled();
   }
 
-  const maxOut = 4 * 1024 * 1024;
+  const maxOut = opts.onText ? 16 * 1024 * 1024 : 4 * 1024 * 1024;
   const maxErr = 64 * 1024;
   // Codex 的 JSONL 会原样回显每次工具结果；逐行消费、不攒全量，只给单行设上限。
   const maxCodexLine = 32 * 1024 * 1024;
@@ -1619,7 +1636,14 @@ export async function runLocalAgent(
       : agent === "codex"
       ? codexArgs(opts.systemPrompt, tmpDir, { controlledMcp: opts.controlledMcp, outputSchemaFile, imageFiles })
       : codeBuddyArgs(opts.systemPrompt, opts.outputSchema, codeBuddyRuntime!.legacyEphemeralHome, opts.controlledMcp,
-        codeBuddyRuntime!.ephemeralPort);
+        codeBuddyRuntime!.ephemeralPort, codeBuddyRuntime!.supportsEffort ? opts.reasoningEffort : undefined);
+    if (opts.onText && agent === "codebuddy") {
+      args[args.indexOf("--output-format") + 1] = "stream-json";
+      args.push("--verbose", ...(codeBuddyRuntime!.supportsPartial ? ["--include-partial-messages"] : []));
+    }
+    if (agent === "codebuddy" && opts.thinkingEnabled === false && codeBuddyRuntime!.supportsSettings) {
+      args.push("--settings", JSON.stringify({ alwaysThinkingEnabled: false }));
+    }
     if (agent === "codebuddy" && opts.userImages?.length) args.push("--input-format", "stream-json");
     const launch = executableInvocation(bin, args, runEnv);
     if (stdoutFile) stdoutFd = fs.openSync(stdoutFile, "w", 0o600);
@@ -1651,6 +1675,21 @@ export async function runLocalAgent(
     let hardKillTimer: NodeJS.Timeout | null = null;
     let killFallbackTimer: NodeJS.Timeout | null = null;
     let outputSizeTimer: NodeJS.Timeout | null = null;
+    const visibleStream = opts.onText && agent === "codebuddy" ? new LocalTextStream(opts.onText) : null;
+    const decoder = new StringDecoder("utf8");
+    let readOffset = 0;
+    const readPreview = () => {
+      if (!visibleStream || !stdoutFile) return;
+      const size = fs.statSync(stdoutFile).size;
+      if (size <= readOffset || size > maxOut) return;
+      const fd = fs.openSync(stdoutFile, "r");
+      try {
+        const bytes = Buffer.alloc(size - readOffset);
+        const read = fs.readSync(fd, bytes, 0, bytes.length, readOffset);
+        readOffset += read;
+        visibleStream.push(decoder.write(bytes.subarray(0, read)));
+      } finally { fs.closeSync(fd); }
+    };
     const stdoutFileSize = (): number => {
       try { return fs.statSync(stdoutFile!).size; } catch { return 0; }
     };
@@ -1744,6 +1783,9 @@ export async function runLocalAgent(
     if (stdoutFile) {
       outputSizeTimer = setInterval(() => {
         if (stdoutFileSize() > maxOut) terminate(new LocalAgentError("agent_output_too_large", `${label} 输出超出上限，已终止`));
+        else if (visibleStream) {
+          try { readPreview(); } catch { terminate(new LocalAgentError("agent_bad_output", "Visible stream could not be decoded")); }
+        }
       }, 500);
     }
     child.stdout?.on("data", (chunk: string) => {
@@ -1798,7 +1840,9 @@ export async function runLocalAgent(
         if (code !== 0) return finish(() => reject(failureMessage(agent, diagnostics, stderr, code)));
         finish(() => {
         try {
-          resolve(agent === "claude" ? parseClaudeOutput(stdout) : codexStream ? codexStream.result() : parseCodeBuddyOutput(stdout));
+          const finalStream = visibleStream ? new LocalTextStream(() => {}) : null;
+          finalStream?.push(stdout + "\n");
+          resolve(agent === "claude" ? parseClaudeOutput(stdout) : codexStream ? codexStream.result() : parseCodeBuddyOutput(finalStream ? finalStream.finish() : stdout));
         } catch (error) {
           // CodeBuddy 2.143.1 在未登录时会以 exit 0 输出一行纯文本，而不是 JSON。
           // 只有解析已经失败时才把已知的登录 / 限流诊断升级为受控错误，避免误读正常模型回答。

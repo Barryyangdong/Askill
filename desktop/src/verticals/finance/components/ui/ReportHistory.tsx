@@ -1,15 +1,14 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, History, Search, Trash2 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { noRemoteImages } from "../../../../core/ai/noRemoteImages";
+import {ReportAnswer} from "../ReportAnswer";
 
 import { GlassCard } from "@/components/ui/GlassCard";
 import { deleteNote, type Note } from "@/lib/notes";
 import { usePrivacyMode } from "@/hooks/usePrivacyMode";
 import { maskPrivateText } from "@/lib/privacy";
+import { JourneyLink } from "../JourneyLink";
 
-export function ReportHistory({ kind, notes, onChange }: { kind: string; notes: Note[]; onChange: (notes: Note[]) => void }) {
+export function ReportHistory({ kind, notes, onChange, renderContent }: { kind: string; notes: Note[]; onChange: (notes: Note[]) => void; renderContent?: (content: string) => ReactNode }) {
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -65,9 +64,10 @@ export function ReportHistory({ kind, notes, onChange }: { kind: string; notes: 
                   </button>
                 </div>
                 {open && <div className="border-t border-border/40 px-4 py-4">
-                  <div className="prose prose-sm dark:prose-invert max-w-none text-foreground prose-table:text-sm">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={noRemoteImages}>{shown(n.content)}</ReactMarkdown>
-                  </div>
+                  <JourneyLink className="mb-3 inline-block text-xs text-primary" to={`/notes?id=${encodeURIComponent(n.id)}`}>在研究记录中打开</JourneyLink>
+                  {renderContent ? renderContent(shown(n.content)) : <div className="prose prose-sm dark:prose-invert max-w-none text-foreground prose-table:text-sm">
+                    <ReportAnswer content={shown(n.content)} displayName={hide ? maskPrivateText : undefined} />
+                  </div>}
                 </div>}
               </GlassCard>
             );

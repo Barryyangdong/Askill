@@ -13,12 +13,14 @@ import { RecordsTab } from "@/journal/RecordsTab";
 import { RiskTab } from "@/journal/RiskTab";
 import { ReviewTab } from "@/journal/ReviewTab";
 import { ModesTab } from "@/journal/ModesTab";
+import { PlanReview } from "@/journal/PlanReview";
 
-type Tab = "records" | "risk" | "review" | "modes";
+type Tab = "records" | "risk" | "review" | "modes" | "plans";
 const TABS: PageTab<Tab>[] = [
   { key: "records", label: "交易记录", icon: BookOpenCheck },
   { key: "risk", label: "风险与纪律", icon: ShieldAlert },
   { key: "review", label: "复查", icon: SearchCheck },
+  { key: "plans", label: "计划归因", icon: SearchCheck },
   { key: "modes", label: "模式卡", icon: Layers },
 ];
 const isTab = (v: string | undefined): v is Tab => TABS.some((t) => t.key === v);
@@ -46,7 +48,7 @@ export function Journal() {
     <div className="mx-auto max-w-7xl">
       <PageHeader
         title="交易日志"
-        subtitle="每笔交易自动对上入场那天的情绪和板位;时间久了能回答「我在情绪弱的日子是不是明显更差」这类问题。数据只存在本机。"
+        subtitle="交易记录 · 仅存本机" description="每笔交易自动对上入场那天的情绪和板位;时间久了能回答「我在情绪弱的日子是不是明显更差」这类问题。数据只存在本机。"
         actions={(
           <button type="button" onClick={reload} disabled={busy}
             className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50">
@@ -59,7 +61,7 @@ export function Journal() {
       )}
       <PageTabs label="交易日志的分页" value={tab} onChange={pick} options={TABS} />
 
-      {st.state === "loading" ? <p role="status" className="glass p-6 text-sm text-muted-foreground">交易日志加载中…</p>
+      {tab === "plans" ? <PlanReview hide={hide}/> : st.state === "loading" ? <p role="status" className="glass p-6 text-sm text-muted-foreground">交易日志加载中…</p>
         : st.state === "failed" ? <p role="status" className="glass p-6 text-sm text-muted-foreground">交易日志没读到:{st.why}。可点右上角刷新重试。</p>
         : !st.data.available ? (
           <div className="space-y-4">

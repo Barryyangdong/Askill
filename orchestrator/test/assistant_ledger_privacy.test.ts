@@ -11,9 +11,10 @@ import { fileURLToPath } from "node:url";
 import { assistantTools, ledgerUpsert, serviceContext } from "../src/service.ts";
 import { FINANCE_LEDGER_KINDS } from "../src/finance/ledger_kinds.ts";
 import "../src/finance/register.ts";
+import {savePlanReview} from "../src/finance/plan_review.ts";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const HIDDEN = ["closed_position", "trade", "position", "journal_tag", "journal_settings", "mode_card"];
+const HIDDEN = ["closed_position", "trade", "position", "journal_tag", "journal_settings", "mode_card", "plan_review"];
 
 test("read_ledger 不返回成交、持仓和交易日志,只说明哪些没给", async () => {
   const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "va-ledger-ai-"));
@@ -25,13 +26,16 @@ test("read_ledger 不返回成交、持仓和交易日志,只说明哪些没给"
     ledgerUpsert(ctx, { kind: "position", record: { symbol: "000001", shares: 4321, cost: 11.11, note: "持有备注POS" } });
     ledgerUpsert(ctx, { kind: "closed_position", record: { symbol: "000002", closed_at: "2026-10-08", price: 7.77, shares: 500, cost: 8.88, note: "清仓备注CLOSED" } });
 
+    const condition=ledgerUpsert(ctx,{kind:"criterion",record:{symbol:"600519",type:"decision_point",statement:"公开条件"}});
+    savePlanReview(ctx,{criterion_id:condition.id,outcome:"unknown",reason:"PRIVATE_EXECUTION_REVIEW",trade_ids:[]});
+
     const tool = assistantTools(ctx, { provider: "cli-claude", model: "", apiKey: "" }).find((t) => t.name === "read_ledger")!;
     const out = await tool.run(tool.schema.parse({}) as never, new AbortController().signal) as { records: Record<string, unknown[]>; withheld: string[] };
     const text = JSON.stringify(out);
     assert.equal(out.records.watch?.length, 1);
     assert.equal(out.records.note?.length, 1);
     for (const k of HIDDEN) assert.equal(k in out.records, false, `${k} 不该给模型`);
-    for (const secret of ["300308", "1234", "98.76", "TRADE", "000001", "4321", "11.11", "POS", "000002", "CLOSED", "8.88"]) {
+    for (const secret of ["300308", "1234", "98.76", "TRADE", "000001", "4321", "11.11", "POS", "000002", "CLOSED", "8.88", "PRIVATE_EXECUTION_REVIEW"]) {
       assert.equal(text.includes(secret), false, `返回里不该出现 ${secret}`);
     }
     assert.deepEqual([...out.withheld].sort(), HIDDEN.map((k) => FINANCE_LEDGER_KINDS[k]!.label).sort());
