@@ -1,18 +1,18 @@
 {
   "display_name": "短线王 · A 股短线复盘工作台",
   "display_name_en": "Askill · A-Share Market Review",
-  "description_zh": "盘中看昨日涨停股能否延续强势，收盘对照连板梯队与当天记录的涨停原因，次日核对昨晚写下的判断。WorkBuddy 帮你在本机装好短线王，接入 AI，打开就能从最近一个交易日开始复盘。",
-  "description_en": "Track yesterday’s limit-up stocks, review which themes and streaks held up at the close, and check your observations the next trading day. WorkBuddy sets up Askill on your computer and connects it to your account.",
-  "version": "1.0.1",
+  "description_zh": "从盘中盯盘到收盘复盘，再到用游资案例练习判断，短线王把 A 股短线研究放进一个本地工作台。看竞价强弱、题材轮动和连板梯队，把比赛选手公开披露的交易放回当天的盘面。选一个游资历史案例，遮住结局先写自己的判断，再揭晓、看反例。研究个股时，让 AI 对照同一份资料展开多空辩论。想检验一种思路，可以跑历史回测，也可以今晚记下条件、明天收盘对账。自己的成交和盈亏记在本机交易日志里。",
+  "description_en": "Read the A-share market live, review the close, and practice your judgment on historical trades. Askill puts auction strength, theme rotation, and limit-up streaks alongside contest traders’ public disclosures. Work through a trader case before revealing the outcome, then compare counterexamples. Have AI weigh the bull and bear cases for a stock using the same evidence. Test an idea against history or record it tonight and check it at tomorrow’s close. Your personal trade journal stays on your computer.",
+  "version": "1.0.2",
   "author": "Barryyangdong",
   "examples_zh": [
     "帮我安装短线王并接入 WorkBuddy，验证一次对话，带我打开最近一个交易日的收盘复盘。",
-    "打开我已有的短线王，带我找到「次日验证」，我想核对昨天写下的观察条件。",
-    "我的短线王能打开，但 AI 没回复。帮我检查连接，修好后在工作台验证一次。"
+    "打开短线王的「游资蒸馏」，带我找到历史盲练。我想先看当时的盘面，写下判断后再揭晓结果。",
+    "打开我已有的短线王，带我找到个股研究的多空辩论入口。我想看看同一份资料分别支持哪些判断。"
   ],
   "examples_en": [
     "Install Askill, connect WorkBuddy, verify a reply, and open the latest trading day’s closing review.",
-    "Open my existing Askill workspace and show me where to check the observations I recorded yesterday.",
-    "Askill opens, but the AI does not reply. Check the connection, fix it, and verify a reply in the workbench."
+    "Open the historical case practice in Askill. I want to study the market at the time and record my judgment before revealing the outcome.",
+    "Open my existing Askill workspace and show me where to start a bull-and-bear debate on an A-share stock using the same evidence."
   ]
 }
