@@ -14,6 +14,8 @@ def build(output: Path) -> dict:
     base = dict(line.split(":", 1) for line in header.strip().splitlines())
     fields = {"name": base["name"].strip(), "description": base["description"].strip()}
     fields.update(json.loads((root / "workbuddy-metadata.json").read_text(encoding="utf-8")))
+    if fields["name"] != "vibe-astock":
+        raise ValueError("WorkBuddy requires the existing asset name: vibe-astock")
     required = ["name", "description", "display_name", "display_name_en", "description_zh", "description_en", "version", "author"]
     if any(not isinstance(fields.get(key), str) or not fields[key].strip() for key in required):
         raise ValueError("WorkBuddy required metadata is missing")

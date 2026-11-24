@@ -3,7 +3,7 @@
   "display_name_en": "Askill · A-Share Market Review",
   "description_zh": "盘中看昨日涨停股能否延续强势，收盘对照连板梯队与当天记录的涨停原因，次日核对昨晚写下的判断。WorkBuddy 帮你在本机装好短线王，接入 AI，打开就能从最近一个交易日开始复盘。",
   "description_en": "Track yesterday’s limit-up stocks, review which themes and streaks held up at the close, and check your observations the next trading day. WorkBuddy sets up Askill on your computer and connects it to your account.",
-  "version": "0.1.2",
+  "version": "1.0.1",
   "author": "Barryyangdong",
   "examples_zh": [
     "帮我安装短线王并接入 WorkBuddy，验证一次对话，带我打开最近一个交易日的收盘复盘。",

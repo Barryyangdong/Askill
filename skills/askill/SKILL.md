@@ -1,5 +1,5 @@
 ---
-name: askill
+name: vibe-astock
 description: 在 WorkBuddy 中安装、启动或修复短线王（Askill）本地 A 股短线复盘工作台。适用于首次部署、打开已有工作台做盘中跟踪或收盘复盘，以及恢复 AI 连接并验证对话。
 ---
 
