@@ -3,15 +3,15 @@
   "display_name_en": "Askill · A-Share Market Review",
   "description_zh": "4 个盯盘看板、5 个复盘看板，直接接入你已登录的 WorkBuddy，无需另填模型 API Key。盘中看竞价强弱和个股异动，收盘让 AI 从情绪、资金、题材、龙虎榜和龙头五个角度写复盘，点开依据核对数字。用「选手分析」比较同场领先组与落后组的持仓偏好，按交易日追踪一只股票谁新进、谁留守、谁退出。还可以拿游资历史案例做盲练，让 AI 梳理个股多空证据，用历史回测和次日验证检验判断。自己的成交和盈亏留在本机交易日志。",
   "description_en": "Four market-monitoring dashboards and five review dashboards connect to your signed-in WorkBuddy account without a separate model API key. Track auction strength and price moves, then ask AI to review sentiment, flows, themes, exchange trading disclosures, and leading stocks, with figures you can check. Player Analysis compares contest leaders and trailers and shows who added, kept, or exited a holding across comparable disclosures. Practice on historical trader cases, debate a stock with AI, and test ideas through backtests and next-day reviews. Your trade journal stays local.",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "author": "Barryyangdong",
   "examples_zh": [
-    "用我的 WorkBuddy 账号接入短线王，无需另填模型 API Key。带我看最近一个交易日的 AI 复盘，并找到其中一条数字的依据。",
+    "启动短线王。",
     "打开短线王的「选手分析」。用我有权查看的比赛快照比较领先组和落后组的持仓，再挑一只股票，看看哪些选手新持有、哪些已退出。",
     "打开我已有的短线王，带我找到个股研究的多空辩论入口。我想看看同一份资料分别支持哪些判断。"
   ],
   "examples_en": [
-    "Connect Askill using my WorkBuddy account without a separate model API key. Show me the latest available closing review and how to check the evidence behind one figure.",
+    "Launch Askill.",
     "Open Player Analysis. Use contest snapshots I have permission to view to compare the leading and trailing groups, then show me who added or exited a holding in one stock.",
     "Open my existing Askill workspace and show me where to start a bull-and-bear debate on an A-share stock using the same evidence."
   ]

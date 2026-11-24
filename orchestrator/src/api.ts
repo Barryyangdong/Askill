@@ -38,7 +38,7 @@ import { runView, runViewAction, viewActionBodyLimit } from "./views.ts";
 // (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
 import "./finance/register_tasks.ts";
 import { VIEWER_CSP } from "./viewer.ts";
-import { loadSavedAgentPaths } from "./local_agent_runtime.ts";
+import { loadSavedAgentPaths, probeCodeBuddyForSetup } from "./local_agent_runtime.ts";
 import { beginChatProgress, readChatProgress } from "./chat_progress.ts";
 import { updateAction, updateStatus } from "./update_check.ts";
 import { API_COOKIE, API_PORT, PRODUCT_NAME } from "./brand.ts";
@@ -247,6 +247,16 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       if (req.method === "GET" && url.pathname === "/update") return send(res, 200, await updateStatus({ repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot }));
       if (req.method === "POST" && url.pathname === "/update") return send(res, 200, await updateAction({ repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot }, await readBody(req)));
       if (req.method === "GET" && url.pathname === "/local-agents") return send(res, 200, await localAgents(ctx, process.env, url.searchParams.get('provider') ?? undefined));
+      if (req.method === "POST" && url.pathname === "/local-agents/codebuddy/match") {
+        if (process.env.VRA_REMOTE === "1" || req.headers["x-askill-remote"] || !["127.0.0.1","::1","::ffff:127.0.0.1"].includes(req.socket.remoteAddress ?? "")) {
+          return send(res, 403, { error: "remote_forbidden" });
+        }
+        const expected = (await readBody(req)).path;
+        if (typeof expected !== "string" || !path.isAbsolute(expected)) throw new ServiceError("bad_agent_path", "需要 CLI 文件绝对路径");
+        // Discover the server's existing runtime. The caller's path is only compared, never read or executed.
+        const selected = await probeCodeBuddyForSetup();
+        return send(res, 200, { matches: selected.available && !!selected.cli_path && path.relative(selected.cli_path, expected) === "" });
+      }
       // 设置页手动指定 WorkBuddy 位置:{"path": "D:\\Program Files\\WorkBuddy"};{"path": null} = 恢复自动检测
       if (req.method === "POST" && url.pathname === "/local-agents/codebuddy/path") {
         const b = await readBody(req);

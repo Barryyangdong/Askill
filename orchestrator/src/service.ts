@@ -1245,6 +1245,7 @@ export function productInfo(ctx: ServiceContext): Record<string, unknown> {
      *    按文件存在来标会在界面上造出假的「已实测」。
      */
     provider_templates: templateMatrix(ctx.repoRoot, dataRoot),
+    capabilities: { workbuddy_require_ready: true, workbuddy_match_path: true },
     paths: { data_root: dataRoot, python: ctx.python },
     /** 这份配置是由哪几层合出来的(产品默认 ← 用户配置 ← 环境变量) */
     sources: [...pc.sources],

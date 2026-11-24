@@ -23,7 +23,7 @@ def build(output: Path) -> dict:
     if output.suffix.lower() != ".zip" or output.is_relative_to(root):
         raise ValueError("Choose a ZIP output outside the skill source directory")
     packaged = "---\n" + "\n".join(f"{key}: {json.dumps(value, ensure_ascii=False)}" for key, value in fields.items()) + "\n---\n" + body.lstrip("\r\n")
-    resources = ["references/deployment.md", "scripts/configure-workbuddy.mjs", "scripts/install-codebuddy.mjs", "scripts/login-codebuddy.mjs", "scripts/verify-source.mjs"]
+    resources = ["references/deployment.md", "scripts/connect-workbuddy.mjs", "scripts/auth-workbuddy.mjs", "scripts/finish-workbuddy.mjs", "scripts/configure-workbuddy.mjs", "scripts/install-codebuddy.mjs", "scripts/login-codebuddy.mjs", "scripts/verify-source.mjs"]
     output.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(output, "w", ZIP_DEFLATED) as archive:
         # The downloadable package should reproduce across checkout times and platforms.

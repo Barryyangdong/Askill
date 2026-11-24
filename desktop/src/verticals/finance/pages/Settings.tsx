@@ -322,6 +322,10 @@ export function Settings() {
     <div>
       {setupWorkBuddy && <WorkBuddySetup onDone={(message) => {
         setConfigured(true);
+        if (setupParams.get("next") === "workbench") {
+          navigate("/", { replace: true });
+          return;
+        }
         say(message);
         const params = new URLSearchParams(location.search);
         params.delete("setup");

@@ -609,6 +609,18 @@ test("HTTP API:token 必需 / 非本机 Origin 403 / 跨站 403 / 非 JSON POST 
     assert.equal(selectedAgent.code, 200);
     assert.deepEqual((selectedAgent.json as { provider: string }[]).map((x) => x.provider), ["cli-claude"]);
     assert.equal((await call("GET", "/local-agents?provider=unknown")).code, 400);
+    assert.equal((await call("POST", "/local-agents/codebuddy/match", { path: "relative" })).code, 400);
+    assert.equal((await call("POST", "/local-agents/codebuddy/match", { path: ctx.repoRoot }, { "x-askill-remote": "1" })).code, 403);
+    const originalBin = process.env.CODEBUDDY_BIN;
+    try {
+      process.env.CODEBUDDY_BIN = path.join(ctx.dataRoot, "absent-test-cli");
+      const result = await call("POST", "/local-agents/codebuddy/match", { path: process.execPath });
+      assert.equal(result.code, 200);
+      assert.deepEqual(result.json, { matches: false });
+    } finally {
+      if (originalBin === undefined) delete process.env.CODEBUDDY_BIN;
+      else process.env.CODEBUDDY_BIN = originalBin;
+    }
     // #50:设置页手动指定 WorkBuddy 位置 —— 参数不对 / 位置不存在都按原因拒
     for (const [body, error] of [[{}, "bad_agent_path"], [{ path: 42 }, "bad_agent_path"], [{ path: "relative/WorkBuddy" }, "bad_agent_path"],
       [{ path: null, require_ready: true }, "bad_agent_path"],

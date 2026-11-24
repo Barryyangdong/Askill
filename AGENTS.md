@@ -44,8 +44,8 @@ scripts/start     # Windows:scripts\start.cmd
   换了页面端口时,浏览器里存的模型 API 设置和对话记录按地址分开,要在新地址重新设置(终端会提醒;默认端口空出来后重启就回到原来的);
   要固定端口用 `--port` / `--api-port`(Windows `-Port` / `-ApiPort`)或环境变量 `VRA_UI_PORT` / `VRA_API_PORT`,指定的端口不能用时直接报错。
   启动时提示「已经有一个 Vibe AStock 在运行」:让使用者直接打开那个地址,不要终止别的进程去抢端口。
-- 页面打开后到左侧栏最下方的「接入 AI」选大脑并做一次真实对话测试,测试通过才会保存。
-  本机 CLI 要先由使用者本人登录(`claude` / `codex login` / `codebuddy`);登录发生在使用者自己的终端和浏览器里,你不代填、不转存任何账号信息。
+- 用户通过 WorkBuddy Skill 说「启动短线王」时，按 [Skill 部署流程](skills/askill/references/deployment.md) 启动并运行 `connect-workbuddy.mjs`。在同一次任务中等待官方浏览器授权和真实连接验证，通过后自动打开工作台。已有可用授权时直接复用。
+- 手动部署或选用其他模型时，到左侧栏最下方的「接入 AI」选择提供商并测试，测试通过才会保存。账号授权由使用者本人在官方界面完成。
 - Windows 上 WorkBuddy 装在别的盘也会从「已安装的程序」登记或正在运行的 WorkBuddy 里自动找到;
   仍显示「未安装」时:先打开 WorkBuddy 再点「重新检测」,或在「接入 AI」的 WorkBuddy 卡片里填它的安装文件夹,
   或在启动前设环境变量 `CODEBUDDY_BIN` / `CLAUDE_BIN` / `CODEX_BIN`(设了就只认它)。
