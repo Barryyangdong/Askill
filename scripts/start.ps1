@@ -6,8 +6,26 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $env:PYTHONUTF8 = "1"
 # Node 运行时预检:版本不够或构建未启用 TypeScript 支持时给出指引,而不是 ERR_UNKNOWN_FILE_EXTENSION(#38)
-& node (Join-Path $root "scripts\check-node.mjs")
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+function Test-NodeRuntime($candidate) {
+  if (-not $candidate -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $false }
+  try {
+    # Windows PowerShell 5 turns native stderr into error records under Stop.
+    $ErrorActionPreference = "Continue"
+    & $candidate (Join-Path $root "scripts\check-node.mjs") *> $null
+    return ($? -and $LASTEXITCODE -eq 0)
+  } catch { return $false }
+}
+$nodeExe = (Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+if (-not (Test-NodeRuntime $nodeExe)) {
+  $nodeExe = $null
+  $versionsDir = Join-Path $env:USERPROFILE ".workbuddy\binaries\node\versions"
+  foreach ($dir in (Get-ChildItem -LiteralPath $versionsDir -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
+    $candidate = Join-Path $dir.FullName "node.exe"
+    if (Test-NodeRuntime $candidate) { $nodeExe = $candidate; break }
+  }
+  if (-not $nodeExe) { throw "未找到可运行 TypeScript 的 Node.js。请安装 Node 22.18+ 或 24 LTS，然后重新启动短线王。" }
+  Write-Host "[start] 使用 WorkBuddy 的 Node.js：$nodeExe"
+}
 if ($Prebuilt -and -not (Test-Path (Join-Path $root "desktop\dist\index.html"))) {
   throw "缺少打包好的页面(desktop\dist)。先在 desktop 目录运行 npm run build,或去掉 -Prebuilt。"
 }
@@ -15,7 +33,7 @@ if ($Prebuilt -and -not (Test-Path (Join-Path $root "desktop\dist\index.html")))
 $portArgs = @()
 if ($Port) { $portArgs += @("--port", "$Port") }
 if ($ApiPort) { $portArgs += @("--api-port", "$ApiPort") }
-$chosen = @(& node (Join-Path $root "orchestrator\src\startup_ports.ts") @portArgs)
+$chosen = @(& $nodeExe (Join-Path $root "orchestrator\src\startup_ports.ts") @portArgs)
 $portCode = $LASTEXITCODE
 $chosen | Where-Object { "$_".StartsWith("[start]") } | ForEach-Object { Write-Host $_ }
 if ($portCode -ne 0) { exit $portCode }
@@ -148,14 +166,14 @@ function Stop-ProcessTree($Process, $Tree) {
   if ($uncertain) { Write-Host "[start] 警告：进程树 $rootId 清理未完全确认，请检查本次启动的残留进程。" }
 }
 
+$previousPath = $env:Path
 try {
-  $api = Start-Process -FilePath node -ArgumentList @("orchestrator\src\api.ts", "--port", "$apiPortChosen", "--host", "127.0.0.1") -WorkingDirectory $root -PassThru -NoNewWindow
+  $env:Path = (Split-Path -Parent $nodeExe) + [IO.Path]::PathSeparator + $previousPath
+  $api = Start-Process -FilePath $nodeExe -ArgumentList @("orchestrator\src\api.ts", "--port", "$apiPortChosen", "--host", "127.0.0.1") -WorkingDirectory $root -PassThru -NoNewWindow
   # UI 由 Vite 按 VRA_LAN 决定绑定；默认回环，API 的回环绑定不变。打包好的页面由 vite preview 提供，同样只听回环。
-  if ($Prebuilt) {
-    $ui = Start-Process -FilePath node -ArgumentList @("node_modules\vite\bin\vite.js", "preview") -WorkingDirectory (Join-Path $root "desktop") -PassThru -NoNewWindow
-  } else {
-    $ui = Start-Process -FilePath npm.cmd -ArgumentList @("run", "dev", "--prefix", "desktop") -WorkingDirectory $root -PassThru -NoNewWindow
-  }
+  $viteArgs = @("node_modules\vite\bin\vite.js")
+  if ($Prebuilt) { $viteArgs += "preview" }
+  $ui = Start-Process -FilePath $nodeExe -ArgumentList $viteArgs -WorkingDirectory (Join-Path $root "desktop") -PassThru -NoNewWindow
   Update-OwnedTrees
   $ready = $false
   $readyDeadline = [DateTime]::UtcNow.AddSeconds(60)
@@ -166,7 +184,7 @@ try {
     if ($api.HasExited) { throw "API 启动失败（退出码 $($api.ExitCode)），请检查 $apiPortChosen 端口和产品配置。" }
     if ($ui.HasExited) { throw "界面启动失败（退出码 $($ui.ExitCode)）。" }
     # 经界面代理验证后端鉴权；令牌仍只留在本地服务，不传到浏览器或命令参数。
-    & node (Join-Path $root "orchestrator\src\startup_health.ts")
+    & $nodeExe (Join-Path $root "orchestrator\src\startup_health.ts")
     if ($LASTEXITCODE -eq 0) { $ready = $true; break }
     Start-Sleep -Milliseconds 250
   }
@@ -186,6 +204,7 @@ try {
   if ($api.HasExited) { throw "API 已停止（退出码 $($api.ExitCode)），界面同步关闭。" }
   if ($ui.HasExited) { throw "界面已提前停止（退出码 $($ui.ExitCode)）。" }
 } finally {
+  $env:Path = $previousPath
   try { Stop-ProcessTree $ui $uiTree } catch { Write-Host "[start] 警告：界面进程清理失败：$_" }
   try { Stop-ProcessTree $api $apiTree } catch { Write-Host "[start] 警告：API 进程清理失败：$_" }
   foreach ($tree in @($uiTree, $apiTree)) { foreach ($item in $tree.Values) { try { $item.process.Dispose() } catch { } } }

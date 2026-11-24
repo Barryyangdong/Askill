@@ -3,7 +3,7 @@
   "display_name_en": "Askill · A-Share Market Review",
   "description_zh": "4 个盯盘看板、5 个复盘看板，直接接入你已登录的 WorkBuddy，无需另填模型 API Key。盘中看竞价强弱和个股异动，收盘让 AI 从情绪、资金、题材、龙虎榜和龙头五个角度写复盘，点开依据核对数字。用「选手分析」比较同场领先组与落后组的持仓偏好，按交易日追踪一只股票谁新进、谁留守、谁退出。还可以拿游资历史案例做盲练，让 AI 梳理个股多空证据，用历史回测和次日验证检验判断。自己的成交和盈亏留在本机交易日志。",
   "description_en": "Four market-monitoring dashboards and five review dashboards connect to your signed-in WorkBuddy account without a separate model API key. Track auction strength and price moves, then ask AI to review sentiment, flows, themes, exchange trading disclosures, and leading stocks, with figures you can check. Player Analysis compares contest leaders and trailers and shows who added, kept, or exited a holding across comparable disclosures. Practice on historical trader cases, debate a stock with AI, and test ideas through backtests and next-day reviews. Your trade journal stays local.",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "author": "Barryyangdong",
   "examples_zh": [
     "用我的 WorkBuddy 账号接入短线王，无需另填模型 API Key。带我看最近一个交易日的 AI 复盘，并找到其中一条数字的依据。",

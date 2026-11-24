@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { EventEmitter } from "node:events";
-import type { ChildProcess } from "node:child_process";
+import { spawnSync, type ChildProcess } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -191,10 +191,45 @@ test("打包好的页面（免安装包）：Windows 启动器先查 desktop\\di
   const ps = fs.readFileSync(path.join(REPO, "scripts/start.ps1"), "utf8");
   assert.match(ps, /^\ufeff(?:#[^\n]*\n)*param\(\[switch\]\$Prebuilt, \[switch\]\$NoOpen, \[int\]\$Port = 0, \[int\]\$ApiPort = 0\)\n/, "param 必须是第一条语句(前面只能有注释)");
   const check = ps.indexOf('Test-Path (Join-Path $root "desktop\\dist\\index.html")');
-  const preview = ps.indexOf('$ui = Start-Process -FilePath node -ArgumentList @("node_modules\\vite\\bin\\vite.js", "preview") -WorkingDirectory (Join-Path $root "desktop")');
-  const dev = ps.indexOf('$ui = Start-Process -FilePath npm.cmd -ArgumentList @("run", "dev", "--prefix", "desktop")');
-  assert.ok(check > 0 && preview > check && dev > preview, `${check} ${preview} ${dev}`);
+  const vite = ps.indexOf('$viteArgs = @("node_modules\\vite\\bin\\vite.js")');
+  const preview = ps.indexOf('if ($Prebuilt) { $viteArgs += "preview" }');
+  const ui = ps.indexOf('$ui = Start-Process -FilePath $nodeExe -ArgumentList $viteArgs -WorkingDirectory (Join-Path $root "desktop")');
+  assert.ok(check > 0 && vite > check && preview > vite && ui > preview);
   assert.ok(check < ps.indexOf("$api = Start-Process"), "缺页面时连 API 都不起");
+});
+
+test("Windows 启动器优先 PATH 的 Node，缺失时用 WorkBuddy 实际通过预检的运行时", { skip: process.platform !== "win32" }, t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "askill node selection "));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const scripts = path.join(root, "scripts");
+  const ports = path.join(root, "orchestrator/src/startup_ports.ts");
+  fs.mkdirSync(scripts);
+  fs.mkdirSync(path.dirname(ports), { recursive: true });
+  for (const file of ["start.ps1", "check-node.mjs"]) fs.copyFileSync(path.join(REPO, "scripts", file), path.join(scripts, file));
+  // Stop immediately after preflight; the test never starts an API or browser.
+  fs.writeFileSync(ports, 'import fs from "node:fs"; fs.writeFileSync(process.env.ASKILL_TEST_NODE!, process.execPath); process.exit(43);');
+  const marker = path.join(root, "selected");
+  const run = (searchPath: string) => {
+    const env = { ...process.env, USERPROFILE: root, ASKILL_TEST_NODE: marker };
+    for (const key of Object.keys(env)) if (key.toLowerCase() === "path") delete (env as NodeJS.ProcessEnv)[key];
+    const powershell = path.join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
+    const result = spawnSync(powershell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(scripts, "start.ps1"), "-NoOpen"], {
+      env: { ...env, Path: searchPath }, windowsHide: true, encoding: "utf8", timeout: 30_000,
+    });
+    assert.ifError(result.error);
+    return result.status;
+  };
+  const system = path.join(process.env.SystemRoot!, "System32");
+  assert.equal(run(system), 1);
+  const versions = path.join(root, ".workbuddy/binaries/node/versions");
+  fs.mkdirSync(versions, { recursive: true });
+  const alternate = path.join(versions, "compatible");
+  fs.symlinkSync(path.dirname(process.execPath), alternate, "junction");
+  assert.equal(run([path.dirname(process.execPath), system].join(";")), 43);
+  assert.equal(fs.readFileSync(marker, "utf8").toLowerCase(), process.execPath.toLowerCase());
+  fs.unlinkSync(marker);
+  assert.equal(run(system), 43);
+  assert.equal(fs.realpathSync(fs.readFileSync(marker, "utf8")).toLowerCase(), fs.realpathSync(process.execPath).toLowerCase());
 });
 
 test("换访问链接时旧服务还在跑:说清楚要先 Ctrl+C 停掉它,否则旧链接根本没失效", async () => {

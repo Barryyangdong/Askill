@@ -252,10 +252,10 @@ test("命令行入口按真实路径认:经符号链接 / 目录联接运行也�
 
 test("Windows 启动器:先选端口再起两个进程,API、页面、就绪检查、打开的地址都用选好的端口", () => {
   const ps = fs.readFileSync(path.join(REPO, "scripts", "start.ps1"), "utf8");
-  const choose = ps.indexOf('& node (Join-Path $root "orchestrator\\src\\startup_ports.ts") @portArgs');
+  const choose = ps.indexOf('& $nodeExe (Join-Path $root "orchestrator\\src\\startup_ports.ts") @portArgs');
   assert.ok(choose > 0 && choose < ps.indexOf("$api = Start-Process"), "先选端口");
   // 说明行照打;退出码非 0 就停;最后一行不是 JSON(没输出)要报清楚,不能拿空值当端口
-  assert.match(ps, /\$chosen = @\(& node \(Join-Path \$root "orchestrator\\src\\startup_ports\.ts"\) @portArgs\)\n\$portCode = \$LASTEXITCODE\n\$chosen \| Where-Object \{ "\$_"\.StartsWith\("\[start\]"\) \} \| ForEach-Object \{ Write-Host \$_ \}\nif \(\$portCode -ne 0\) \{ exit \$portCode \}/);
+  assert.match(ps, /\$chosen = @\(& \$nodeExe \(Join-Path \$root "orchestrator\\src\\startup_ports\.ts"\) @portArgs\)\n\$portCode = \$LASTEXITCODE\n\$chosen \| Where-Object \{ "\$_"\.StartsWith\("\[start\]"\) \} \| ForEach-Object \{ Write-Host \$_ \}\nif \(\$portCode -ne 0\) \{ exit \$portCode \}/);
   assert.match(ps, /if \(-not \$last\.StartsWith\("\{"\)\) \{ throw "没拿到端口选择结果/);
   assert.match(ps, /\$ports = \$last \| ConvertFrom-Json/);
   assert.match(ps, /\$env:VRA_UI_PORT = "\$uiPortChosen"/);
