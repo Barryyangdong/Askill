@@ -4,6 +4,8 @@
 
 ## 环境与项目
 
+默认接入用户自己的 WorkBuddy（`cli-codebuddy`）。首次部署使用配套 Askill 源码，Windows 运行 `scripts\setup-windows.cmd`，macOS/Linux 运行 `scripts/setup`，检查安装器退出码。仅克隆或更新源码时需要 Git。复用已有项目时保留未提交改动和 `.local`，不执行 reset 或 clean。部署授权只涵盖用户本机的项目，不自动推送代码、创建 Release 或上传用户数据目录。
+
 - 先定位用户已有项目、健康服务和运行时；安装路径使用 `Askill`。用户指定或附带了配套源码包时优先校验并使用该包，在新的空目录解压；没有配套源码时再克隆 `https://github.com/Barryyangdong/Askill`。不覆盖同名非空目录；克隆或解压失败保留原目录并处理具体错误。
 - Node 需要 ≥22.18 且 `node -p process.features.typescript` 有值；Python ≥3.11。先复用 WorkBuddy 可执行工具及用户已有运行时，不替换系统默认版本。缺少依赖由 Agent 安装官方发行版：Node 来源 nodejs.org，Python 来源 python.org，Git 来源 git-scm.com；Windows 可通过已安装的 winget 核对对应官方包，macOS/Linux 可复用已有版本管理器。涉及系统授权或安装协议时，仅将必要的官方确认交给用户，确认后续跑。
 - 记录本次选定的 Node/Python/Git 绝对路径并带入安装器的进程环境，不能假定安装后的 PATH 已在当前进程刷新。不要把环境变量写进用户全局配置。
@@ -14,6 +16,10 @@
 ## 自动发现与修复 CLI
 
 先运行 `configure-workbuddy.mjs --repo <绝对项目目录> --check`。内置 CLI 可用则直接验证，不安装第二份。路径发现由原适配器完成，包含常见目录、系统安装登记和运行进程。
+
+- 返回 `not_installed` 时，先打开本机已装的 WorkBuddy 再检测。发现非标准安装位置时走下文的候选路径验证流程。
+- 返回 `confirm_workbuddy_login` 时，在桌面版确认本人已登录、能正常对话，再验证内置 CLI。桌面能对话而内置 CLI 持续认证失败时，使用独立 CLI 流程。
+- 返回 `probe_failed` 时，核对项目内 `docs/model-access.md` 的 WorkBuddy 兼容说明及已安装版本。保留受控工具、会话隔离和真实错误信息。
 
 确认内置 CLI 缺失、版本不兼容，或 WorkBuddy 能对话而内置 CLI 真实调用失败时，由 Agent 执行：
 
@@ -52,6 +58,8 @@ node <Skill目录>/scripts/configure-workbuddy.mjs --repo <绝对项目目录> -
 - 原配置损坏或存储不可读时，记录页面提示并保留原数据。用户希望切换现有 AI 来源时，由用户确认后走设置页的测试保存流程。
 
 ## 验收与中断恢复
+
+接入后在实际工作台发送一个不含私人资料的简短问题，看见模型回复再标记工作台对话通过。同一临时错误最多重试两次，持续失败则记录错误码和阻塞条件。验证始终使用用户选定的 WorkBuddy。展示盘面时保留真实数据时点与缺值，次日条件沿用工作台锁定规则。
 
 分别记录：依赖就绪、项目启动、CLI 已发现、真实连接通过、当前浏览器保存、工作台真实回复。前一步不能替代后一步。只记录阶段与脱敏错误，不记录身份、令牌或问答中的私人资料。
 
